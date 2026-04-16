@@ -82,20 +82,27 @@ That's it. No PostgreSQL needed. No Rust needed. Just Swift and netcat.
 
 If you want SQL access via PostgreSQL, you need PostgreSQL 17 and Rust installed. See `pg_dagdb/` directory for the pgrx extension. The daemon must be running first.
 
-**What is Cargo?** Cargo is the Rust package manager and build tool — like `pip` for Python or `npm` for JavaScript. `cargo build` compiles Rust code. `cargo install` installs Rust tools. [Install Rust](https://rustup.rs/) to get it.
+**Prerequisites:** [Rust](https://rustup.rs/) (for Cargo), [PostgreSQL 17](https://www.postgresql.org/) (for psql + server), [pgrx](https://github.com/pgcentralfoundation/pgrx) (Postgres extension framework for Rust).
 
-**What is pgrx?** A Rust framework for building PostgreSQL extensions. It generates the C glue code that Postgres needs, so you write Rust instead of C.
+**Important:** pgrx extensions cannot be built with plain `cargo build`. You must use `cargo pgrx install` which links against the Postgres server.
 
 ```bash
-# Install prerequisites
-brew install postgresql@17
-cargo install cargo-pgrx
+# 1. Install Rust (if needed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Build and install the extension
+# 2. Install PostgreSQL
+brew install postgresql@17
+brew services start postgresql@17
+
+# 3. Install pgrx CLI
+cargo install cargo-pgrx
+cargo pgrx init --pg17=/opt/homebrew/opt/postgresql@17/bin/pg_config
+
+# 4. Build and install the extension (NOT cargo build!)
 cd pg_dagdb
 cargo pgrx install --pg-config=/opt/homebrew/opt/postgresql@17/bin/pg_config
 
-# Create database and use it
+# 5. Create database and test
 createdb dagdb
 psql dagdb -c "CREATE EXTENSION pg_dagdb;"
 psql dagdb -c "SELECT * FROM dagdb_exec('STATUS');"
