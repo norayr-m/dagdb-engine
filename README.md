@@ -47,36 +47,54 @@ DagDB/
 
 ## Quick Start
 
+**Step 1: Build**
+
 ```bash
-# Build
 swift build
-
-# Run tests (27/27)
-swift test
-
-# Start the daemon
-.build/debug/dagdb-daemon --grid 256
-
-# Test with netcat (in another terminal)
-echo 'STATUS' | nc -U /tmp/dagdb.sock
-echo 'TICK 10' | nc -U /tmp/dagdb.sock
-echo 'NODES AT RANK 0' | nc -U /tmp/dagdb.sock
 ```
 
-## SQL Access (Daemon + Postgres)
-
-Requires PostgreSQL 17 + Rust. See `pg_dagdb/` for the pgrx extension.
+**Step 2: Run tests**
 
 ```bash
-# Start daemon (terminal 1)
-.build/debug/dagdb-daemon --grid 256
+swift test
+```
 
-# In psql (terminal 2):
-CREATE EXTENSION pg_dagdb;
-SELECT * FROM dagdb_exec('STATUS');
-SELECT * FROM dagdb_exec('TICK 100');
-SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
-SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
+**Step 3: Start the daemon** (keep this terminal open)
+
+```bash
+.build/debug/dagdb-daemon --grid 256
+```
+
+**Step 4: Query it** (open a second terminal)
+
+```bash
+echo 'STATUS' | nc -U /tmp/dagdb.sock
+echo 'TICK 10' | nc -U /tmp/dagdb.sock
+echo 'GRAPH INFO' | nc -U /tmp/dagdb.sock
+echo 'SET 0 TRUTH 1' | nc -U /tmp/dagdb.sock
+echo 'NODES AT RANK 0' | nc -U /tmp/dagdb.sock
+echo 'TRAVERSE FROM 0 DEPTH 2' | nc -U /tmp/dagdb.sock
+```
+
+That's it. No PostgreSQL needed. No Rust needed. Just Swift and netcat.
+
+## SQL Access (Optional, Advanced)
+
+If you want SQL access via PostgreSQL, you need PostgreSQL 17 and Rust installed. See `pg_dagdb/` directory for the pgrx extension. The daemon must be running first.
+
+```bash
+# Install prerequisites
+brew install postgresql@17
+cargo install cargo-pgrx
+
+# Build and install the extension
+cd pg_dagdb
+cargo pgrx install --pg-config=/opt/homebrew/opt/postgresql@17/bin/pg_config
+
+# Create database and use it
+createdb dagdb
+psql dagdb -c "CREATE EXTENSION pg_dagdb;"
+psql dagdb -c "SELECT * FROM dagdb_exec('STATUS');"
 ```
 
 ## Test Results
