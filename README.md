@@ -2,6 +2,17 @@
 
 6-bounded ranked DAG database engine. Swift + Metal GPU compute on Apple Silicon.
 
+## Presentations
+
+- **[DagDB Overview](https://norayr-m.github.io/DagDB/)** — 24 slides: spec, architecture, LUT6, Morton Z-curve, Carlos Delta
+- **[SQL Architecture: The Fork Problem](https://norayr-m.github.io/DagDB/sql-architecture.html)** — 26 slides: Postgres fork() vs Metal, daemon solution, DSL, UMA zero-copy
+- **[Podcast (30 min)](https://norayr-m.github.io/DagDB/podcast.html)** — Emma-narrated audio walkthrough with chapters and speed control
+
+## Demos
+
+- **[Grid Demo](https://norayr-m.github.io/DagDB/grid-demo.html)** — Interactive ranked power grid visualization
+- **[City Demo](https://norayr-m.github.io/DagDB/citydrt.html)** — City infrastructure variant
+
 ## What It Does
 
 Every node connects to at most **6 directed edges**. Each node has a programmable **LUT6** (64-bit lookup table) that can implement any Boolean function of its 6 inputs. Nodes are organized in **ranks** (leaves to root) and evaluated leaves-up in parallel on the GPU.
