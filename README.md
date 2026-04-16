@@ -82,6 +82,10 @@ That's it. No PostgreSQL needed. No Rust needed. Just Swift and netcat.
 
 If you want SQL access via PostgreSQL, you need PostgreSQL 17 and Rust installed. See `pg_dagdb/` directory for the pgrx extension. The daemon must be running first.
 
+**What is Cargo?** Cargo is the Rust package manager and build tool — like `pip` for Python or `npm` for JavaScript. `cargo build` compiles Rust code. `cargo install` installs Rust tools. [Install Rust](https://rustup.rs/) to get it.
+
+**What is pgrx?** A Rust framework for building PostgreSQL extensions. It generates the C glue code that Postgres needs, so you write Rust instead of C.
+
 ```bash
 # Install prerequisites
 brew install postgresql@17
