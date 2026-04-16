@@ -45,13 +45,34 @@ DagDB/
 └── Tests/DagDBTests/             (27 tests, all pass)
 ```
 
-## SQL Access (Daemon + Postgres)
+## Quick Start
 
 ```bash
-# Start daemon
-dagdb-daemon --grid 256
+# Build
+swift build
 
-# In psql:
+# Run tests (27/27)
+swift test
+
+# Start the daemon
+.build/debug/dagdb-daemon --grid 256
+
+# Test with netcat (in another terminal)
+echo 'STATUS' | nc -U /tmp/dagdb.sock
+echo 'TICK 10' | nc -U /tmp/dagdb.sock
+echo 'NODES AT RANK 0' | nc -U /tmp/dagdb.sock
+```
+
+## SQL Access (Daemon + Postgres)
+
+Requires PostgreSQL 17 + Rust. See `pg_dagdb/` for the pgrx extension.
+
+```bash
+# Start daemon (terminal 1)
+.build/debug/dagdb-daemon --grid 256
+
+# In psql (terminal 2):
+CREATE EXTENSION pg_dagdb;
 SELECT * FROM dagdb_exec('STATUS');
 SELECT * FROM dagdb_exec('TICK 100');
 SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
