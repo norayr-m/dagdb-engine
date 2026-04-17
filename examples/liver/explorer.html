@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DagDB Liver Explorer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+<script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro", "Segoe UI", sans-serif;
+    height: 100vh; overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border-radius: 12px;
+    background: var(--border); font-size: 12px; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+  .dot.online { background: var(--green); }
+  main {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    overflow: hidden;
+  }
+  .sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  .sidebar-right {
+    background: var(--panel);
+    border-right: none;
+    border-left: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  #cy { width: 100%; height: 100%; background: var(--bg); }
+  .section { margin-bottom: 20px; }
+  .section h2 {
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin: 0 0 8px 0;
+  }
+  button {
+    display: block; width: 100%;
+    padding: 8px 12px;
+    background: var(--border); color: var(--text);
+    border: 1px solid transparent; border-radius: 6px;
+    font-size: 13px; cursor: pointer;
+    margin-bottom: 6px;
+    transition: all 0.15s;
+  }
+  button:hover { background: var(--accent); color: white; }
+  button.danger:hover { background: var(--red); }
+  button.success:hover { background: var(--green); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .rank-bar {
+    display: grid; grid-template-columns: 52px 1fr 40px;
+    gap: 8px; align-items: center;
+    margin-bottom: 6px; font-size: 12px;
+  }
+  .rank-bar .label { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rank-bar .track {
+    height: 14px; background: var(--border); border-radius: 3px;
+    overflow: hidden; position: relative;
+  }
+  .rank-bar .fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--green), #60c76f);
+    transition: width 0.4s ease-out;
+  }
+  .rank-bar .count { font-variant-numeric: tabular-nums; color: var(--text); text-align: right; }
+  pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px; margin: 0;
+    font-size: 11px; color: var(--muted);
+    max-height: 200px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  footer {
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding: 6px 16px;
+    font-size: 11px; color: var(--muted);
+    font-family: "SF Mono", Monaco, monospace;
+  }
+  .big-number {
+    font-size: 32px; font-weight: 700;
+    color: var(--green);
+    font-variant-numeric: tabular-nums;
+  }
+  .big-number.dead { color: var(--red); }
+  .status-line {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px;
+    padding: 6px 10px; background: var(--bg); border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .status-line .name { font-size: 13px; }
+  .status-line .state { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .state.on { color: var(--green); }
+  .state.off { color: var(--red); }
+  .tag { font-size: 10px; padding: 2px 6px; border-radius: 3px; background: var(--border); margin-left: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⬢ DagDB Liver Explorer</h1>
+  <span class="badge"><span id="statusDot" class="dot"></span><span id="statusText">connecting…</span></span>
+  <span class="badge" id="nodeCountBadge">nodes: —</span>
+  <span class="badge" id="tickBadge">ticks: —</span>
+  <span style="flex: 1"></span>
+  <span class="badge" style="font-family: monospace;">mcpo :8787 / dagdb</span>
+</header>
+
+<main>
+  <aside class="sidebar">
+    <div class="section">
+      <h2>Liver Root</h2>
+      <div class="big-number" id="rootState">—</div>
+      <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+        overall organ health (AND3 across 3 functions)
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Rank Distribution (firing / total)</h2>
+      <div id="rankBars"></div>
+    </div>
+
+    <div class="section">
+      <h2>Systemic Signals</h2>
+      <div class="status-line">
+        <span class="name">toxin_APAP</span>
+        <span id="sig_toxin" class="state off">OFF</span>
+      </div>
+      <div class="status-line">
+        <span class="name">hypoxia</span>
+        <span id="sig_hypoxia" class="state off">OFF</span>
+      </div>
+      <div class="status-line">
+        <span class="name">inflammation</span>
+        <span id="sig_inflammation" class="state off">OFF</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Interventions</h2>
+      <button class="danger" onclick="inject('toxin', 20000)">💊 Inject APAP</button>
+      <button class="danger" onclick="inject('hypoxia', 20001)">🫁 Trigger Hypoxia</button>
+      <button class="danger" onclick="inject('inflammation', 20002)">🔥 Inflammation</button>
+      <button class="success" onclick="recover()">💉 NAC Antidote (recover)</button>
+    </div>
+
+    <div class="section">
+      <h2>Engine</h2>
+      <button onclick="tick()">▶ TICK 1</button>
+      <button onclick="tick(5)">▶▶ TICK 5</button>
+      <button onclick="validate()">✓ VALIDATE</button>
+      <button onclick="refresh()">⟳ Refresh</button>
+    </div>
+  </aside>
+
+  <div id="cy"></div>
+
+  <aside class="sidebar-right">
+    <div class="section">
+      <h2>Liver Functions</h2>
+      <div class="status-line">
+        <span class="name">detoxification <span class="tag">AND3</span></span>
+        <span id="fn_20803" class="state off">—</span>
+      </div>
+      <div class="status-line">
+        <span class="name">bile production <span class="tag">MAJ3</span></span>
+        <span id="fn_20804" class="state off">—</span>
+      </div>
+      <div class="status-line">
+        <span class="name">glucose reg. <span class="tag">AND3</span></span>
+        <span id="fn_20805" class="state off">—</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Zones</h2>
+      <div class="status-line">
+        <span class="name">periportal  <span class="tag">AND6</span></span>
+        <span id="zn_20800" class="state off">—</span>
+      </div>
+      <div class="status-line">
+        <span class="name">midzonal    <span class="tag">MAJ6</span></span>
+        <span id="zn_20801" class="state off">—</span>
+      </div>
+      <div class="status-line">
+        <span class="name">centrilobular <span class="tag">OR6</span></span>
+        <span id="zn_20802" class="state off">—</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Last MCP response</h2>
+      <pre id="lastResp">—</pre>
+    </div>
+
+    <div class="section">
+      <h2>Activity log</h2>
+      <pre id="logBox" style="max-height: 240px;">ready.</pre>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <span id="foot">DagDB Liver — 711 nodes, grid 256×256, Apple M5 Max</span>
+</footer>
+
+<script>
+const MCP = "http://localhost:8787/dagdb";
+
+const RANKS = [
+  { rank: 0, label: "root",        total: 1,     color: "#f85149" },
+  { rank: 1, label: "functions",   total: 3,     color: "#bc8cff" },
+  { rank: 2, label: "zones",       total: 3,     color: "#6aa3ff" },
+  { rank: 3, label: "lobules",     total: 100,   color: "#3fb950" },
+  { rank: 4, label: "hepatocytes", total: 600,   color: "#3fb950" },
+  { rank: 5, label: "systemic",    total: 3,     color: "#d29922" },
+];
+
+async function mcp(tool, args = {}) {
+  const r = await fetch(`${MCP}/${tool}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  if (!r.ok) throw new Error(`${tool}: HTTP ${r.status}`);
+  const data = await r.json();
+  document.getElementById("lastResp").textContent =
+    `${tool}(${JSON.stringify(args)})\n→ ${typeof data === 'string' ? data : JSON.stringify(data, null, 2)}`;
+  return data;
+}
+
+function log(msg) {
+  const box = document.getElementById("logBox");
+  const t = new Date().toISOString().split("T")[1].split(".")[0];
+  box.textContent = `[${t}] ${msg}\n` + box.textContent;
+  // trim
+  const lines = box.textContent.split("\n");
+  if (lines.length > 40) box.textContent = lines.slice(0, 40).join("\n");
+}
+
+// ── Cytoscape: hardcoded liver topology (small enough, stable) ──
+cytoscape.use(cytoscapeDagre);
+
+const elements = [];
+
+// Systemic nodes (top — highest rank)
+[
+  {id: "sys_toxin",        name: "toxin_APAP",    rank: 5},
+  {id: "sys_hypoxia",      name: "hypoxia",        rank: 5},
+  {id: "sys_inflammation", name: "inflammation",   rank: 5},
+].forEach(n => elements.push({ data: { id: n.id, label: n.name, rank: n.rank, kind: "systemic" } }));
+
+// Zones (aggregate view of cells)
+[
+  {id: "zone_1", name: "Zone 1\n(periportal)",    rank: 4},
+  {id: "zone_2", name: "Zone 2\n(midzonal)",       rank: 4},
+  {id: "zone_3", name: "Zone 3\n(centrilobular)",  rank: 4},
+].forEach(n => elements.push({ data: { id: n.id, label: n.name, rank: n.rank, kind: "zone_cells" } }));
+
+// Subscription edges (zones 1,2 → hypoxia + inflammation; zone 3 → all three)
+["zone_1", "zone_2"].forEach(z => {
+  elements.push({ data: { id: `${z}_hyp`, source: "sys_hypoxia",      target: z } });
+  elements.push({ data: { id: `${z}_inf`, source: "sys_inflammation", target: z } });
+});
+elements.push({ data: { id: "zone_3_tox", source: "sys_toxin",        target: "zone_3" } });
+elements.push({ data: { id: "zone_3_hyp", source: "sys_hypoxia",      target: "zone_3" } });
+elements.push({ data: { id: "zone_3_inf", source: "sys_inflammation", target: "zone_3" } });
+
+// Lobule + zone aggregators (rank 3/2/1/0 compressed for clarity)
+elements.push({ data: { id: "lobules",  label: "100 lobules (MAJ6)",  rank: 3, kind: "aggregator" } });
+elements.push({ data: { id: "z_peri",   label: "periportal (AND6)",   rank: 2, kind: "zone" } });
+elements.push({ data: { id: "z_mid",    label: "midzonal (MAJ6)",     rank: 2, kind: "zone" } });
+elements.push({ data: { id: "z_centri", label: "centrilobular (OR6)", rank: 2, kind: "zone" } });
+elements.push({ data: { id: "fn_detox",   label: "detoxification (AND3)", rank: 1, kind: "function" } });
+elements.push({ data: { id: "fn_bile",    label: "bile (MAJ3)",            rank: 1, kind: "function" } });
+elements.push({ data: { id: "fn_glucose", label: "glucose (AND3)",         rank: 1, kind: "function" } });
+elements.push({ data: { id: "liver",      label: "LIVER HEALTH",           rank: 0, kind: "root" } });
+
+// Wire them (cells→lobules→zones→functions→root)
+["zone_1","zone_2","zone_3"].forEach(z => {
+  elements.push({ data: { id: `${z}_lob`, source: z, target: "lobules" } });
+});
+["z_peri","z_mid","z_centri"].forEach(z => {
+  elements.push({ data: { id: `${z}_in`, source: "lobules", target: z } });
+});
+["z_peri","z_mid","z_centri"].forEach(z => {
+  ["fn_detox","fn_bile","fn_glucose"].forEach(fn => {
+    elements.push({ data: { id: `${z}_${fn}`, source: z, target: fn } });
+  });
+});
+["fn_detox","fn_bile","fn_glucose"].forEach(fn => {
+  elements.push({ data: { id: `${fn}_lv`, source: fn, target: "liver" } });
+});
+
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements,
+  style: [
+    { selector: "node", style: {
+      "label": "data(label)", "text-wrap": "wrap", "text-max-width": 120,
+      "font-family": "-apple-system, sans-serif", "font-size": 10,
+      "color": "#e6edf3",
+      "background-color": "#30363d",
+      "border-width": 2, "border-color": "#8b949e",
+      "width": "label", "height": "label",
+      "padding": 8, "shape": "round-rectangle",
+      "text-valign": "center", "text-halign": "center",
+      "text-outline-width": 0,
+    }},
+    { selector: 'node[kind="systemic"]', style: { "background-color": "#30363d", "border-color": "#d29922" } },
+    { selector: 'node[kind="zone_cells"]', style: { "background-color": "#1a2f1a", "border-color": "#3fb950" } },
+    { selector: 'node[kind="zone"]',       style: { "background-color": "#1f2f40", "border-color": "#6aa3ff" } },
+    { selector: 'node[kind="aggregator"]', style: { "background-color": "#2b1f3a", "border-color": "#bc8cff" } },
+    { selector: 'node[kind="function"]',   style: { "background-color": "#2b1f3a", "border-color": "#bc8cff" } },
+    { selector: 'node[kind="root"]',       style: {
+      "background-color": "#1a3f1a", "border-color": "#3fb950",
+      "border-width": 3, "font-size": 13, "font-weight": "bold",
+    }},
+    { selector: 'node.firing', style: { "background-color": "#1f3f1f", "border-color": "#3fb950" } },
+    { selector: 'node.dead',   style: { "background-color": "#3f1f1f", "border-color": "#f85149" } },
+    { selector: "edge", style: {
+      "width": 1.2, "line-color": "#30363d",
+      "curve-style": "bezier",
+      "target-arrow-color": "#30363d", "target-arrow-shape": "triangle",
+      "arrow-scale": 0.8,
+    }},
+  ],
+  layout: {
+    name: "dagre",
+    rankDir: "TB",
+    rankSep: 50,
+    nodeSep: 20,
+    padding: 20,
+  },
+});
+
+// Zoom fit
+setTimeout(() => cy.fit(undefined, 30), 100);
+
+// ── MCP interactions ──
+
+async function queryStatus() {
+  try {
+    const s = await mcp("dagdb_status");
+    const m = /nodes=(\d+) ticks=(\d+)/.exec(s);
+    document.getElementById("statusDot").classList.add("online");
+    document.getElementById("statusText").textContent = "daemon online";
+    if (m) {
+      document.getElementById("nodeCountBadge").textContent = `nodes: ${m[1]}`;
+      document.getElementById("tickBadge").textContent      = `ticks: ${m[2]}`;
+    }
+    return true;
+  } catch (e) {
+    document.getElementById("statusDot").classList.remove("online");
+    document.getElementById("statusText").textContent = "daemon offline";
+    log(`CONNECT FAIL: ${e.message}`);
+    return false;
+  }
+}
+
+async function queryRank(rank) {
+  const r = await mcp("dagdb_query", { command: `NODES AT RANK ${rank} WHERE truth=1` });
+  const m = /rows=(\d+)/.exec(r);
+  return m ? parseInt(m[1]) : 0;
+}
+
+async function queryGraphInfo() {
+  const r = await mcp("dagdb_graph_info");
+  // parse "OK GRAPH nodes=N true=T r0=X r1=Y r2=Z r3=W r4=V r5=U ..."
+  const ranks = {};
+  for (const m of r.matchAll(/r(\d+)=(\d+)/g)) {
+    ranks[parseInt(m[1])] = parseInt(m[2]);
+  }
+  return ranks;
+}
+
+async function checkNode(id) {
+  // Use NODES AT RANK WHERE truth=1 is not specific. Use TRAVERSE FROM id DEPTH 0
+  // to at least confirm existence. For truth state, we query individually.
+  // Simpler: check if it appears in firing list by rank.
+  // We'll aggregate: for each tracked node, query a RANK filter and check count.
+  return null;
+}
+
+function renderRankBars(fireByRank) {
+  const box = document.getElementById("rankBars");
+  box.innerHTML = "";
+  for (const r of RANKS) {
+    const firing = fireByRank[r.rank] || 0;
+    const pct = (firing / r.total * 100).toFixed(0);
+    const row = document.createElement("div");
+    row.className = "rank-bar";
+    row.innerHTML = `
+      <span class="label">r${r.rank} ${r.label}</span>
+      <div class="track"><div class="fill" style="width: ${pct}%"></div></div>
+      <span class="count">${firing}/${r.total}</span>
+    `;
+    box.appendChild(row);
+  }
+}
+
+async function refresh() {
+  const ok = await queryStatus();
+  if (!ok) return;
+  const ranks = await queryGraphInfo();
+  const firing = {};
+  // Query firing count per rank
+  for (const r of RANKS) {
+    firing[r.rank] = await queryRank(r.rank);
+  }
+
+  renderRankBars(firing);
+
+  // root big state
+  const rootFiring = firing[0];
+  const el = document.getElementById("rootState");
+  el.textContent = rootFiring >= 1 ? "ALIVE" : "FAILED";
+  el.classList.toggle("dead", rootFiring < 1);
+
+  // color the cytoscape graph by health of each rank
+  ["zone_1","zone_2","zone_3"].forEach(id => {
+    const el = cy.getElementById(id);
+    if (!el) return;
+    el.removeClass("firing dead");
+    // Heuristic from rank 4 health — proportional to firing
+    const alive = firing[4] >= 100;
+    el.addClass(alive ? "firing" : "dead");
+  });
+  cy.getElementById("liver").removeClass("firing dead")
+    .addClass(rootFiring >= 1 ? "firing" : "dead");
+  ["fn_detox","fn_bile","fn_glucose"].forEach(id => {
+    const el = cy.getElementById(id);
+    el.removeClass("firing dead");
+    el.addClass(firing[1] >= 3 ? "firing" : "dead");
+  });
+  ["z_peri","z_mid","z_centri"].forEach(id => {
+    const el = cy.getElementById(id);
+    el.removeClass("firing dead");
+    el.addClass(firing[2] >= 3 ? "firing" : "dead");
+  });
+  cy.getElementById("lobules").removeClass("firing dead")
+    .addClass(firing[3] >= 50 ? "firing" : "dead");
+}
+
+async function tick(n = 1) {
+  log(`TICK ${n}...`);
+  const r = await mcp("dagdb_tick", { count: n });
+  log(`  ${r}`);
+  await refresh();
+}
+
+async function inject(signal, nodeId) {
+  log(`injecting ${signal} (node ${nodeId})...`);
+  await mcp("dagdb_set_lut", { node: nodeId, gate: "CONST1" });
+  const el = document.getElementById(`sig_${signal.replace('toxin','toxin')}`);
+  if (el) { el.textContent = "ON"; el.className = "state on"; }
+  await tick(5);
+}
+
+async function recover() {
+  log(`NAC antidote: flipping all systemic signals to CONST0...`);
+  await mcp("dagdb_set_lut", { node: 20000, gate: "CONST0" });
+  await mcp("dagdb_set_lut", { node: 20001, gate: "CONST0" });
+  await mcp("dagdb_set_lut", { node: 20002, gate: "CONST0" });
+  ["toxin","hypoxia","inflammation"].forEach(s => {
+    const el = document.getElementById(`sig_${s}`);
+    if (el) { el.textContent = "OFF"; el.className = "state off"; }
+  });
+  await tick(5);
+}
+
+async function validate() {
+  log(`validating graph...`);
+  const r = await mcp("dagdb_validate");
+  log(`  ${r}`);
+}
+
+// ── Boot ──
+(async () => {
+  await refresh();
+  setInterval(refresh, 3000);  // auto-poll
+})();
+</script>
+
+</body>
+</html>

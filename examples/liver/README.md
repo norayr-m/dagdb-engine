@@ -137,10 +137,34 @@ python3 examples/liver/build_liver.py
 # Run the acetaminophen scenario
 python3 examples/liver/scenario_apap.py
 
-# Render diagrams (requires graphviz: brew install graphviz)
+# Render static diagrams (requires graphviz: brew install graphviz)
 python3 examples/liver/visualize.py
 open ~/diagram_output/liver_architecture.png
 ```
+
+## Interactive explorer (HTML + MCP)
+
+`explorer.html` is a single-page app that visualizes the liver graph live
+and lets you inject toxins / run ticks / recover by clicking buttons.
+It talks to the running DagDB daemon through the `mcpo` HTTP bridge
+(MCP → OpenAPI) at `http://localhost:8787/dagdb/`.
+
+```bash
+# Bridge all four DagDB MCP servers over HTTP (runs under launchd by default)
+launchctl list | grep dagdb   # should list com.dagdb.mcpo
+
+# Open the explorer in any browser
+open examples/liver/explorer.html
+```
+
+What it does:
+
+- Layered Cytoscape/dagre view of systemic → zones → lobules → functions → root
+- Live rank distribution bars (firing / total, auto-polled every 3 s)
+- Big "LIVER HEALTH: ALIVE / FAILED" indicator
+- Buttons: inject APAP, trigger hypoxia, inflammation, NAC recovery, TICK 1, TICK 5, VALIDATE
+- MCP response panel shows every call and its return
+- Works with `file://` — no local server required, thanks to mcpo's permissive CORS
 
 ## Amateur disclaimer
 
