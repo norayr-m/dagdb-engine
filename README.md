@@ -94,7 +94,7 @@ If you want SQL access via PostgreSQL, you need PostgreSQL 17 and Rust installed
 
 **Prerequisites:** [Rust](https://rustup.rs/) (for Cargo), [PostgreSQL 17](https://www.postgresql.org/) (for psql + server), [pgrx](https://github.com/pgcentralfoundation/pgrx) (Postgres extension framework for Rust).
 
-**Important:** pgrx extensions cannot be built with plain `cargo build`. You must use `cargo pgrx install` which links against the Postgres server.
+**⚠️ Do NOT run `cargo build` in pg_dagdb/.** It will fail with linker errors (`palloc`, `errstart` not found). pgrx extensions link against the Postgres server at install time. The only valid command is `cargo pgrx install`.
 
 ```bash
 # 1. Install Rust (if needed)
