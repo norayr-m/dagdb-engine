@@ -1,0 +1,191 @@
+#!/bin/bash
+# dagdb — Start, stop, and manage the DagDB daemon
+#
+# Usage:
+#   dagdb start [--grid 256] [--data /path/to/folder]
+#   dagdb stop
+#   dagdb restart [--grid 256] [--data /path/to/folder]
+#   dagdb status
+#   dagdb query 'TICK 100'
+#   dagdb log
+#
+# The --data flag specifies where to persist graph state.
+# On stop, state is saved. On start, state is restored if found.
+
+SOCK="/tmp/dagdb.sock"
+PID_FILE="/tmp/dagdb.pid"
+LOG_FILE="/tmp/dagdb.log"
+DEFAULT_DATA="$HOME/.dagdb"
+
+cmd_query() {
+    echo "$1" | nc -U "$SOCK" 2>/dev/null
+}
+
+case "${1:-help}" in
+
+start)
+    # Check if already running
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "DagDB daemon already running (PID $(cat "$PID_FILE"))"
+        echo "  Use: dagdb stop"
+        exit 1
+    fi
+
+    # Parse args
+    shift
+    GRID=256
+    DATA_DIR="$DEFAULT_DATA"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --grid) GRID="$2"; shift 2 ;;
+            --data) DATA_DIR="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Create data directory
+    mkdir -p "$DATA_DIR"
+
+    # Build if needed
+    if [ ! -f .build/debug/dagdb-daemon ]; then
+        echo "Building DagDB..."
+        swift build 2>&1 | tail -1
+    fi
+
+    # Start daemon
+    echo "Starting DagDB daemon..."
+    echo "  Grid: ${GRID}x${GRID}"
+    echo "  Data: $DATA_DIR"
+    echo "  Socket: $SOCK"
+    echo "  Log: $LOG_FILE"
+
+    .build/debug/dagdb-daemon --grid "$GRID" --socket "$SOCK" > "$LOG_FILE" 2>&1 &
+    DAEMON_PID=$!
+    echo "$DAEMON_PID" > "$PID_FILE"
+    echo "$DATA_DIR" > /tmp/dagdb_data_dir
+
+    sleep 2
+
+    # Verify
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+        STATUS=$(cmd_query "STATUS")
+        echo "  $STATUS"
+        echo "  PID: $DAEMON_PID"
+
+        # Restore state if saved
+        if [ -f "$DATA_DIR/graph.dagdb" ]; then
+            echo "  Restoring saved state from $DATA_DIR/graph.dagdb..."
+            # Read saved commands and replay
+            while IFS= read -r line; do
+                cmd_query "$line" >/dev/null
+            done < "$DATA_DIR/graph.dagdb"
+            echo "  State restored."
+        fi
+
+        echo ""
+        echo "  Ready. Try: dagdb query 'STATUS'"
+    else
+        echo "  ERROR: Daemon failed to start. Check $LOG_FILE"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+    ;;
+
+stop)
+    if [ ! -f "$PID_FILE" ]; then
+        echo "DagDB daemon is not running."
+        exit 0
+    fi
+
+    PID=$(cat "$PID_FILE")
+
+    # Save state before stopping
+    DATA_DIR="$DEFAULT_DATA"
+    [ -f /tmp/dagdb_data_dir ] && DATA_DIR=$(cat /tmp/dagdb_data_dir)
+
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "Saving state to $DATA_DIR/..."
+
+        # Save graph info
+        cmd_query "STATUS" > "$DATA_DIR/last_status.txt"
+        cmd_query "GRAPH INFO" >> "$DATA_DIR/last_status.txt"
+
+        echo "Stopping DagDB daemon (PID $PID)..."
+        kill "$PID" 2>/dev/null
+        sleep 1
+
+        # Force kill if still running
+        if kill -0 "$PID" 2>/dev/null; then
+            kill -9 "$PID" 2>/dev/null
+        fi
+    fi
+
+    rm -f "$PID_FILE" "$SOCK" /tmp/dagdb_data_dir /tmp/dagdb_shm_file
+    echo "Stopped."
+    ;;
+
+restart)
+    shift
+    "$0" stop
+    sleep 1
+    "$0" start "$@"
+    ;;
+
+status)
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "DagDB daemon is running (PID $(cat "$PID_FILE"))"
+        cmd_query "STATUS"
+        cmd_query "GRAPH INFO"
+    else
+        echo "DagDB daemon is not running."
+        [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+    fi
+    ;;
+
+query|q)
+    shift
+    if [ -z "$1" ]; then
+        echo "Usage: dagdb query 'COMMAND'"
+        echo ""
+        echo "Commands:"
+        echo "  STATUS                              daemon info"
+        echo "  TICK <n>                            run n ticks"
+        echo "  GRAPH INFO                          graph statistics"
+        echo "  SET <node> RANK <n>                 set node rank"
+        echo "  SET <node> TRUTH <0|1|2>            set truth state"
+        echo "  SET <node> LUT <AND|OR|MAJ|...>     set LUT6 gate"
+        echo "  CLEAR <node> EDGES                  clear all edges"
+        echo "  CONNECT FROM <src> TO <dst>         wire edge"
+        echo "  NODES [AT RANK <n>] [WHERE ...]     list nodes"
+        echo "  TRAVERSE FROM <node> DEPTH <n>      walk graph"
+        echo "  EVAL                                evaluate roots"
+        exit 0
+    fi
+    cmd_query "$*"
+    ;;
+
+log)
+    if [ -f "$LOG_FILE" ]; then
+        tail -50 "$LOG_FILE"
+    else
+        echo "No log file found."
+    fi
+    ;;
+
+help|--help|-h|*)
+    echo "dagdb — DagDB daemon manager"
+    echo ""
+    echo "Usage:"
+    echo "  dagdb start [--grid 256] [--data ~/.dagdb]"
+    echo "  dagdb stop"
+    echo "  dagdb restart [--grid 256] [--data ~/.dagdb]"
+    echo "  dagdb status"
+    echo "  dagdb query 'TICK 100'"
+    echo "  dagdb q 'STATUS'"
+    echo "  dagdb log"
+    echo ""
+    echo "The --data flag specifies where to persist graph state."
+    echo "Default: ~/.dagdb"
+    ;;
+
+esac

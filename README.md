@@ -55,38 +55,36 @@ cd dagdb-engine
 
 That's it. Builds, tests, starts the daemon, runs a smoke test.
 
-### Manual Steps (if you prefer)
-
-**Step 1: Build**
+### Daemon Management
 
 ```bash
-swift build
+./dagdb start                        # start (builds if needed)
+./dagdb start --grid 512             # custom grid size
+./dagdb start --data /path/to/data   # persist state to folder
+./dagdb stop                         # save state and stop
+./dagdb restart                      # stop + start
+./dagdb status                       # is it running? graph info
+./dagdb query 'TICK 100'             # send DSL command
+./dagdb q 'STATUS'                   # short form
+./dagdb log                          # view daemon log
 ```
 
-**Step 2: Run tests**
-
-```bash
-swift test
-```
-
-**Step 3: Start the daemon** (keep this terminal open)
-
-```bash
-.build/debug/dagdb-daemon --grid 256
-```
-
-**Step 4: Query it** (open a second terminal)
+### Query via netcat (no dependencies)
 
 ```bash
 echo 'STATUS' | nc -U /tmp/dagdb.sock
 echo 'TICK 10' | nc -U /tmp/dagdb.sock
 echo 'GRAPH INFO' | nc -U /tmp/dagdb.sock
+echo 'SET 0 RANK 3' | nc -U /tmp/dagdb.sock
 echo 'SET 0 TRUTH 1' | nc -U /tmp/dagdb.sock
-echo 'NODES AT RANK 0' | nc -U /tmp/dagdb.sock
+echo 'SET 0 LUT AND' | nc -U /tmp/dagdb.sock
+echo 'CLEAR 0 EDGES' | nc -U /tmp/dagdb.sock
+echo 'CONNECT FROM 1 TO 0' | nc -U /tmp/dagdb.sock
+echo 'NODES AT RANK 3' | nc -U /tmp/dagdb.sock
 echo 'TRAVERSE FROM 0 DEPTH 2' | nc -U /tmp/dagdb.sock
 ```
 
-That's it. No PostgreSQL needed. No Rust needed. Just Swift and netcat.
+No PostgreSQL needed. No Rust needed. Just Swift and netcat.
 
 ## SQL Access (Optional, Advanced)
 
