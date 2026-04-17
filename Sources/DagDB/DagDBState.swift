@@ -111,6 +111,42 @@ public enum LUT6Preset {
     /// VETO: output = 1 iff all inputs 1, any 0 blocks it (same as AND6)
     public static let veto: UInt64 = and6
 
+    /// NOR6: output = 1 iff all inputs 0. Used for "healthy unless any input fires"
+    /// semantics — e.g., a cell is alive unless any damage signal is present.
+    public static let nor6: UInt64 = 0x0000000000000001
+
+    /// AND3: output = 1 iff inputs 0,1,2 all 1 (inputs 3,4,5 ignored).
+    /// Use when a node aggregates 3 real sources and leaves 3 slots unused (-1).
+    public static let and3: UInt64 = {
+        var lut: UInt64 = 0
+        for i: UInt64 in 0..<64 {
+            if (i & 0x07) == 0x07 { lut |= (UInt64(1) << i) }
+        }
+        return lut
+    }()
+
+    /// OR3: output = 1 iff any of inputs 0,1,2 are 1.
+    public static let or3: UInt64 = {
+        var lut: UInt64 = 0
+        for i: UInt64 in 0..<64 {
+            if (i & 0x07) != 0 { lut |= (UInt64(1) << i) }
+        }
+        return lut
+    }()
+
+    /// MAJ3: output = 1 iff 2+ of inputs 0,1,2 are 1.
+    public static let maj3: UInt64 = {
+        var lut: UInt64 = 0
+        for i: UInt64 in 0..<64 {
+            let low = i & 0x07
+            if low.nonzeroBitCount >= 2 { lut |= (UInt64(1) << i) }
+        }
+        return lut
+    }()
+
+    /// NAND6: output = 0 iff all inputs 1. Used for "passes unless all-positive".
+    public static let nand6: UInt64 = ~and6
+
     /// CONST0 / CONST1 (foundational premises with fixed truth)
     public static let const0: UInt64 = 0
     public static let const1: UInt64 = 0xFFFFFFFFFFFFFFFF

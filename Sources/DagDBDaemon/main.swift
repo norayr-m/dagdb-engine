@@ -188,7 +188,12 @@ func handleCommand(_ input: String) -> String {
         case "CONST0", "FALSE": lut = LUT6Preset.const0
         case "CONST1", "TRUE": lut = LUT6Preset.const1
         case "VETO": lut = LUT6Preset.veto
-        default: return "ERROR unknown LUT preset: \(preset). Use AND OR XOR MAJ IDENTITY CONST0 CONST1 VETO"
+        case "NOR", "NOR6": lut = LUT6Preset.nor6
+        case "NAND", "NAND6": lut = LUT6Preset.nand6
+        case "AND3": lut = LUT6Preset.and3
+        case "OR3":  lut = LUT6Preset.or3
+        case "MAJ3": lut = LUT6Preset.maj3
+        default: return "ERROR unknown LUT preset: \(preset). Use AND OR XOR MAJ IDENTITY CONST0 CONST1 VETO NOR NAND AND3 OR3 MAJ3"
         }
         let low = UInt32(lut & 0xFFFFFFFF)
         let high = UInt32((lut >> 32) & 0xFFFFFFFF)
