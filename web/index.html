@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DagDB — Live Graph Interface</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a1a; color: #e0e0e0; font-family: 'Courier New', monospace; height: 100vh; display: flex; }
+
+/* Left panel: graph visualization */
+#graph-panel { flex: 1; position: relative; overflow: hidden; }
+#canvas { width: 100%; height: 100%; }
+
+/* Right panel: controls + query */
+#control-panel {
+    width: 320px; background: rgba(10,10,26,0.95); border-left: 1px solid #333;
+    display: flex; flex-direction: column; overflow-y: auto;
+}
+#control-panel h2 { color: #f0c040; font-size: 14px; padding: 12px 16px 8px; border-bottom: 1px solid #222; }
+.btn-group { padding: 8px 16px; }
+.btn {
+    display: block; width: 100%; margin: 4px 0; padding: 8px 12px;
+    background: rgba(240,192,64,0.08); border: 1px solid rgba(240,192,64,0.25);
+    color: #f0c040; font: 13px 'Courier New', monospace; cursor: pointer;
+    text-align: left; border-radius: 4px;
+}
+.btn:hover { background: rgba(240,192,64,0.2); }
+.btn.danger { color: #ff6050; border-color: rgba(255,96,80,0.3); background: rgba(255,96,80,0.05); }
+.btn.danger:hover { background: rgba(255,96,80,0.15); }
+.btn.green { color: #50ff80; border-color: rgba(80,255,128,0.3); background: rgba(80,255,128,0.05); }
+.btn.green:hover { background: rgba(80,255,128,0.15); }
+
+/* Query input */
+#query-section { padding: 8px 16px; border-top: 1px solid #333; }
+#query-input {
+    width: 100%; padding: 8px; background: #111; border: 1px solid #333;
+    color: #f0c040; font: 13px 'Courier New', monospace; border-radius: 4px;
+}
+#query-input:focus { outline: none; border-color: #f0c040; }
+
+/* Response log */
+#log {
+    flex: 1; padding: 8px 16px; overflow-y: auto; font-size: 12px;
+    color: #888; border-top: 1px solid #222; min-height: 200px;
+}
+#log .ok { color: #50ff80; }
+#log .err { color: #ff6050; }
+#log .cmd { color: #f0c040; }
+#log .info { color: #4080c0; }
+
+/* Status bar */
+#status-bar {
+    padding: 8px 16px; background: #080812; border-top: 1px solid #333;
+    font-size: 11px; color: #555;
+}
+#status-bar .connected { color: #50ff80; }
+#status-bar .disconnected { color: #ff6050; }
+
+/* Legend */
+.legend { padding: 8px 16px; font-size: 11px; color: #666; }
+.legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.legend .r3 { background: #50ff80; }
+.legend .r2 { background: #4080c0; }
+.legend .r1 { background: #f0c040; }
+.legend .r0 { background: #ff6050; }
+.legend div { margin: 2px 0; }
+
+/* Node info tooltip */
+#tooltip {
+    display: none; position: absolute; background: rgba(10,10,26,0.95);
+    border: 1px solid #f0c040; padding: 8px 12px; border-radius: 4px;
+    font-size: 12px; z-index: 100; pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<div id="graph-panel">
+    <canvas id="canvas"></canvas>
+    <div id="tooltip"></div>
+</div>
+
+<div id="control-panel">
+    <h2>DagDB — Live</h2>
+
+    <div class="legend">
+        <div><span class="r3"></span> Rank 3 — Sensors (leaves)</div>
+        <div><span class="r2"></span> Rank 2 — Zones (aggregators)</div>
+        <div><span class="r1"></span> Rank 1 — Grid (controller)</div>
+        <div><span class="r0"></span> Rank 0 — Decision (root)</div>
+    </div>
+
+    <h2>Operations</h2>
+    <div class="btn-group">
+        <button class="btn" onclick="send('STATUS')">&#9654; STATUS</button>
+        <button class="btn" onclick="send('GRAPH INFO')">&#9654; GRAPH INFO</button>
+        <button class="btn" onclick="send('TICK 1')">&#9654; TICK 1</button>
+        <button class="btn" onclick="send('TICK 10')">&#9654; TICK 10</button>
+        <button class="btn" onclick="send('TICK 100')">&#9654; TICK 100</button>
+        <button class="btn" onclick="queryNodes()">&#9654; REFRESH NODES</button>
+    </div>
+
+    <h2>Query by Rank</h2>
+    <div class="btn-group">
+        <button class="btn" onclick="send('NODES AT RANK 3')">&#9654; Rank 3 (Sensors)</button>
+        <button class="btn" onclick="send('NODES AT RANK 2')">&#9654; Rank 2 (Zones)</button>
+        <button class="btn" onclick="send('NODES AT RANK 1')">&#9654; Rank 1 (Grid)</button>
+        <button class="btn" onclick="send('NODES AT RANK 0')">&#9654; Rank 0 (Decision)</button>
+    </div>
+
+    <h2>Fault Injection</h2>
+    <div class="btn-group">
+        <button class="btn danger" onclick="injectFault()">&#9888; INJECT RANDOM FAULT</button>
+        <button class="btn green" onclick="healAll()">&#10004; HEAL ALL SENSORS</button>
+        <button class="btn" onclick="send('TICK 1'); setTimeout(queryNodes, 200)">&#9654; EVALUATE</button>
+    </div>
+
+    <h2>Traverse</h2>
+    <div class="btn-group">
+        <button class="btn" onclick="send('TRAVERSE FROM 122 DEPTH 4')">&#9654; From Decision (122)</button>
+        <button class="btn" onclick="send('TRAVERSE FROM 118 DEPTH 2')">&#9654; From North Zone (118)</button>
+        <button class="btn" onclick="send('TRAVERSE FROM 119 DEPTH 2')">&#9654; From South Zone (119)</button>
+        <button class="btn" onclick="send('TRAVERSE FROM 120 DEPTH 2')">&#9654; From East Zone (120)</button>
+    </div>
+
+    <h2>Custom Query</h2>
+    <div id="query-section">
+        <input id="query-input" type="text" placeholder="TICK 100 or NODES AT RANK 2" onkeydown="if(event.key==='Enter')sendInput()">
+    </div>
+
+    <div id="log"></div>
+
+    <div id="status-bar">
+        <span id="ws-status" class="disconnected">&#9679; Disconnected</span>
+        <span id="node-count" style="float:right">—</span>
+    </div>
+</div>
+
+<script>
+// WebSocket connection
+let ws = null;
+const WS_URL = 'ws://localhost:9100';
+let graphNodes = [];
+
+function connect() {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+        document.getElementById('ws-status').className = 'connected';
+        document.getElementById('ws-status').innerHTML = '&#9679; Connected';
+        log('Connected to daemon', 'info');
+        send('STATUS');
+        setTimeout(queryNodes, 500);
+    };
+    ws.onmessage = (e) => {
+        handleResponse(e.data);
+    };
+    ws.onclose = () => {
+        document.getElementById('ws-status').className = 'disconnected';
+        document.getElementById('ws-status').innerHTML = '&#9679; Disconnected';
+        setTimeout(connect, 3000);
+    };
+    ws.onerror = () => {
+        log('WebSocket error — is bridge.py running?', 'err');
+    };
+}
+
+function send(cmd) {
+    if (!ws || ws.readyState !== 1) { log('Not connected', 'err'); return; }
+    log('> ' + cmd, 'cmd');
+    ws.send(cmd);
+}
+
+function sendInput() {
+    const input = document.getElementById('query-input');
+    if (input.value.trim()) {
+        send(input.value.trim().toUpperCase());
+        input.value = '';
+    }
+}
+
+function handleResponse(data) {
+    const cls = data.startsWith('OK') ? 'ok' : data.startsWith('ERROR') ? 'err' : 'info';
+    log(data, cls);
+
+    // Update node count from STATUS
+    const m = data.match(/nodes=(\d+)/);
+    if (m) document.getElementById('node-count').textContent = m[1] + ' nodes';
+
+    // Parse GRAPH INFO for display
+    if (data.includes('true=')) {
+        const tm = data.match(/true=(\d+)/);
+        if (tm) document.getElementById('node-count').textContent += ' | ' + tm[1] + ' true';
+    }
+}
+
+function log(msg, cls) {
+    const el = document.getElementById('log');
+    const div = document.createElement('div');
+    div.className = cls || '';
+    div.textContent = msg;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+    // Keep last 100 lines
+    while (el.children.length > 100) el.removeChild(el.firstChild);
+}
+
+// Graph operations
+function queryNodes() {
+    send('NODES AT RANK 3');
+    send('NODES AT RANK 2');
+    send('NODES AT RANK 1');
+}
+
+function injectFault() {
+    const sensor = 100 + Math.floor(Math.random() * 18);
+    send('SET ' + sensor + ' TRUTH 0');
+    log('Injected fault at sensor ' + sensor, 'err');
+    setTimeout(() => { send('TICK 1'); setTimeout(queryNodes, 200); }, 100);
+}
+
+function healAll() {
+    for (let i = 100; i <= 117; i++) {
+        send('SET ' + i + ' TRUTH 1');
+    }
+    log('All sensors healed', 'ok');
+    setTimeout(() => { send('TICK 1'); setTimeout(queryNodes, 200); }, 200);
+}
+
+// Canvas visualization
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+    const panel = document.getElementById('graph-panel');
+    canvas.width = panel.clientWidth;
+    canvas.height = panel.clientHeight;
+    drawGraph();
+}
+window.addEventListener('resize', resizeCanvas);
+
+// Node layout for the power grid
+const nodeLayout = {};
+function buildLayout() {
+    const w = canvas.width, h = canvas.height;
+    const cx = w / 2, cy = h / 2;
+
+    // Rank 3: sensors in 3 groups of 6
+    for (let g = 0; g < 3; g++) {
+        for (let i = 0; i < 6; i++) {
+            const id = 100 + g * 6 + i;
+            const gx = cx + (g - 1) * 220;
+            const x = gx + (i - 2.5) * 35;
+            const y = h * 0.82;
+            nodeLayout[id] = { x, y, rank: 3, label: 'S' + (g * 6 + i) };
+        }
+    }
+    // Rank 2: 3 zone nodes
+    nodeLayout[118] = { x: cx - 220, y: h * 0.55, rank: 2, label: 'NORTH\nAND' };
+    nodeLayout[119] = { x: cx, y: h * 0.55, rank: 2, label: 'SOUTH\nMAJ' };
+    nodeLayout[120] = { x: cx + 220, y: h * 0.55, rank: 2, label: 'EAST\nOR' };
+    // Rank 1: grid controller
+    nodeLayout[121] = { x: cx, y: h * 0.32, rank: 1, label: 'GRID\nAND' };
+    // Rank 0: decision
+    nodeLayout[122] = { x: cx, y: h * 0.12, rank: 0, label: 'DECISION' };
+}
+
+// Edges
+const edges = [
+    // Sensors to zones
+    ...Array.from({length:6}, (_,i) => [100+i, 118]),
+    ...Array.from({length:6}, (_,i) => [106+i, 119]),
+    ...Array.from({length:6}, (_,i) => [112+i, 120]),
+    // Zones to grid
+    [118, 121], [119, 121], [120, 121],
+    // Grid to decision
+    [121, 122],
+];
+
+const rankColors = { 0: '#ff6050', 1: '#f0c040', 2: '#4080c0', 3: '#50ff80' };
+const truthColors = { 0: '#ff3030', 1: '#30ff60', 2: '#8080ff' };
+
+// Track truth states from daemon
+let truthStates = {};
+
+function drawGraph() {
+    buildLayout();
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Draw edges
+    ctx.strokeStyle = 'rgba(240,192,64,0.15)';
+    ctx.lineWidth = 1;
+    for (const [from, to] of edges) {
+        const a = nodeLayout[from], b = nodeLayout[to];
+        if (!a || !b) continue;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+    }
+
+    // Draw nodes
+    for (const [idStr, node] of Object.entries(nodeLayout)) {
+        const id = parseInt(idStr);
+        const truth = truthStates[id] ?? -1;
+        const r = node.rank <= 1 ? 24 : node.rank === 2 ? 20 : 12;
+
+        // Glow for truth state
+        if (truth >= 0) {
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, r + 6, 0, Math.PI * 2);
+            ctx.fillStyle = truth === 1 ? 'rgba(48,255,96,0.15)' : truth === 0 ? 'rgba(255,48,48,0.15)' : 'rgba(128,128,255,0.1)';
+            ctx.fill();
+        }
+
+        // Node circle
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = truth === 1 ? 'rgba(48,255,96,0.3)' : truth === 0 ? 'rgba(255,48,48,0.3)' : 'rgba(100,100,100,0.2)';
+        ctx.fill();
+        ctx.strokeStyle = rankColors[node.rank] || '#555';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#ddd';
+        ctx.font = node.rank >= 3 ? '9px Courier New' : '11px Courier New';
+        ctx.textAlign = 'center';
+        const lines = node.label.split('\n');
+        lines.forEach((line, li) => {
+            ctx.fillText(line, node.x, node.y + 4 + (li - (lines.length-1)/2) * 12);
+        });
+
+        // Truth indicator
+        if (truth >= 0) {
+            ctx.fillStyle = truthColors[truth] || '#888';
+            ctx.font = 'bold 8px Courier New';
+            ctx.fillText(truth === 1 ? 'T' : truth === 0 ? 'F' : '?', node.x, node.y - r - 4);
+        }
+    }
+
+    // Title
+    ctx.fillStyle = '#f0c040';
+    ctx.font = 'bold 18px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('DagDB — Power Grid', w/2, 30);
+    ctx.font = '12px Courier New';
+    ctx.fillStyle = '#555';
+    ctx.fillText('18 sensors → 3 zones → 1 grid → 1 decision', w/2, 48);
+}
+
+// Periodically poll truth states
+async function pollTruth() {
+    if (!ws || ws.readyState !== 1) return;
+
+    // We'll use a separate approach: send traverse from decision and parse
+    // For now, poll each key node via traverse
+    const keyNodes = [100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122];
+
+    // Quick hack: set truth via the log responses
+    // Real implementation would parse shared memory
+}
+
+// Override handleResponse to capture truth states and redraw
+const origHandle = handleResponse;
+handleResponse = function(data) {
+    origHandle(data);
+
+    // Parse NODES responses for truth states
+    // Response format from shared memory: rows in the log
+    // We need the daemon to send structured data...
+    // For now, parse TRAVERSE responses
+    if (data.includes('rows=')) {
+        // After any data command, refresh the graph
+        drawGraph();
+    }
+};
+
+// Poll status every 2 seconds
+setInterval(() => {
+    if (ws && ws.readyState === 1) {
+        // Silent status check
+    }
+}, 2000);
+
+// Start
+resizeCanvas();
+connect();
+</script>
+</body>
+</html>
