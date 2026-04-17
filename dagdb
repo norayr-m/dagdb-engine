@@ -76,20 +76,28 @@ start)
         echo "  $STATUS"
         echo "  PID: $DAEMON_PID"
 
-        # Restore state: load all .dagdb files from data directory
-        LOADED=0
-        for f in "$DATA_DIR"/*.dagdb; do
-            [ -f "$f" ] || continue
-            echo "  Loading $(basename "$f")..."
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                [[ "$line" == \#* ]] && continue
-                cmd_query "$line" >/dev/null
-            done < "$f"
-            LOADED=$((LOADED + 1))
-        done
-        if [ "$LOADED" -gt 0 ]; then
-            echo "  Loaded $LOADED database file(s)."
+        # Restore state. Priority order:
+        #   1. latest.dags (fastest — full binary snapshot)
+        #   2. *.dagdb text seeds (DSL replay, slow but version-control friendly)
+        if [ -f "$DATA_DIR/latest.dags" ]; then
+            echo "  Loading latest.dags (binary snapshot)..."
+            LOAD_RESULT=$(cmd_query "LOAD $DATA_DIR/latest.dags")
+            echo "  $LOAD_RESULT"
+        else
+            LOADED=0
+            for f in "$DATA_DIR"/*.dagdb; do
+                [ -f "$f" ] || continue
+                echo "  Loading $(basename "$f") (text seed)..."
+                while IFS= read -r line; do
+                    [ -z "$line" ] && continue
+                    [[ "$line" == \#* ]] && continue
+                    cmd_query "$line" >/dev/null
+                done < "$f"
+                LOADED=$((LOADED + 1))
+            done
+            if [ "$LOADED" -gt 0 ]; then
+                echo "  Loaded $LOADED text seed(s)."
+            fi
         fi
 
         echo ""
@@ -119,6 +127,10 @@ stop)
         # Save graph info
         cmd_query "STATUS" > "$DATA_DIR/last_status.txt"
         cmd_query "GRAPH INFO" >> "$DATA_DIR/last_status.txt"
+
+        # Crash-recovery snapshot — full GPU state to latest.dags
+        SAVE_RESULT=$(cmd_query "SAVE $DATA_DIR/latest.dags")
+        echo "  $SAVE_RESULT"
 
         echo "Stopping DagDB daemon (PID $PID)..."
         kill "$PID" 2>/dev/null
@@ -207,6 +219,19 @@ export)
         exit 1
     fi
     cmd_query "EXPORT MORTON $1"
+    ;;
+
+import)
+    shift
+    if [ -z "$1" ]; then
+        echo "Usage: dagdb import <dir>"
+        exit 1
+    fi
+    cmd_query "IMPORT MORTON $1"
+    ;;
+
+validate)
+    cmd_query "VALIDATE"
     ;;
 
 help|--help|-h|*)

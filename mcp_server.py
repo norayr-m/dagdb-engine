@@ -124,6 +124,35 @@ def dagdb_eval() -> str:
     """Evaluate the graph (tick + return root nodes)."""
     return query_daemon("EVAL")
 
+@mcp.tool()
+def dagdb_save(path: str) -> str:
+    """Snapshot the full graph state (rank, truth, LUT6, edges) to a binary .dags file.
+    Uses direct GPU-buffer write; fast at scale (~10 GB/s on Apple Silicon)."""
+    return query_daemon(f"SAVE {path}")
+
+@mcp.tool()
+def dagdb_load(path: str) -> str:
+    """Restore a previously saved .dags snapshot. Validates DAG invariants after memcpy.
+    Errors if grid or node count mismatches the running daemon."""
+    return query_daemon(f"LOAD {path}")
+
+@mcp.tool()
+def dagdb_export_morton(dir: str) -> str:
+    """Export 6 Morton-ordered raw buffer files (rank, truth, nodeType, lut_low, lut_high, neighbors)
+    into the given directory for bulk interop with external tools."""
+    return query_daemon(f"EXPORT MORTON {dir}")
+
+@mcp.tool()
+def dagdb_import_morton(dir: str) -> str:
+    """Inverse of export — read 6 per-buffer files from the directory back into the engine."""
+    return query_daemon(f"IMPORT MORTON {dir}")
+
+@mcp.tool()
+def dagdb_validate() -> str:
+    """Verify DAG invariants on the live graph: rank ordering, bounds, no self-loops, no duplicates.
+    Returns 'OK VALIDATE' on success or 'FAIL VALIDATE <first violation>' on failure."""
+    return query_daemon("VALIDATE")
+
 if __name__ == "__main__":
     # Verify daemon is running
     status = query_daemon("STATUS")

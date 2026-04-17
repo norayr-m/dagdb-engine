@@ -26,6 +26,8 @@ enum DSLCommand {
     case save(path: String)
     case load(path: String)
     case exportMorton(dir: String)
+    case importMorton(dir: String)
+    case validateGraph
     case unknown(String)
 }
 
@@ -87,6 +89,14 @@ struct DSLParser {
             // EXPORT MORTON <dir>
             guard rawTokens.count >= 3, tokens[1] == "MORTON" else { return .unknown(input) }
             return .exportMorton(dir: rawTokens[2])
+
+        case "IMPORT":
+            // IMPORT MORTON <dir>
+            guard rawTokens.count >= 3, tokens[1] == "MORTON" else { return .unknown(input) }
+            return .importMorton(dir: rawTokens[2])
+
+        case "VALIDATE":
+            return .validateGraph
 
         case "STATUS":
             return .status

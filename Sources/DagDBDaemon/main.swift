@@ -55,6 +55,15 @@ do {
 }
 print("  Engine ready. GPU: \(engine.device.name)")
 
+// Zero the neighbor table so DagDB starts with no DAG edges. HexGrid initializes
+// neighbors to the spatial hex adjacency (useful for Savanna-style diffusion);
+// DagDB only uses CONNECT to populate edges, so we need a clean slate here.
+// Kernel tolerates -1 slots (dagdb.metal:46,76).
+do {
+    let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: nodeCount * 6)
+    for i in 0..<(nodeCount * 6) { nbPtr[i] = -1 }
+}
+
 // ── Shared memory for results ──
 // Layout: [4 bytes: row count] [4 bytes: row size] [data rows...]
 // Each row: [4 bytes: node_id] [1 byte: rank] [1 byte: truth] [1 byte: type] [1 byte: pad]
@@ -256,6 +265,8 @@ func handleCommand(_ input: String) -> String {
             let r = try DagDBSnapshot.load(
                 engine: engine,
                 nodeCount: nodeCount,
+                gridW: width,
+                gridH: height,
                 path: path
             )
             tickCount = r.fileTicks
@@ -274,6 +285,25 @@ func handleCommand(_ input: String) -> String {
             return "OK EXPORT bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms dir=\(dir)"
         } catch {
             return "ERROR export: \(error)"
+        }
+
+    case .importMorton(let dir):
+        do {
+            let r = try DagDBSnapshot.importMorton(
+                engine: engine,
+                nodeCount: nodeCount,
+                dir: dir
+            )
+            return "OK IMPORT bytes=\(r.bytesRead) elapsed=\(String(format: "%.1f", r.elapsedMs))ms dir=\(dir)"
+        } catch {
+            return "ERROR import: \(error)"
+        }
+
+    case .validateGraph:
+        if let violation = DagDBSnapshot.validate(engine: engine, nodeCount: nodeCount) {
+            return "FAIL VALIDATE \(violation)"
+        } else {
+            return "OK VALIDATE — all edges satisfy rank ordering, bounds, no self-loops, no duplicates"
         }
 
     case .unknown(let raw):
