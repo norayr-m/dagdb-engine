@@ -194,6 +194,10 @@ SELECT * FROM dagdb_ascii();                          -- ASCII art schema
 SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ```
 
+**`dagdb_hex(node, depth)`** — the hex DAG as a 6-column table:
+
+![dagdb_hex in DBeaver](docs/dagdb_hex_dbeaver.png)
+
 **`dagdb_show()`** — the star of the show. Full ASCII visualization with real node IDs, truth values, LUT gate types, edge connectivity, fault list, zone health ratios, and aggregation logic. All live from the GPU daemon:
 
 ```
