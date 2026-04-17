@@ -46,7 +46,7 @@ def _run_kokoro(voice: str, text: str, out_path: str, speed: float = 1.0) -> boo
     try:
         subprocess.run(
             ["kokoro", "-m", voice, "-s", str(speed), "-t", text, "-o", out_path],
-            check=True, capture_output=True, timeout=60
+            check=True, capture_output=True, timeout=300
         )
         return True
     except Exception as e:

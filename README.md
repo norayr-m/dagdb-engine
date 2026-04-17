@@ -2,11 +2,127 @@
 
 6-bounded ranked DAG database engine. Swift + Metal GPU compute on Apple Silicon.
 
-[→ DagDB Overview (24 slides)](https://norayr-m.github.io/DagDB/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/DagDB/sql-architecture.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/DagDB/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/DagDB/podcast.html) | [→ Grid Demo](https://norayr-m.github.io/DagDB/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/DagDB/citydrt.html)
+[→ DagDB Overview (24 slides)](https://norayr-m.github.io/DagDB/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/DagDB/sql-architecture.html) | [→ **Bio-Twin Deck (12 slides)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/DagDB/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/DagDB/podcast.html) | [→ **Bio-Twin Podcast (6 min)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | [→ Grid Demo](https://norayr-m.github.io/DagDB/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/DagDB/citydrt.html) | [→ **Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html)
 
 ## What It Does
 
 Every node connects to at most **6 directed edges**. Each node has a programmable **LUT6** (64-bit lookup table) that can implement any Boolean function of its 6 inputs. Nodes are organized in **ranks** (leaves to root) and evaluated leaves-up in parallel on the GPU.
+
+---
+
+## 🔬 Experiments & Validation
+
+> Everything below runs on a single Apple M5 Max laptop. No controlled benchmark, no peer review. All numbers reproducible from the repo.
+
+**Resources for this section:**
+
+| | | |
+|--|--|--|
+| 🎞️ [**Bio-Twin Slide Deck**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | 🎙️ [**Podcast (6m 20s)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | 🧪 [**Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html) |
+
+---
+
+### Experiment 1 — Bio-digital liver (acetaminophen overdose)
+
+A 711-node ranked DAG models hepatic architecture: **600 hepatocytes** organised into **100 lobules** across **3 zones** (periportal / midzonal / centrilobular), feeding **3 liver functions** and one organ-health root.
+
+Systemic condition nodes (`toxin_APAP`, `hypoxia`, `inflammation`) sit above the cells and are *shared* across all subscribing hepatocytes — this is the core "properties-as-nodes" pattern. Zone specificity lives in the edge topology, not in cell code.
+
+<table align="center"><tr>
+<td align="center"><img src="examples/liver/liver_architecture.png" width="320" alt="architecture"/><br/><sub><b>Fig 1.</b> full ranked DAG, 6 ranks</sub></td>
+<td align="center"><img src="examples/liver/liver_lobule_zoom.png" width="320" alt="lobule zoom"/><br/><sub><b>Fig 2.</b> shared subscription pattern — one node, many cells</sub></td>
+<td align="center"><img src="examples/liver/liver_apap_damage.png" width="320" alt="APAP damage"/><br/><sub><b>Fig 3.</b> zone-3-specific damage from one LUT flip</sub></td>
+</tr></table>
+
+#### Measured cascade
+
+| State                          | Hepatocytes firing | Lobules | Liver root       | Note |
+|--------------------------------|-------------------:|--------:|:-----------------|:-----|
+| Healthy baseline               | 600 / 600          | 100/100 | 🟢 **ALIVE**     | all systemic signals off |
+| + APAP only                    | **400 / 600**      | 67/100  | 🟢 **ALIVE**     | only zone 3 dies; OR-gate keeps organ alive at 33 % loss |
+| + APAP + hypoxia               | 0 / 600            | 0/100   | 🔴 **FAILED**    | hypoxia hits every cell — universal subscription |
+| + APAP + hypoxia + inflammation| 0 / 600            | 0/100   | 🔴 **FAILED**    | fulminant failure, 3/3 systemic |
+| NAC antidote applied           | 600 / 600          | 100/100 | 🟢 **ALIVE**     | full recovery in 5 ticks (~5 ms) |
+
+**The key frame is row 2:** one LUT flip on `toxin_APAP` → exactly 200 zone-3 cells die in ~7 ms → zones 1 & 2 untouched → organ still functional thanks to the OR-gate at zone-3 (graceful degradation by topology, not by heuristic).
+
+```
+Write cost: O(1)   (one LUT byte flipped)
+State change: O(N) (200 hepatocyte truth bytes updated)
+Wall-clock:  ~7 ms propagation, ~15 ms full evaluation
+```
+
+---
+
+### Experiment 2 — SerDe at 10 M nodes
+
+Full-state binary snapshot (`.dags` format, 32-byte header + Morton-ordered body) round-tripped through a 10.2 M-node graph.
+
+| Operation                    | Time       | Size                     |
+|------------------------------|-----------:|:-------------------------|
+| Generate ranked tree (Python + numpy) | ~90 ms | 358 MB raw        |
+| **SAVE** raw                 | **28.5 ms**| 358 MB (12.6 GB/s)       |
+| **SAVE** zlib-compressed     | 1.32 s     | **14.4 MB (4 % of raw)** |
+| **LOAD** w/ byte validation  | 6.5 s      | 60 M edge slots scanned  |
+| **TICK** over 10 M nodes     | **18.6 ms**| ~540 M node-updates/s    |
+| **EXPORT** 6 Morton buffers  | 49.3 ms    | interop with external tools |
+
+Compression hits 4 % because sparse neighbour tables are dominated by `-1` padding; zlib collapses long runs to almost nothing.
+
+---
+
+### Experiment 3 — DAG invariant enforcement
+
+The `CONNECT` handler runs **four guards** before writing any edge (`Sources/DagDBDaemon/main.swift:196`):
+
+1. Bounds check (both endpoints within `nodeCount`)
+2. Self-loop rejection (`src == dst`)
+3. **Acyclicity**: `rank(src) > rank(dst)` — the DAG property
+4. Duplicate-edge rejection
+
+The same invariants are checked byte-level on every `LOAD`, *before* the memcpy into live GPU buffers — so a malformed `.dags` file cannot corrupt a running graph. The `VALIDATE` DSL verb runs the full scan against the live engine in O(N).
+
+---
+
+### Experiment 4 — MCP integration
+
+Four MCP servers bridged through `mcpo` (MCP → OpenAPI) at `http://localhost:8787/`:
+
+| Server      | Tools | Purpose                                         |
+|-------------|------:|-------------------------------------------------|
+| **dagdb**   |    17 | daemon status · graph queries · SerDe · VALIDATE |
+| **dialogue**|     4 | Kokoro two-voice TTS (podcast generation)       |
+| **image**   |     3 | FLUX image generation via `mflux`               |
+| **diagram** |     4 | Graphviz-based structural diagrams              |
+
+A `launchd` agent (`com.dagdb.mcpo`) keeps the bridge running across reboots. The live explorer in Experiment 1 is a client of this bridge.
+
+---
+
+### Experiment 5 — Test coverage
+
+```
+34 / 34 tests pass
+  27 core   — LUT6 presets, state, engine, graph, evaluation, delta codec
+   7 SerDe  — round-trip, compressed round-trip, magic-check, grid-mismatch,
+              validator: rank violation / self-loop / duplicate
+```
+
+---
+
+### ⚠️ What has NOT been validated
+
+Honest limits, spelled out:
+
+- **Grid ≥ 4096** (16.7 M slots) hangs at daemon init — Metal or POSIX shm sizing limit, root cause unknown.
+- **TICK + SAVE concurrency**: single-threaded socket server makes interleaving impossible today; no mutex if the server model changes.
+- **Motif / subgraph-match operators** — the query primitive that would genuinely distinguish DagDB from property-bag graph DBs. Not yet built.
+- **Time-travel replay**: `DagDBDelta` codec exists (truth-state time-series with keyframe + XOR-delta compression) but is not wired into the daemon as `RECORD` / `REPLAY` DSL verbs yet.
+- **Property-bag ingestion** from Neo4j-shaped input — no tooling.
+- **LOAD validator** is sequential Swift. 6.5 s at 10 M nodes. A GPU-parallel version is the next honest performance win.
+
+Not lies of omission. Seventeen holes were audited this session; nine closed, three partially addressed, five remain genuine future work.
+
 
 ## Architecture
 

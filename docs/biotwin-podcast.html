@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DagDB Bio-Twin — Podcast</title>
+<style>
+  :root {
+    --bg: #0b0a08;
+    --bg-2: #151311;
+    --fg: #f5e9c9;
+    --gold: #d4af37;
+    --gold-soft: #a8863a;
+    --muted: #8b7d5d;
+    --border: #3a3225;
+    --green: #5fb36b;
+    --red: #c85454;
+    --mono: "SF Mono", "Menlo", "Courier New", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "SF Pro Display", Georgia, serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 48px 48px 24px 48px;
+    border-bottom: 1px solid var(--border);
+    background:
+      radial-gradient(ellipse 60% 80% at 30% 0%, rgba(212,175,55,0.08), transparent 60%),
+      var(--bg);
+  }
+  .crest { font-size: 18px; color: var(--gold); letter-spacing: 4px; margin-bottom: 16px; }
+  h1 {
+    font-size: 48px; font-weight: 300;
+    color: var(--gold); letter-spacing: -0.02em;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 20px; color: var(--muted);
+    font-style: italic;
+  }
+  .meta {
+    margin-top: 24px;
+    display: flex; gap: 20px; flex-wrap: wrap;
+    font-size: 13px; color: var(--muted);
+    font-family: var(--mono);
+  }
+  .meta span::before {
+    content: "◆ "; color: var(--gold); margin-right: 4px;
+  }
+  .container {
+    max-width: 1200px; margin: 0 auto;
+    padding: 40px 48px;
+    display: grid; grid-template-columns: 1fr 420px;
+    gap: 48px;
+  }
+  .player-panel {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    position: sticky; top: 24px;
+    height: fit-content;
+  }
+  audio {
+    width: 100%; margin-bottom: 24px;
+    filter: hue-rotate(30deg) sepia(0.3);
+  }
+  .visual {
+    min-height: 320px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    transition: opacity 0.4s ease-out;
+  }
+  .visual img {
+    max-width: 100%; max-height: 320px;
+    object-fit: contain;
+    border-radius: 4px;
+  }
+  .chapter-label {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--gold-soft); text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-top: 12px;
+    text-align: center;
+  }
+  .transcript {
+    font-size: 17px; line-height: 1.7;
+  }
+  .transcript .speaker {
+    display: inline-block;
+    font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase;
+    padding: 2px 10px; border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--gold-soft);
+    margin-right: 8px; vertical-align: middle;
+  }
+  .transcript .segment {
+    padding: 14px 18px; margin-bottom: 10px;
+    border-left: 2px solid transparent;
+    border-radius: 0 8px 8px 0;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .transcript .segment.emma {
+    background: linear-gradient(90deg, rgba(212,175,55,0.04), transparent 60%);
+    border-left-color: var(--gold-soft);
+  }
+  .transcript .segment.george {
+    background: linear-gradient(90deg, rgba(212,175,55,0.02), transparent 60%);
+    border-left-color: var(--border);
+  }
+  .transcript .segment:hover {
+    background: var(--bg-2);
+    border-left-color: var(--gold);
+  }
+  .transcript .segment.active {
+    background: var(--bg-2);
+    border-left-color: var(--gold);
+    border-left-width: 3px;
+    padding-left: 17px;
+  }
+  .transcript .segment.emma .speaker { color: var(--gold); border-color: var(--gold); }
+  .transcript .segment.george .speaker { color: var(--fg); }
+  .transcript .text { color: var(--fg); display: inline; }
+  .nav-links {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .nav-links a {
+    color: var(--gold); text-decoration: none;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: var(--mono);
+    transition: all 0.15s;
+  }
+  .nav-links a:hover {
+    border-color: var(--gold);
+    background: rgba(212,175,55,0.08);
+  }
+  footer {
+    padding: 40px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    font-family: var(--mono);
+  }
+  @media (max-width: 900px) {
+    .container { grid-template-columns: 1fr; padding: 24px; }
+    .player-panel { position: relative; top: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="crest">⬢ DAGDB · PODCAST</div>
+  <h1>Inside the Bio-Digital Liver</h1>
+  <p class="subtitle">George interviews Emma on the liver pressure-test — properties as nodes, zone-specific cascades, and 10 M-node benchmarks.</p>
+  <div class="meta">
+    <span>6m 20s</span>
+    <span>36 segments</span>
+    <span>Voices: Kokoro bm_george · bf_emma</span>
+    <span>Recorded 2026-04-17</span>
+  </div>
+</header>
+
+<div class="container">
+
+  <section class="transcript" id="transcript">
+    <!-- Populated by JS -->
+  </section>
+
+  <aside class="player-panel">
+    <audio id="audio" controls preload="auto">
+      <source src="dagdb_biotwin_podcast.mp3" type="audio/mpeg">
+      Your browser does not support audio playback.
+    </audio>
+
+    <div class="visual" id="visual">
+      <img id="visualImg" src="../examples/liver/liver_architecture.png" alt="Liver architecture">
+    </div>
+    <div class="chapter-label" id="chapterLabel">ranked DAG — 711 nodes, 6 ranks</div>
+
+    <div class="nav-links">
+      <a href="biotwin-slides.html">→ slide deck</a>
+      <a href="../examples/liver/explorer.html">→ live explorer</a>
+      <a href="../examples/liver/README.md">→ liver README</a>
+      <a href="https://github.com/norayr-m/dagdb-engine">→ GitHub</a>
+    </div>
+  </aside>
+
+</div>
+
+<footer>
+  Amateur engineering project · numbers from a single M5 Max laptop · no peer review ·
+  <a href="https://github.com/norayr-m/dagdb-engine" style="color: var(--gold-soft);">norayr-m/dagdb-engine</a>
+</footer>
+
+<script>
+// Chapter timestamps (start time in seconds) estimated from 36 segments across 380s.
+// Average ~10.5s per segment at Kokoro 0.95 speed.
+// Visual chapters keyed to content shifts.
+const SEGMENTS = [
+  { t:   0.0, speaker: "george", text: "Welcome back. Today we're going inside DagDB — a six-bounded ranked DAG database engine that Norayr Matevosyan has just used to model the human liver. I'm joined as always by our expert, Emma.", img: "../examples/liver/liver_architecture.png", chapter: "DagDB Overview" },
+  { t:  12.5, speaker: "emma",   text: "Thank you, George. Yes — we ran an end-to-end experiment this week. The question was simple: can a graph database whose every node is limited to at most six edges actually represent something as complex as a liver, and do so in a way that's both anatomically honest and computationally fast?", img: "../examples/liver/liver_architecture.png", chapter: "The question" },
+  { t:  31.0, speaker: "george", text: "And the answer?" },
+  { t:  33.5, speaker: "emma",   text: "The answer is yes — because liver physiology already has the six-bound baked in. Hepatocytes sit between at most six neighbours in the tissue. Six hepatocytes aggregate into a lobule. Three zones tile into an organ. DagDB didn't have to force anything. The constraint fits.", chapter: "Why the liver fits" },
+  { t:  50.0, speaker: "george", text: "Tell me about the experiment itself." },
+  { t:  52.5, speaker: "emma",   text: "We built a seven-hundred-and-eleven-node ranked DAG. Six hundred hepatocytes, one hundred lobules, three zones — periportal, midzonal, and centrilobular — three functional outputs for detoxification, bile, and glucose regulation, and one root node representing overall liver health.", img: "../examples/liver/liver_architecture.png", chapter: "Structure: 711 nodes" },
+  { t:  72.0, speaker: "george", text: "Six ranks deep." },
+  { t:  74.0, speaker: "emma",   text: "Six ranks. And the key architectural trick: we placed three systemic condition nodes — acetaminophen toxicity, hypoxia, and inflammation — above the hepatocytes in the rank hierarchy. Each hepatocyte subscribes to the signals that biology says are relevant for its zone. Zone three cells subscribe to all three. Zones one and two don't know about acetaminophen — they have no edge from that node.", img: "../examples/liver/liver_lobule_zoom.png", chapter: "Subscription topology" },
+  { t:  99.0, speaker: "george", text: "So the zone-specificity of damage lives in the edge pattern, not the cell." },
+  { t: 103.0, speaker: "emma",   text: "Exactly. No per-cell code, no if-statements about zone identity. The topology is the semantics. When we flip the acetaminophen node on, only zone three cells respond — because only they have the incoming edge.", img: "../examples/liver/liver_lobule_zoom.png" },
+  { t: 119.0, speaker: "george", text: "How many cells died?" },
+  { t: 121.0, speaker: "emma",   text: "Two hundred. Out of six hundred. In exactly seven milliseconds of graph evaluation. One single LUT flip propagated to two hundred subscribers in the next tick.", img: "../examples/liver/liver_apap_damage.png", chapter: "APAP cascade" },
+  { t: 134.0, speaker: "george", text: "And the organ itself?" },
+  { t: 136.0, speaker: "emma",   text: "The organ survived. This is the genuinely elegant part. Zone three uses an OR gate — as long as any of its representative lobules survives, the zone still fires. And detoxification is an AND across three zones, so zones one and two keep detox alive. The liver tolerates thirty-three percent cell loss — which, clinically, is roughly what real livers can withstand.", img: "../examples/liver/liver_apap_damage.png" },
+  { t: 158.0, speaker: "george", text: "Graceful degradation." },
+  { t: 160.0, speaker: "emma",   text: "Graceful degradation, by topology. Not a heuristic, not an exception case — it emerges from the gate choice at each rank." },
+  { t: 170.0, speaker: "george", text: "What breaks it?" },
+  { t: 172.0, speaker: "emma",   text: "Stacking systemic signals. Hypoxia and inflammation are subscribed to by every hepatocyte, not just zone three. When you add hypoxia on top of the acetaminophen, all six hundred cells die, all one hundred lobules fail, all three zones collapse, and the liver root goes from ALIVE to FAILED. Again — seven milliseconds of evaluation.", img: "../examples/liver/liver_apap_damage.png", chapter: "Fulminant failure" },
+  { t: 196.0, speaker: "george", text: "Recovery?" },
+  { t: 198.0, speaker: "emma",   text: "Flip all three systemic nodes back to off. Five ticks. Complete restoration. Which is, of course, biologically unrealistic — dead hepatocytes don't resurrect. But it's architecturally honest: the graph has no hysteresis, no memory of damage beyond what's in the cell's own state." },
+  { t: 218.0, speaker: "george", text: "Let's talk performance. The session also benchmarked DagDB at scale.", chapter: "Performance at 10 M nodes" },
+  { t: 222.0, speaker: "emma",   text: "Yes. Separate experiment, same engine. Ten million nodes. The snapshot format — we call it dot-dags — stores every GPU buffer in Morton order. Three-hundred-fifty-eight megabytes of raw state. With zlib compression it drops to fourteen point four megabytes — four percent of the raw size." },
+  { t: 243.0, speaker: "george", text: "Four percent. That's extreme." },
+  { t: 245.0, speaker: "emma",   text: "It's because the neighbour table is mostly negative-one padding. Every node has six slots for edges, and most real graphs don't fill all six. Those runs of minus-one bytes compress to almost nothing." },
+  { t: 259.0, speaker: "george", text: "And evaluation?" },
+  { t: 261.0, speaker: "emma",   text: "Eighteen point six milliseconds for one tick over ten million nodes. That's roughly five hundred and forty million node updates per second on a single Apple M5 Max laptop. Loading the compressed snapshot takes longer — about six and a half seconds — because we added a byte-level validator that runs before we copy anything into live GPU memory. A malformed snapshot can no longer corrupt a running graph." },
+  { t: 289.0, speaker: "george", text: "The validator checks what, exactly?", chapter: "DAG invariant validation" },
+  { t: 291.0, speaker: "emma",   text: "Four invariants. Rank ordering — the DAG property — that the source of every edge has higher rank than its target. No self-loops. No duplicate edges in the same neighbour table. No out-of-range node IDs. All four are checked against the file's bytes directly before any memcpy happens." },
+  { t: 315.0, speaker: "george", text: "What isn't validated? What hasn't been proven?", chapter: "Honest caveats" },
+  { t: 318.0, speaker: "emma",   text: "Several things. We haven't built motif or subgraph-match operators yet — those are the query primitives that would really distinguish DagDB from a Neo4j-style property-bag graph. Time-travel replay exists as a codec but hasn't been wired into the daemon as a verb. And there's a daemon boot hang above sixteen million nodes — a sizing limit we haven't diagnosed." },
+  { t: 340.0, speaker: "george", text: "Honest list." },
+  { t: 342.0, speaker: "emma",   text: "It's an amateur engineering project. Numbers from one laptop, no peer review. The experiments are reproducible from the repository, and the open holes are documented in the repo as well." },
+  { t: 354.0, speaker: "george", text: "Last question. What did this experiment actually prove?", chapter: "Conclusion" },
+  { t: 358.0, speaker: "emma",   text: "That the six-bound isn't a limitation. It's a structural invariant that happens to match real biological hierarchy. That properties-as-nodes turns population-level state change into a constant-time write. And that a ranked DAG evaluator on an Apple GPU can run what might reasonably be called a bio-digital twin in milliseconds — not as a marketing claim, but as a measured result." },
+  { t: 372.0, speaker: "george", text: "Thank you, Emma. For the bio-twin experiment itself, the code is at github.com/norayr-m/slash-dagdb-engine. Listeners can also try the interactive explorer — the URL is in the show notes." },
+  { t: 378.0, speaker: "emma",   text: "Thank you, George." },
+];
+
+// Render transcript
+const transcriptEl = document.getElementById("transcript");
+SEGMENTS.forEach((seg, i) => {
+  const div = document.createElement("div");
+  div.className = `segment ${seg.speaker}`;
+  div.dataset.i = i;
+  div.innerHTML = `<span class="speaker">${seg.speaker}</span><span class="text">${seg.text}</span>`;
+  div.onclick = () => {
+    const audio = document.getElementById("audio");
+    audio.currentTime = seg.t;
+    audio.play();
+  };
+  transcriptEl.appendChild(div);
+});
+
+// Sync transcript highlight + visual to audio time
+const audio = document.getElementById("audio");
+const visualImg = document.getElementById("visualImg");
+const chapterLabel = document.getElementById("chapterLabel");
+
+let lastActiveImg = "../examples/liver/liver_architecture.png";
+let lastChapter = "ranked DAG — 711 nodes, 6 ranks";
+
+function syncTo(t) {
+  // Find the current segment
+  let current = -1;
+  for (let i = 0; i < SEGMENTS.length; i++) {
+    if (SEGMENTS[i].t <= t) current = i;
+    else break;
+  }
+  if (current < 0) return;
+
+  // Highlight
+  document.querySelectorAll(".segment.active").forEach(el => el.classList.remove("active"));
+  const el = document.querySelector(`.segment[data-i="${current}"]`);
+  if (el) {
+    el.classList.add("active");
+    // Scroll into view only if not in viewport
+    const rect = el.getBoundingClientRect();
+    if (rect.top < 80 || rect.bottom > window.innerHeight - 80) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  // Walk back to find the last segment with an image
+  for (let i = current; i >= 0; i--) {
+    if (SEGMENTS[i].img) {
+      if (SEGMENTS[i].img !== lastActiveImg) {
+        lastActiveImg = SEGMENTS[i].img;
+        visualImg.style.opacity = 0;
+        setTimeout(() => {
+          visualImg.src = lastActiveImg;
+          visualImg.style.opacity = 1;
+        }, 300);
+      }
+      break;
+    }
+  }
+  // Chapter label — last segment with a chapter name
+  for (let i = current; i >= 0; i--) {
+    if (SEGMENTS[i].chapter) {
+      if (SEGMENTS[i].chapter !== lastChapter) {
+        lastChapter = SEGMENTS[i].chapter;
+        chapterLabel.textContent = lastChapter;
+      }
+      break;
+    }
+  }
+}
+
+audio.addEventListener("timeupdate", () => syncTo(audio.currentTime));
+visualImg.style.transition = "opacity 0.4s ease-out";
+</script>
+</body>
+</html>

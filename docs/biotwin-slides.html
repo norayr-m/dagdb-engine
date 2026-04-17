@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DagDB — Bio-Digital Liver Validation</title>
+<style>
+  :root {
+    --bg: #0b0a08;
+    --bg-2: #151311;
+    --fg: #f5e9c9;
+    --gold: #d4af37;
+    --gold-soft: #a8863a;
+    --muted: #8b7d5d;
+    --border: #3a3225;
+    --green: #5fb36b;
+    --red: #c85454;
+    --mono: "SF Mono", "Menlo", "Courier New", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "SF Pro Display", Georgia, serif;
+    height: 100vh; overflow: hidden;
+  }
+  .deck {
+    display: grid; grid-template-rows: 1fr auto;
+    height: 100vh;
+  }
+  .stage {
+    display: flex; align-items: center; justify-content: center;
+    padding: 60px 80px;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 40%, rgba(212,175,55,0.08), transparent 60%),
+      var(--bg);
+  }
+  .slide {
+    max-width: 1200px; width: 100%;
+    display: none;
+    animation: fade 0.4s ease-out;
+  }
+  .slide.active { display: block; }
+  @keyframes fade {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  h1 {
+    font-size: 56px; font-weight: 300;
+    color: var(--gold); letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+  h2 {
+    font-size: 36px; font-weight: 400;
+    color: var(--gold); letter-spacing: -0.01em;
+    margin-bottom: 20px;
+  }
+  h3 {
+    font-size: 14px; font-weight: 500;
+    color: var(--gold-soft); text-transform: uppercase;
+    letter-spacing: 0.2em;
+    margin-bottom: 20px;
+  }
+  p { font-size: 20px; line-height: 1.6; margin-bottom: 16px; color: var(--fg); }
+  .muted { color: var(--muted); font-size: 16px; }
+  .lead {
+    font-size: 24px; line-height: 1.6;
+    color: var(--fg); margin-bottom: 24px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 4px 12px; border: 1px solid var(--gold-soft);
+    border-radius: 999px;
+    font-size: 12px; color: var(--gold);
+    font-family: var(--mono); margin-right: 8px;
+    text-transform: uppercase; letter-spacing: 0.1em;
+  }
+  code {
+    background: var(--bg-2); border: 1px solid var(--border);
+    padding: 2px 8px; border-radius: 4px;
+    font-family: var(--mono); font-size: 16px;
+    color: var(--gold);
+  }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin-top: 20px; font-size: 18px;
+  }
+  th, td {
+    padding: 12px 16px; text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-weight: 500; color: var(--gold-soft);
+    font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  td.alive { color: var(--green); }
+  td.dead  { color: var(--red); }
+  td.num   { font-family: var(--mono); text-align: right; }
+  .centered { text-align: center; }
+  .grid2 {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 40px; align-items: center;
+  }
+  .big-number {
+    font-size: 72px; font-weight: 200;
+    color: var(--gold);
+    font-family: var(--mono);
+    line-height: 1;
+  }
+  .big-number .unit {
+    font-size: 20px; color: var(--muted);
+  }
+  .img-wrap {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+  }
+  .img-wrap img { max-width: 100%; height: auto; border-radius: 6px; }
+  .img-wrap .cap {
+    margin-top: 8px; color: var(--muted);
+    font-size: 13px; font-family: var(--mono);
+  }
+  .quote {
+    border-left: 3px solid var(--gold);
+    padding-left: 24px; margin: 24px 0;
+    font-style: italic; color: var(--fg);
+    font-size: 22px; line-height: 1.5;
+  }
+  .nav {
+    background: var(--bg-2);
+    border-top: 1px solid var(--border);
+    padding: 16px 40px;
+    display: flex; align-items: center; gap: 20px;
+    font-family: var(--mono); font-size: 13px;
+  }
+  .nav-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--fg); padding: 6px 14px; border-radius: 4px;
+    cursor: pointer; font-family: var(--mono);
+    transition: all 0.15s;
+  }
+  .nav-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .progress {
+    flex: 1; height: 2px; background: var(--border);
+    border-radius: 2px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--gold);
+    transition: width 0.3s ease-out;
+  }
+  .counter { color: var(--muted); }
+  .crest { font-size: 18px; color: var(--gold); letter-spacing: 4px; }
+  ul { list-style: none; padding: 0; margin-top: 16px; }
+  ul li {
+    padding: 6px 0 6px 24px; position: relative;
+    font-size: 18px; color: var(--fg);
+  }
+  ul li::before {
+    content: "◆"; color: var(--gold);
+    position: absolute; left: 0; top: 6px;
+    font-size: 12px;
+  }
+  .footer-note {
+    position: fixed; bottom: 80px; right: 40px;
+    color: var(--muted); font-size: 11px;
+    font-family: var(--mono); letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="stage">
+
+    <!-- Slide 1: Title -->
+    <section class="slide active">
+      <div class="centered">
+        <div class="crest">⬢ DAGDB</div>
+        <h1 style="font-size: 72px; margin-top: 40px;">Bio-Digital Liver</h1>
+        <p class="lead" style="margin-top: 20px; max-width: 800px; margin-left: auto; margin-right: auto;">
+          Pressure-testing a 6-bounded ranked DAG on real physiology —
+          properties as nodes, zone-specific cascades, graceful degradation.
+        </p>
+        <p class="muted" style="margin-top: 60px;">
+          A scientific tool for a scientific purpose.
+        </p>
+      </div>
+    </section>
+
+    <!-- Slide 2: The Three Claims -->
+    <section class="slide">
+      <h3>Architecture under test</h3>
+      <h2>Three claims DagDB makes</h2>
+      <div style="margin-top: 40px;">
+        <div style="padding: 20px; border-left: 3px solid var(--gold); margin-bottom: 20px;">
+          <span class="pill">1</span>
+          <span style="font-size: 22px; color: var(--gold);">≤ 6-edge bound</span>
+          <p class="muted" style="margin-top: 6px;">Every node has at most 6 incoming edges. Forces hierarchical trees over fan-out stars.</p>
+        </div>
+        <div style="padding: 20px; border-left: 3px solid var(--gold); margin-bottom: 20px;">
+          <span class="pill">2</span>
+          <span style="font-size: 22px; color: var(--gold);">Ranked DAG</span>
+          <p class="muted" style="margin-top: 6px;">Nodes layered by rank. Edges flow leaves → root, enforced by the daemon at CONNECT time.</p>
+        </div>
+        <div style="padding: 20px; border-left: 3px solid var(--gold);">
+          <span class="pill">3</span>
+          <span style="font-size: 22px; color: var(--gold);">Properties as shared nodes</span>
+          <p class="muted" style="margin-top: 6px;">A property value is a node, not a column. Many entities subscribe; one LUT flip drives population-level change.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 3: Why liver? -->
+    <section class="slide">
+      <h3>Why this domain</h3>
+      <h2>The liver already is a 6-bounded ranked DAG</h2>
+      <div class="grid2" style="margin-top: 30px;">
+        <div>
+          <p>Hepatic microarchitecture isn't abstract. Cells touch at most
+          6 neighbours. Lobules tile into zones. Zones aggregate into
+          functions. Functions feed into organ health.</p>
+          <p class="muted">The constraint DagDB imposes on graphs is the
+          constraint biology already imposes on tissue.</p>
+          <blockquote class="quote">
+            Chess with the galaxy is unwinnable.<br>
+            Chess with a champion is exactly what DagDB is shaped for.
+          </blockquote>
+        </div>
+        <div class="img-wrap">
+          <img src="../examples/liver/liver_architecture.png" alt="Liver DAG architecture">
+          <div class="cap">ranked DAG — 711 nodes, 6 ranks, leaves → root</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 4: Structure -->
+    <section class="slide">
+      <h3>Model</h3>
+      <h2>711 nodes across 6 ranks</h2>
+      <table>
+        <thead>
+          <tr><th>Rank</th><th>Count</th><th>Role</th><th>Gate</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>5</td><td class="num">3</td><td>systemic conditions (shared)</td><td><code>CONST0/1</code></td></tr>
+          <tr><td>4</td><td class="num">600</td><td>hepatocytes (parenchymal)</td><td><code>NOR6</code></td></tr>
+          <tr><td>3</td><td class="num">100</td><td>lobules</td><td><code>MAJ6</code></td></tr>
+          <tr><td>2</td><td class="num">3</td><td>zones (periportal / midzonal / centrilobular)</td><td><code>AND6 / MAJ6 / OR6</code></td></tr>
+          <tr><td>1</td><td class="num">3</td><td>liver functions (detox / bile / glucose)</td><td><code>AND3 / MAJ3 / AND3</code></td></tr>
+          <tr><td>0</td><td class="num">1</td><td>liver health root</td><td><code>AND3</code></td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top: 24px;" class="muted">
+        Zone-specificity encoded in the subscription pattern: zone 3 cells have an incoming edge from
+        <code>toxin_APAP</code>, zones 1–2 don't. The edge topology IS the metabolism map.
+      </p>
+    </section>
+
+    <!-- Slide 5: Properties as nodes zoom -->
+    <section class="slide">
+      <h3>The subscription pattern</h3>
+      <h2>One toxin node · 200 subscribers</h2>
+      <div class="grid2" style="margin-top: 30px;">
+        <div>
+          <p>
+            In a classical property-bag graph DB, every hepatocyte would store
+            its own <code>has_APAP</code> boolean — 600 writes to flip them all.
+          </p>
+          <p style="margin-top: 16px;">
+            In DagDB, <code>toxin_APAP</code> is a single node. Zone 3 cells
+            have an incoming edge from it. Flipping one LUT propagates to
+            all 200 subscribers in the next tick.
+          </p>
+          <div style="margin-top: 32px;">
+            <div class="big-number">1 <span class="unit">LUT flip</span></div>
+            <div class="big-number" style="color: var(--gold-soft); font-size: 48px;">→ 200 cells</div>
+            <div class="big-number" style="color: var(--gold-soft); font-size: 32px;">≈ 7 ms propagation</div>
+          </div>
+        </div>
+        <div class="img-wrap">
+          <img src="../examples/liver/liver_lobule_zoom.png" alt="Shared subscription pattern in one lobule">
+          <div class="cap">6 hepatocytes → 3 shared systemic nodes</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 6: Scenario - Baseline -->
+    <section class="slide">
+      <h3>Experiment · baseline</h3>
+      <h2>Healthy liver</h2>
+      <table>
+        <thead>
+          <tr><th>Rank</th><th>Firing</th><th>Total</th><th>State</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>r0 root</td><td class="num">1</td><td class="num">1</td><td class="alive">● ALIVE</td></tr>
+          <tr><td>r1 functions</td><td class="num">3</td><td class="num">3</td><td class="alive">● ALIVE</td></tr>
+          <tr><td>r2 zones</td><td class="num">3</td><td class="num">3</td><td class="alive">● ALIVE</td></tr>
+          <tr><td>r3 lobules</td><td class="num">100</td><td class="num">100</td><td class="alive">● ALIVE</td></tr>
+          <tr><td>r4 hepatocytes</td><td class="num">600</td><td class="num">600</td><td class="alive">● ALIVE</td></tr>
+          <tr><td>r5 systemic</td><td class="num">0</td><td class="num">3</td><td class="muted">all signals off</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="margin-top: 40px; text-align: center;">
+        NOR6 semantics: every hepatocyte fires TRUE unless any subscribed damage signal fires.
+      </p>
+    </section>
+
+    <!-- Slide 7: Scenario - APAP only -->
+    <section class="slide">
+      <h3>Experiment · APAP overdose</h3>
+      <h2>Zone-3 targeting · liver <span class="alive">still ALIVE</span></h2>
+      <table>
+        <thead>
+          <tr><th>Rank</th><th>Firing</th><th>Total</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>r0 root</td><td class="num">1</td><td class="num">1</td><td class="alive">● ALIVE</td></tr>
+          <tr><td>r1 functions</td><td class="num">3</td><td class="num">3</td><td class="alive">held</td></tr>
+          <tr><td>r2 zones</td><td class="num">3</td><td class="num">3</td><td class="alive">held (OR gate)</td></tr>
+          <tr><td>r3 lobules</td><td class="num">67</td><td class="num">100</td><td class="dead">−33 zone-3 lobules</td></tr>
+          <tr><td>r4 hepatocytes</td><td class="num">400</td><td class="num">600</td><td class="dead">−200 (all zone 3)</td></tr>
+          <tr><td>r5 systemic</td><td class="num">1</td><td class="num">3</td><td class="muted">toxin_APAP ON</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top: 30px;">
+        <strong style="color: var(--gold);">Zones 1 & 2 untouched.</strong>
+        They don't subscribe to <code>toxin_APAP</code>. Zone specificity
+        lives in the edge pattern, not in cell code. The liver survives
+        33 % cell loss — graceful degradation by design.
+      </p>
+    </section>
+
+    <!-- Slide 8: Scenario - full failure -->
+    <section class="slide">
+      <h3>Experiment · fulminant failure</h3>
+      <h2>APAP + hypoxia + inflammation · liver <span class="dead">FAILED</span></h2>
+      <table>
+        <thead>
+          <tr><th>Rank</th><th>Firing</th><th>Total</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>r0 root</td><td class="num">0</td><td class="num">1</td><td class="dead">● FAILED</td></tr>
+          <tr><td>r1 functions</td><td class="num">0</td><td class="num">3</td><td class="dead">all lost</td></tr>
+          <tr><td>r2 zones</td><td class="num">0</td><td class="num">3</td><td class="dead">all lost</td></tr>
+          <tr><td>r3 lobules</td><td class="num">0</td><td class="num">100</td><td class="dead">all lost</td></tr>
+          <tr><td>r4 hepatocytes</td><td class="num">0</td><td class="num">600</td><td class="dead">all 600 dead</td></tr>
+          <tr><td>r5 systemic</td><td class="num">3</td><td class="num">3</td><td class="muted">all 3 ON</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top: 30px;">
+        Hypoxia and inflammation are <em>universal</em> subscribers — every
+        hepatocyte edges into them. Stack two systemic insults on APAP and
+        the cascade completes. Recovery: flip all three LUTs back to
+        <code>CONST0</code>, 5 ticks, full restoration.
+      </p>
+    </section>
+
+    <!-- Slide 9: Numbers -->
+    <section class="slide">
+      <h3>Performance · measured on M5 Max</h3>
+      <h2>Numbers speak</h2>
+      <div class="grid2" style="margin-top: 30px; gap: 24px;">
+        <div>
+          <h3>Bio-twin</h3>
+          <div class="big-number">711 <span class="unit">nodes</span></div>
+          <div class="big-number" style="font-size: 48px;">~7 <span class="unit">ms</span></div>
+          <p class="muted" style="margin-top: 8px;">propagation after one LUT flip, across five ranks</p>
+        </div>
+        <div>
+          <h3>SerDe at 10 M</h3>
+          <div class="big-number">14.4 <span class="unit">MB</span></div>
+          <p class="muted">compressed snapshot of a 10.2 M-node DAG (358 MB raw → 4.0 % zlib ratio)</p>
+          <div class="big-number" style="font-size: 36px; margin-top: 16px;">28.5 <span class="unit">ms SAVE · 12.6 GB/s</span></div>
+          <div class="big-number" style="font-size: 36px;">18.6 <span class="unit">ms TICK</span></div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top: 40px;">
+        34/34 tests pass · byte-level validator rejects malformed snapshots before memcpy
+      </p>
+    </section>
+
+    <!-- Slide 10: What this proves -->
+    <section class="slide">
+      <h3>Conclusion</h3>
+      <h2>What the liver experiment proves</h2>
+      <ul>
+        <li>A 6-bounded ranked DAG fits a real biological hierarchy without force-fitting.</li>
+        <li>Properties-as-nodes is a population-level write primitive — O(1) writes drive O(N) state changes.</li>
+        <li>Zone-specificity of damage comes from subscription topology. No per-cell code.</li>
+        <li>OR-gate zones give graceful degradation — 33 % cell loss doesn't kill the organ.</li>
+        <li>Evaluation at 10 M nodes: 18.6 ms per tick. Storage: 14.4 MB compressed.</li>
+      </ul>
+      <blockquote class="quote">
+        My application is to create a bio-digital twin. Real physical systems
+        have real structural constraints. That's the whole point.
+      </blockquote>
+    </section>
+
+    <!-- Slide 11: Open -->
+    <section class="slide">
+      <h3>What's next</h3>
+      <h2>Known holes · honest list</h2>
+      <ul>
+        <li>Grid ≥ 4096 (16.7 M slots) hangs at daemon init — Metal/shm sizing issue, root cause unknown.</li>
+        <li>Motif / subgraph match operators — the real architectural differentiator, not yet built.</li>
+        <li>Time-travel replay — codec exists, not wired as <code>RECORD</code>/<code>REPLAY</code> DSL verbs yet.</li>
+        <li>Property-bag ingestion from Neo4j-shaped input — no tooling.</li>
+        <li>LOAD validator is sequential Swift — 6.5 s at 10 M nodes. GPU-parallel version is next.</li>
+      </ul>
+      <p class="muted" style="margin-top: 40px;">
+        This is an amateur engineering project. Numbers from one laptop,
+        no controlled benchmark, no peer review. The experiments are
+        reproducible from the repo.
+      </p>
+    </section>
+
+    <!-- Slide 12: End -->
+    <section class="slide">
+      <div class="centered">
+        <div class="crest">⬢</div>
+        <h1 style="margin-top: 40px;">Thank you.</h1>
+        <p class="lead" style="margin-top: 32px;">
+          <a href="https://github.com/norayr-m/dagdb-engine" style="color: var(--gold);">github.com/norayr-m/dagdb-engine</a>
+        </p>
+        <p class="lead" style="margin-top: 16px;">
+          <a href="../examples/liver/explorer.html" style="color: var(--gold);">→ live explorer</a>
+          &nbsp;·&nbsp;
+          <a href="../examples/liver/README.md" style="color: var(--gold);">→ liver README</a>
+        </p>
+        <p class="muted" style="margin-top: 60px;">
+          Numbers speak. Ego doesn't.
+        </p>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="nav">
+    <button class="nav-btn" onclick="go(-1)">← prev</button>
+    <button class="nav-btn" onclick="go(+1)">next →</button>
+    <div class="progress"><div id="progressFill" class="progress-fill"></div></div>
+    <span class="counter" id="counter">1 / 12</span>
+  </div>
+</div>
+
+<div class="footer-note">Use ← → arrow keys to navigate</div>
+
+<script>
+const slides = document.querySelectorAll(".slide");
+let idx = 0;
+function render() {
+  slides.forEach((s, i) => s.classList.toggle("active", i === idx));
+  document.getElementById("counter").textContent = `${idx + 1} / ${slides.length}`;
+  document.getElementById("progressFill").style.width = `${((idx + 1) / slides.length) * 100}%`;
+}
+function go(d) {
+  idx = Math.max(0, Math.min(slides.length - 1, idx + d));
+  render();
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "ArrowRight" || e.key === " ") go(+1);
+  if (e.key === "ArrowLeft")  go(-1);
+  if (e.key === "Home")       { idx = 0; render(); }
+  if (e.key === "End")        { idx = slides.length - 1; render(); }
+});
+render();
+</script>
+</body>
+</html>
