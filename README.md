@@ -120,6 +120,37 @@ SELECT * FROM dagdb_exec('SET 0 TRUTH 1');
 SELECT * FROM dagdb_exec('EVAL');
 ```
 
+## Connect with DBeaver (or any SQL client)
+
+DagDB sits behind PostgreSQL, so any SQL client works — DBeaver, DataGrip, pgAdmin, Python, etc.
+
+**Install DBeaver** (free, open source):
+
+```bash
+brew install --cask dbeaver-community
+```
+
+**Connect:**
+
+1. Open DBeaver → New Connection → **PostgreSQL**
+2. Host: `localhost`, Port: `5432`, Database: `dagdb`
+3. Username: your macOS username, Password: (leave blank)
+4. Click **Test Connection** → should say "Connected"
+5. Click **Finish**
+
+**Query:**
+
+Open a SQL editor (right-click connection → SQL Editor) and run:
+
+```sql
+SELECT * FROM dagdb_exec('STATUS');
+SELECT * FROM dagdb_exec('TICK 100');
+SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
+SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
+```
+
+Results show up in DBeaver's table grid. Works with any tool that speaks PostgreSQL — Python (`psycopg2`), Node.js (`pg`), Go (`lib/pq`), JDBC, ODBC.
+
 ## Test Results
 
 ```
