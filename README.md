@@ -58,9 +58,9 @@ That's it. Builds, tests, starts the daemon, runs a smoke test.
 ### Daemon Management
 
 ```bash
-./dagdb start                        # start (builds if needed)
+./dagdb start                        # start with defaults (256 grid, ~/.dagdb)
+./dagdb start --data test_db/        # persist state to local folder
 ./dagdb start --grid 512             # custom grid size
-./dagdb start --data /path/to/data   # persist state to folder
 ./dagdb stop                         # save state and stop
 ./dagdb restart                      # stop + start
 ./dagdb status                       # is it running? graph info
