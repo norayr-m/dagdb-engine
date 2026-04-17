@@ -139,7 +139,8 @@
   <span class="badge" id="nodeCountBadge">nodes: —</span>
   <span class="badge" id="tickBadge">ticks: —</span>
   <span style="flex: 1"></span>
-  <span class="badge" style="font-family: monospace;">mcpo :8787 / dagdb</span>
+  <input id="mcpUrlInput" style="font-family: monospace; font-size: 11px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; width: 280px;" value="http://localhost:8787/dagdb" onchange="setMcpUrl(this.value)">
+  <button style="width: auto; padding: 4px 10px; margin: 0;" onclick="refresh()">⟳</button>
 </header>
 
 <main>
@@ -242,7 +243,17 @@
 </footer>
 
 <script>
-const MCP = "http://localhost:8787/dagdb";
+let MCP = localStorage.getItem("dagdb_mcp_url") || "http://localhost:8787/dagdb";
+function setMcpUrl(u) {
+  MCP = u;
+  localStorage.setItem("dagdb_mcp_url", u);
+  log(`MCP URL → ${u}`);
+  refresh();
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const input = document.getElementById("mcpUrlInput");
+  if (input) input.value = MCP;
+});
 
 const RANKS = [
   { rank: 0, label: "root",        total: 1,     color: "#f85149" },
@@ -386,13 +397,49 @@ async function queryStatus() {
       document.getElementById("nodeCountBadge").textContent = `nodes: ${m[1]}`;
       document.getElementById("tickBadge").textContent      = `ticks: ${m[2]}`;
     }
+    hideOfflineHelp();
     return true;
   } catch (e) {
     document.getElementById("statusDot").classList.remove("online");
     document.getElementById("statusText").textContent = "daemon offline";
     log(`CONNECT FAIL: ${e.message}`);
+    showOfflineHelp(e.message);
     return false;
   }
+}
+
+function showOfflineHelp(msg) {
+  let help = document.getElementById("offlineHelp");
+  if (help) return;
+  help = document.createElement("div");
+  help.id = "offlineHelp";
+  help.style.cssText = `
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(22, 27, 34, 0.95); border: 1px solid #f85149;
+    border-radius: 8px; padding: 24px; max-width: 540px; color: #e6edf3;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.6); z-index: 1000;
+  `;
+  help.innerHTML = `
+    <h2 style="margin: 0 0 12px 0; color: #f85149;">⚠ Can't reach DagDB</h2>
+    <p style="margin: 0 0 12px 0; color: #8b949e; font-size: 13px;">${msg}</p>
+    <p style="margin: 0 0 12px 0; font-size: 13px;">To run this explorer you need a local DagDB daemon and its MCP HTTP bridge:</p>
+    <pre style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; font-size: 11px; overflow-x: auto;">git clone https://github.com/norayr-m/dagdb-engine
+cd dagdb-engine
+./dagdb start --grid 256 --data /tmp/dagdb_livertest
+python3 examples/liver/build_liver.py
+
+# Run the MCP→HTTP bridge (requires: pip install mcpo)
+mcpo --config mcpo_config.json --port 8787</pre>
+    <p style="margin: 12px 0 0 0; font-size: 12px; color: #8b949e;">
+      Or change the URL in the top bar if your daemon is elsewhere.
+    </p>
+  `;
+  document.querySelector("main").appendChild(help);
+}
+
+function hideOfflineHelp() {
+  const help = document.getElementById("offlineHelp");
+  if (help) help.remove();
 }
 
 async function queryRank(rank) {

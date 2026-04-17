@@ -144,10 +144,18 @@ open ~/diagram_output/liver_architecture.png
 
 ## Interactive explorer (HTML + MCP)
 
+**🌐 Live**: https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html
+
 `explorer.html` is a single-page app that visualizes the liver graph live
 and lets you inject toxins / run ticks / recover by clicking buttons.
 It talks to the running DagDB daemon through the `mcpo` HTTP bridge
 (MCP → OpenAPI) at `http://localhost:8787/dagdb/`.
+
+Opening the hosted URL without a local daemon is still useful — the
+graph topology renders, but buttons will be inert. To make it interactive
+you need DagDB + mcpo running on your machine (see below). The page has
+an input at the top for overriding the MCP URL if you run the bridge on
+a different port or host.
 
 ```bash
 # Bridge all four DagDB MCP servers over HTTP (runs under launchd by default)
