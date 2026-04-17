@@ -12,6 +12,10 @@
 # The --data flag specifies where to persist graph state.
 # On stop, state is saved. On start, state is restored if found.
 
+# cd to the directory where this script lives (so swift build works)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
 SOCK="/tmp/dagdb.sock"
 PID_FILE="/tmp/dagdb.pid"
 LOG_FILE="/tmp/dagdb.log"
