@@ -161,6 +161,50 @@ func handleCommand(_ input: String) -> String {
             .bindMemory(to: UInt8.self, capacity: nodeCount)[node] = value
         return "OK SET node=\(node) truth=\(value)"
 
+    case .setRank(let node, let value):
+        guard node < nodeCount else { return "ERROR node \(node) out of range" }
+        engine.rankBuf.contents()
+            .bindMemory(to: UInt8.self, capacity: nodeCount)[node] = value
+        return "OK SET node=\(node) rank=\(value)"
+
+    case .setLUT(let node, let preset):
+        guard node < nodeCount else { return "ERROR node \(node) out of range" }
+        let lut: UInt64
+        switch preset {
+        case "AND", "AND6": lut = LUT6Preset.and6
+        case "OR", "OR6": lut = LUT6Preset.or6
+        case "XOR", "XOR6": lut = LUT6Preset.xor6
+        case "MAJ", "MAJORITY", "MAJ6": lut = LUT6Preset.majority6
+        case "IDENTITY", "ID": lut = LUT6Preset.identity
+        case "CONST0", "FALSE": lut = LUT6Preset.const0
+        case "CONST1", "TRUE": lut = LUT6Preset.const1
+        case "VETO": lut = LUT6Preset.veto
+        default: return "ERROR unknown LUT preset: \(preset). Use AND OR XOR MAJ IDENTITY CONST0 CONST1 VETO"
+        }
+        let low = UInt32(lut & 0xFFFFFFFF)
+        let high = UInt32((lut >> 32) & 0xFFFFFFFF)
+        engine.lut6LowBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)[node] = low
+        engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)[node] = high
+        return "OK SET node=\(node) lut=\(preset)"
+
+    case .connect(let src, let dst):
+        guard src < nodeCount && dst < nodeCount else { return "ERROR node out of range" }
+        // Find first empty neighbor slot on dst
+        let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: nodeCount * 6)
+        var connected = false
+        for d in 0..<6 {
+            if nbPtr[dst * 6 + d] < 0 {
+                nbPtr[dst * 6 + d] = Int32(src)
+                connected = true
+                break
+            }
+        }
+        if connected {
+            return "OK CONNECT from=\(src) to=\(dst)"
+        } else {
+            return "ERROR node \(dst) already has 6 edges (6-bounded)"
+        }
+
     case .graphInfo:
         let ranks = engine.readRanks()
         let truth = engine.readTruthStates()

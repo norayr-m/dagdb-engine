@@ -18,6 +18,9 @@ enum DSLCommand {
     case nodes(rank: Int?, predicate: Predicate?)
     case traverse(fromNode: Int, depth: Int)
     case setTruth(node: Int, value: UInt8)
+    case setRank(node: Int, value: UInt8)
+    case setLUT(node: Int, preset: String)
+    case connect(from: Int, to: Int)
     case graphInfo
     case unknown(String)
 }
@@ -117,13 +120,33 @@ struct DSLParser {
             return .traverse(fromNode: node, depth: depth)
 
         case "SET":
-            guard tokens.count >= 4,
-                  let node = Int(tokens[1]),
-                  tokens[2] == "TRUTH",
-                  let val = UInt8(tokens[3]) else {
+            guard tokens.count >= 4, let node = Int(tokens[1]) else {
                 return .unknown(input)
             }
-            return .setTruth(node: node, value: val)
+            switch tokens[2] {
+            case "TRUTH":
+                guard let val = UInt8(tokens[3]) else { return .unknown(input) }
+                return .setTruth(node: node, value: val)
+            case "RANK":
+                guard let val = UInt8(tokens[3]) else { return .unknown(input) }
+                return .setRank(node: node, value: val)
+            case "LUT":
+                return .setLUT(node: node, preset: tokens[3])
+            default:
+                return .unknown(input)
+            }
+
+        case "CONNECT":
+            // CONNECT FROM <src> TO <dst>
+            guard let fromIdx = tokens.firstIndex(of: "FROM"),
+                  fromIdx + 1 < tokens.count,
+                  let src = Int(tokens[fromIdx + 1]),
+                  let toIdx = tokens.firstIndex(of: "TO"),
+                  toIdx + 1 < tokens.count,
+                  let dst = Int(tokens[toIdx + 1]) else {
+                return .unknown(input)
+            }
+            return .connect(from: src, to: dst)
 
         case "GRAPH":
             if tokens.count > 1 && tokens[1] == "INFO" {
