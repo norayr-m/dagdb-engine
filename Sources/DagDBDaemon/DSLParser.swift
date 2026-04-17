@@ -23,6 +23,9 @@ enum DSLCommand {
     case connect(from: Int, to: Int)
     case clearEdges(node: Int)
     case graphInfo
+    case save(path: String)
+    case load(path: String)
+    case exportMorton(dir: String)
     case unknown(String)
 }
 
@@ -62,14 +65,29 @@ struct Predicate {
 struct DSLParser {
 
     static func parse(_ input: String) -> DSLCommand {
-        let tokens = input.uppercased()
+        // Preserve original casing for path arguments; uppercase only for verb matching.
+        let rawTokens = input
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: .whitespaces)
             .filter { !$0.isEmpty }
+        let tokens = rawTokens.map { $0.uppercased() }
 
         guard let first = tokens.first else { return .unknown(input) }
 
         switch first {
+        case "SAVE":
+            guard rawTokens.count >= 2 else { return .unknown(input) }
+            return .save(path: rawTokens[1])
+
+        case "LOAD":
+            guard rawTokens.count >= 2 else { return .unknown(input) }
+            return .load(path: rawTokens[1])
+
+        case "EXPORT":
+            // EXPORT MORTON <dir>
+            guard rawTokens.count >= 3, tokens[1] == "MORTON" else { return .unknown(input) }
+            return .exportMorton(dir: rawTokens[2])
+
         case "STATUS":
             return .status
 

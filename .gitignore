@@ -8,3 +8,12 @@ pg_dagdb/target/
 *.dylib
 *.so
 .DS_Store
+
+# Local MCP bridge config (machine-specific paths)
+mcpo_config.json
+
+# Auto-generated status snapshots
+sample_db/last_status.txt
+
+# Benchmark outputs (large binaries, local-only)
+*.dags

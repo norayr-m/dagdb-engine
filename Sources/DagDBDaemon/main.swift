@@ -195,9 +195,21 @@ func handleCommand(_ input: String) -> String {
 
     case .connect(let src, let dst):
         guard src < nodeCount && dst < nodeCount else { return "ERROR node out of range" }
-        // Find first empty neighbor slot on dst
+        if src == dst { return "ERROR self-loop: src == dst (\(src))" }
+        let rankPtr = engine.rankBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        let srcRank = rankPtr[src]
+        let dstRank = rankPtr[dst]
+        guard srcRank > dstRank else {
+            return "ERROR rank violation: src(\(src)) rank=\(srcRank) must be > dst(\(dst)) rank=\(dstRank) — edges flow leaves→roots"
+        }
+        // Find first empty neighbor slot on dst; reject duplicates
         let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: nodeCount * 6)
         var connected = false
+        for d in 0..<6 {
+            if nbPtr[dst * 6 + d] == Int32(src) {
+                return "ERROR duplicate edge: \(src) → \(dst)"
+            }
+        }
         for d in 0..<6 {
             if nbPtr[dst * 6 + d] < 0 {
                 nbPtr[dst * 6 + d] = Int32(src)
@@ -223,6 +235,46 @@ func handleCommand(_ input: String) -> String {
         let rankStr = rankCounts.sorted(by: { $0.key < $1.key })
             .map { "r\($0.key)=\($0.value)" }.joined(separator: " ")
         return "OK GRAPH nodes=\(nodeCount) true=\(trueCount) \(rankStr)"
+
+    case .save(let path):
+        do {
+            let r = try DagDBSnapshot.save(
+                engine: engine,
+                nodeCount: nodeCount,
+                gridW: width,
+                gridH: height,
+                tickCount: tickCount,
+                path: path
+            )
+            return "OK SAVE bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms path=\(path)"
+        } catch {
+            return "ERROR save: \(error)"
+        }
+
+    case .load(let path):
+        do {
+            let r = try DagDBSnapshot.load(
+                engine: engine,
+                nodeCount: nodeCount,
+                path: path
+            )
+            tickCount = r.fileTicks
+            return "OK LOAD bytes=\(r.bytesRead) nodes=\(r.fileNodeCount) ticks=\(r.fileTicks) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
+        } catch {
+            return "ERROR load: \(error)"
+        }
+
+    case .exportMorton(let dir):
+        do {
+            let r = try DagDBSnapshot.exportMorton(
+                engine: engine,
+                nodeCount: nodeCount,
+                dir: dir
+            )
+            return "OK EXPORT bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms dir=\(dir)"
+        } catch {
+            return "ERROR export: \(error)"
+        }
 
     case .unknown(let raw):
         return "ERROR unknown command: \(raw)"
