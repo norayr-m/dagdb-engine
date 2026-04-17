@@ -1,3 +1,8 @@
+# DagDB Sample Graph — Generic ranked DAG
+# 18 leaf nodes → 3 aggregators → 1 combiner → 1 root
+# Demonstrates AND, MAJORITY, OR gates with mixed truth values
+
+# Rank 3: Leaf nodes (data sources)
 SET 100 RANK 3
 SET 100 LUT CONST1
 SET 100 TRUTH 1
@@ -52,6 +57,8 @@ SET 116 TRUTH 0
 SET 117 RANK 3
 SET 117 LUT CONST1
 SET 117 TRUTH 1
+
+# Rank 2: Aggregators (3 groups of 6)
 SET 118 RANK 2
 SET 118 LUT AND
 CLEAR 118 EDGES
@@ -79,14 +86,20 @@ CONNECT FROM 114 TO 120
 CONNECT FROM 115 TO 120
 CONNECT FROM 116 TO 120
 CONNECT FROM 117 TO 120
+
+# Rank 1: Combiner
 SET 121 RANK 1
 SET 121 LUT AND
 CLEAR 121 EDGES
 CONNECT FROM 118 TO 121
 CONNECT FROM 119 TO 121
 CONNECT FROM 120 TO 121
+
+# Rank 0: Root
 SET 122 RANK 0
 SET 122 LUT ID
 CLEAR 122 EDGES
 CONNECT FROM 121 TO 122
+
+# Evaluate
 TICK 1
