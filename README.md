@@ -151,6 +151,24 @@ SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
 
 Results show up in DBeaver's table grid. Works with any tool that speaks PostgreSQL — Python (`psycopg2`), Node.js (`pg`), Go (`lib/pq`), JDBC, ODBC.
 
+**Set up views** (makes data browsable in DBeaver's navigator):
+
+```bash
+psql dagdb -f setup_views.sql
+```
+
+This creates views and functions that show up as clickable objects:
+
+```sql
+SELECT * FROM dagdb_nodes;                    -- browse all nodes
+SELECT * FROM dagdb_status_view;              -- GPU status
+SELECT * FROM dagdb_info;                     -- graph statistics
+SELECT * FROM dagdb_run(10);                  -- tick 10 times
+SELECT * FROM dagdb_rank(2);                  -- nodes at rank 2
+SELECT * FROM dagdb_traverse(42, 3);          -- walk from node 42
+SELECT rank, COUNT(*) FROM dagdb_nodes GROUP BY rank;  -- count by rank
+```
+
 ## Test Results
 
 ```
