@@ -106,6 +106,20 @@ The script installs Rust, PostgreSQL 17, pgrx, builds the extension, creates the
 
 **⚠️ Do NOT run `cargo build` in pg_dagdb/.** It will fail with linker errors. pgrx extensions must use `cargo pgrx install`.
 
+Once installed, connect and query (daemon must be running):
+
+```sql
+psql dagdb
+
+SELECT * FROM dagdb_exec('STATUS');
+SELECT * FROM dagdb_exec('TICK 100');
+SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
+SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
+SELECT * FROM dagdb_exec('GRAPH INFO');
+SELECT * FROM dagdb_exec('SET 0 TRUTH 1');
+SELECT * FROM dagdb_exec('EVAL');
+```
+
 ## Test Results
 
 ```
