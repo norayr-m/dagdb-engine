@@ -72,14 +72,20 @@ start)
         echo "  $STATUS"
         echo "  PID: $DAEMON_PID"
 
-        # Restore state if saved
-        if [ -f "$DATA_DIR/graph.dagdb" ]; then
-            echo "  Restoring saved state from $DATA_DIR/graph.dagdb..."
-            # Read saved commands and replay
+        # Restore state: load all .dagdb files from data directory
+        LOADED=0
+        for f in "$DATA_DIR"/*.dagdb; do
+            [ -f "$f" ] || continue
+            echo "  Loading $(basename "$f")..."
             while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                [[ "$line" == \#* ]] && continue
                 cmd_query "$line" >/dev/null
-            done < "$DATA_DIR/graph.dagdb"
-            echo "  State restored."
+            done < "$f"
+            LOADED=$((LOADED + 1))
+        done
+        if [ "$LOADED" -gt 0 ]; then
+            echo "  Loaded $LOADED database file(s)."
         fi
 
         echo ""
