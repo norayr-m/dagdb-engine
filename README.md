@@ -47,6 +47,16 @@ DagDB/
 
 ## Quick Start
 
+```bash
+git clone https://github.com/norayr-m/dagdb-engine.git
+cd dagdb-engine
+./install.sh
+```
+
+That's it. Builds, tests, starts the daemon, runs a smoke test.
+
+### Manual Steps (if you prefer)
+
 **Step 1: Build**
 
 ```bash
