@@ -143,3 +143,57 @@ UNION ALL SELECT 14,'                                        106-111 ──→ 1
 UNION ALL SELECT 15, ''
 UNION ALL SELECT 16, '  ● = TRUE    ○ = FALSE    ID = identity    AND = all    MAJ = majority(4+)    OR = any'
 ) sub ORDER BY ord;
+
+-- Hex DAG as a 6-column table — rows=ranks, columns=nodes, pipes=edges
+-- Usage: SELECT * FROM dagdb_hex(122, 4);  -- from node 122, depth 4
+CREATE OR REPLACE FUNCTION dagdb_hex(root_node integer DEFAULT 122, max_depth integer DEFAULT 4)
+RETURNS TABLE(rank text, c1 text, c2 text, c3 text, c4 text, c5 text, c6 text) AS $$
+DECLARE
+    current_nodes int[];
+    next_nodes int[];
+    nid int;
+    tv int;
+    rank_level int;
+    vals text[];
+    r RECORD;
+    i int;
+BEGIN
+    current_nodes := ARRAY[root_node];
+    FOR rank_level IN 0..max_depth LOOP
+        vals := ARRAY['','','','','',''];
+        next_nodes := ARRAY[]::int[];
+        FOR i IN 1..COALESCE(array_length(current_nodes, 1), 0) LOOP
+            IF i > 6 THEN EXIT; END IF;
+            nid := current_nodes[i];
+            SELECT t.truth INTO tv
+            FROM dagdb_exec('TRAVERSE FROM ' || nid || ' DEPTH 1') t
+            WHERE t.node_id = nid LIMIT 1;
+            tv := COALESCE(tv, -1);
+            vals[i] := CASE WHEN tv=1 THEN '● ' WHEN tv=0 THEN '○ ' ELSE '· ' END || nid::text;
+            FOR r IN SELECT t.node_id AS rid FROM dagdb_exec('TRAVERSE FROM ' || nid || ' DEPTH 2') t
+                     WHERE t.node_id != nid LIMIT 6 LOOP
+                IF NOT (r.rid = ANY(next_nodes)) THEN
+                    next_nodes := array_append(next_nodes, r.rid);
+                END IF;
+            END LOOP;
+        END LOOP;
+        rank := 'R' || rank_level;
+        c1 := vals[1]; c2 := vals[2]; c3 := vals[3];
+        c4 := vals[4]; c5 := vals[5]; c6 := vals[6];
+        RETURN NEXT;
+        IF rank_level < max_depth AND COALESCE(array_length(next_nodes, 1), 0) > 0 THEN
+            rank := '   ';
+            c1 := CASE WHEN vals[1]!='' THEN '  │' ELSE '' END;
+            c2 := CASE WHEN vals[2]!='' THEN '  │' ELSE '' END;
+            c3 := CASE WHEN vals[3]!='' THEN '  │' ELSE '' END;
+            c4 := CASE WHEN vals[4]!='' THEN '  │' ELSE '' END;
+            c5 := CASE WHEN vals[5]!='' THEN '  │' ELSE '' END;
+            c6 := CASE WHEN vals[6]!='' THEN '  │' ELSE '' END;
+            RETURN NEXT;
+        END IF;
+        IF COALESCE(array_length(next_nodes, 1), 0) = 0 THEN EXIT; END IF;
+        current_nodes := next_nodes;
+    END LOOP;
+    RETURN;
+END;
+$$ LANGUAGE plpgsql;
