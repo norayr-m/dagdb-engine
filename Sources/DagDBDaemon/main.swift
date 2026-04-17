@@ -245,7 +245,7 @@ func handleCommand(_ input: String) -> String {
             .map { "r\($0.key)=\($0.value)" }.joined(separator: " ")
         return "OK GRAPH nodes=\(nodeCount) true=\(trueCount) \(rankStr)"
 
-    case .save(let path):
+    case .save(let path, let compressed):
         do {
             let r = try DagDBSnapshot.save(
                 engine: engine,
@@ -253,9 +253,13 @@ func handleCommand(_ input: String) -> String {
                 gridW: width,
                 gridH: height,
                 tickCount: tickCount,
-                path: path
+                path: path,
+                compressed: compressed
             )
-            return "OK SAVE bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms path=\(path)"
+            let ratio = compressed
+                ? String(format: " ratio=%.1f%%", Double(r.bytesWritten) * 100.0 / Double(32 + r.uncompressedBodyBytes))
+                : ""
+            return "OK SAVE bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms\(ratio) path=\(path)\(compressed ? " (compressed)" : "")"
         } catch {
             return "ERROR save: \(error)"
         }
@@ -331,6 +335,13 @@ func writeResults(_ rows: [(Int, UInt8, UInt8, UInt8)]) {
 }
 
 // ── Socket server ──
+//
+// Serialization guarantee: the SocketServer accept loop (SocketServer.swift:64-71)
+// is single-threaded and handles one client at a time. Each command runs fully
+// through handleCommand() before the next accept. DagDBEngine.tick() calls
+// waitUntilCompleted() (DagDBEngine.swift:159) so the GPU finishes before the
+// Swift call returns. Therefore TICK, SAVE, LOAD, and VALIDATE cannot interleave
+// at the buffer level — no mutex required while this server model holds.
 
 let server = SocketServer(path: socketPath)
 server.onCommand = { command in
@@ -339,11 +350,35 @@ server.onCommand = { command in
     return response
 }
 
-// Handle SIGINT for clean shutdown
-signal(SIGINT) { _ in
+// Auto-snapshot path (optional): daemon writes here on graceful termination
+// so an external SIGTERM/SIGINT still recovers cleanly.
+let autoSnapshotPath: String? = {
+    if let env = ProcessInfo.processInfo.environment["DAGDB_AUTOSAVE"], !env.isEmpty {
+        return env
+    }
+    return nil
+}()
+
+@Sendable func gracefulShutdown() {
     print("\n  Shutting down...")
+    if let path = autoSnapshotPath {
+        do {
+            let r = try DagDBSnapshot.save(
+                engine: engine, nodeCount: nodeCount,
+                gridW: width, gridH: height,
+                tickCount: tickCount, path: path,
+                compressed: false
+            )
+            print("  Auto-snapshot: \(r.bytesWritten) bytes to \(path) (\(String(format: "%.1f", r.elapsedMs))ms)")
+        } catch {
+            print("  Auto-snapshot failed: \(error)")
+        }
+    }
     exit(0)
 }
+
+signal(SIGINT)  { _ in gracefulShutdown() }
+signal(SIGTERM) { _ in gracefulShutdown() }
 
 print("\n  DagDB Daemon ready.")
 print("  Test: echo 'STATUS' | nc -U \(socketPath)")

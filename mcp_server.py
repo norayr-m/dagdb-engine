@@ -125,10 +125,16 @@ def dagdb_eval() -> str:
     return query_daemon("EVAL")
 
 @mcp.tool()
-def dagdb_save(path: str) -> str:
+def dagdb_save(path: str, compressed: bool = False) -> str:
     """Snapshot the full graph state (rank, truth, LUT6, edges) to a binary .dags file.
-    Uses direct GPU-buffer write; fast at scale (~10 GB/s on Apple Silicon)."""
-    return query_daemon(f"SAVE {path}")
+    Uses direct GPU-buffer write; fast at scale (~10 GB/s on Apple Silicon).
+
+    Args:
+        path: output file path.
+        compressed: zlib-compress the body. Typically cuts the file to ~25% of raw size.
+    """
+    suffix = " COMPRESSED" if compressed else ""
+    return query_daemon(f"SAVE {path}{suffix}")
 
 @mcp.tool()
 def dagdb_load(path: str) -> str:

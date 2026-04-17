@@ -197,10 +197,16 @@ log)
 save)
     shift
     if [ -z "$1" ]; then
-        echo "Usage: dagdb save <path>"
+        echo "Usage: dagdb save <path> [--compressed]"
         exit 1
     fi
-    cmd_query "SAVE $1"
+    PATH_ARG="$1"
+    shift
+    COMPRESSED=""
+    if [ "$1" = "--compressed" ] || [ "$1" = "-c" ]; then
+        COMPRESSED=" COMPRESSED"
+    fi
+    cmd_query "SAVE ${PATH_ARG}${COMPRESSED}"
     ;;
 
 load)

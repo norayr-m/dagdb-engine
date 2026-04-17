@@ -115,11 +115,18 @@ DagDB persists the entire engine state — rank, truth, node type, LUT6, and the
 # Snapshot the live graph
 ./dagdb save /path/graph.dags
 
-# Restore into a running daemon (node count must match grid size)
+# Snapshot with zlib compression (often ~4% of raw size)
+./dagdb save /path/graph.dags --compressed
+
+# Restore into a running daemon (node count + grid must match)
 ./dagdb load /path/graph.dags
 
 # Per-buffer raw dump for interop (6 Morton-ordered files)
 ./dagdb export /path/dir/
+./dagdb import /path/dir/
+
+# Verify the live DAG satisfies rank-ordering, bounds, no self-loops/duplicates
+./dagdb validate
 ```
 
 **Bulk import for millions of nodes.** The Python generator in `tools/gen_dags.py` writes valid `.dags` files directly without going through the socket or DSL — useful for scale tests or importing from external sources:
@@ -130,15 +137,19 @@ python3 tools/gen_dags.py --grid 3200 --nodes 10000000 --out /tmp/big.dags
 ./dagdb load /tmp/big.dags
 ```
 
-**Measured on one M5 Max, 10M-node ranked DAG (358 MB snapshot):**
+**Measured on one M5 Max, 10M-node ranked DAG:**
 
-| Operation | Time | Throughput |
-|-----------|------|------------|
+| Operation | Time | File / Throughput |
+|-----------|------|-------------------|
 | Generate ranked tree (Python + numpy) | ~90 ms | — |
-| `LOAD` 358 MB snapshot | 21.8 ms | 16.4 GB/s |
+| `SAVE` raw | 28.5 ms | 358 MB @ 12.6 GB/s |
+| `SAVE` zlib-compressed | 1.32 s | **14.4 MB (4.0% of raw)** |
+| `LOAD` w/ validation | 6.5 s | validator scans 60M edge slots |
+| `VALIDATE` live graph | 5.5 s | — |
 | `TICK 1` evaluation over 10M nodes | 18.6 ms | ~540M node-updates/s |
-| `SAVE` 358 MB back to disk | 32.4 ms | 11.0 GB/s |
 | `EXPORT` 6 Morton buffer files | 49.3 ms | — |
+
+Compression is extreme on sparse graphs because most of the 60M neighbor-slots are `-1` padding. LOAD is now dominated by validation (scans rank + neighbors); skip with `--no-validate` if you trust the file.
 
 Grid dimension caps the node count (`grid × grid` slots). Grid 3200 = 10.24M slots. Larger grids (4096 = 16.7M) currently hang at daemon init — a Metal or POSIX shm sizing limit to chase separately.
 
@@ -246,10 +257,12 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ## Test Results
 
 ```
-27/27 tests pass
+34/34 tests pass (27 core + 7 SerDe)
 1K nodes:   0.45 ms/tick
 1M nodes:   0.71 GCUPS
-10M nodes:  18.6 ms/tick  (load+save: 22 ms / 32 ms)
+10M nodes:  18.6 ms/tick
+            save raw        28.5 ms (358 MB)
+            save compressed 1.3 s   (14.4 MB, 4% of raw)
 All 7 verification gates: GREEN
 ```
 

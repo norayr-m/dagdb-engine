@@ -1,10 +1,17 @@
-/// DagDBDelta — Delta compression for DagDB truth state snapshots.
+/// DagDBDelta — Truth-state time-series codec for DagDB.
 ///
-/// Adapted from CarlosDelta for DagDB's multi-buffer state.
-/// Only persists truth states (the dynamic data). Static data
-/// (rank, LUT6, nodeType, edges) are saved once as an I-frame header.
+/// Purpose: compact recording of truth flips over many ticks.
+/// Scope: static block (rank + LUT6 + nodeType) + N truth frames.
 ///
-/// Format (.dagdb):
+/// NOTE ON FORMAT RELATIONSHIP (see DagDBSnapshot.swift):
+///   - DagDBSnapshot (.dags)  = full engine state at one instant, incl. edges.
+///   - DagDBDelta    (.dagb)  = time-series of truth states, WITHOUT edges.
+///   These formats are complementary, not interchangeable. Unification into
+///   one file ("snapshot + appended frames") is planned: extend DagDBSnapshot
+///   with a hasFrames flag bit and trailing frame section. Not yet wired.
+///   Shared zlib codec lives in DagDBSnapshot.zlibCompress/zlibDecompress.
+///
+/// Format (.dagb):
 ///   Header: "DAGB" (4) + nodeCount (u32) + maxRank (u8) + padding (3)
 ///           + nFrames (u32) + keyframeInterval (u32) = 20 bytes
 ///   Static block: rank[n] + lut6Low[n*4] + lut6High[n*4] + nodeType[n]
@@ -12,7 +19,7 @@
 ///     where data = full truthState if keyframe, else XOR delta
 
 import Foundation
-import Compression
+// Compression handled via DagDBSnapshot.zlibCompress / zlibDecompress
 
 public struct DagDBDelta {
 
@@ -79,10 +86,11 @@ public struct DagDBDelta {
                 data = delta
             }
 
-            let compressed = compress(data)
+            // Shared zlib codec — see DagDBSnapshot.zlibCompress for the unified helper.
+            let compressed = DagDBSnapshot.zlibCompress(Data(data))
             var size = UInt32(compressed.count)
             handle.write(Data(bytes: &size, count: 4))
-            handle.write(Data(compressed))
+            handle.write(compressed)
 
             prevTruth = truthState
             frameCount += 1
@@ -94,15 +102,6 @@ public struct DagDBDelta {
             var nf = frameCount
             handle.write(Data(bytes: &nf, count: 4))
             handle.closeFile()
-        }
-
-        private func compress(_ input: [UInt8]) -> [UInt8] {
-            let bufSize = max(input.count, 64)
-            var output = [UInt8](repeating: 0, count: bufSize)
-            let sz = compression_encode_buffer(
-                &output, bufSize, input, input.count, nil, COMPRESSION_ZLIB
-            )
-            return Array(output[0..<sz])
         }
     }
 
@@ -200,8 +199,8 @@ public struct DagDBDelta {
             if currentIndex < 0 || currentIndex > idx || currentIndex < kf {
                 let off = frameOffsets[kf]
                 let sz = Int(UInt32(data[off]) | UInt32(data[off+1]) << 8 | UInt32(data[off+2]) << 16 | UInt32(data[off+3]) << 24)
-                let compressed = [UInt8](data[off+4..<off+4+sz])
-                currentFrame = decompress(compressed, expectedSize: nodeCount)
+                let compressedData = data.subdata(in: (off+4)..<(off+4+sz))
+                currentFrame = [UInt8](DagDBSnapshot.zlibDecompress(compressedData, expectedSize: nodeCount))
                 currentIndex = kf
             }
 
@@ -210,8 +209,8 @@ public struct DagDBDelta {
                 let next = currentIndex + 1
                 let off = frameOffsets[next]
                 let sz = Int(UInt32(data[off]) | UInt32(data[off+1]) << 8 | UInt32(data[off+2]) << 16 | UInt32(data[off+3]) << 24)
-                let compressed = [UInt8](data[off+4..<off+4+sz])
-                let decompressed = decompress(compressed, expectedSize: nodeCount)
+                let compressedData = data.subdata(in: (off+4)..<(off+4+sz))
+                let decompressed = [UInt8](DagDBSnapshot.zlibDecompress(compressedData, expectedSize: nodeCount))
 
                 let isKF = next == 0 || (keyframeInterval > 0 && next % keyframeInterval == 0)
                 if isKF {
@@ -241,13 +240,6 @@ public struct DagDBDelta {
             return s
         }
 
-        private func decompress(_ input: [UInt8], expectedSize: Int) -> [UInt8] {
-            var output = [UInt8](repeating: 0, count: expectedSize)
-            let sz = compression_decode_buffer(
-                &output, expectedSize, input, input.count, nil, COMPRESSION_ZLIB
-            )
-            return Array(output[0..<sz])
-        }
     }
 
     enum DeltaError: Error {

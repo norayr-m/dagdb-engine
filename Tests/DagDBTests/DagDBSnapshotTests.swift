@@ -63,6 +63,7 @@ final class DagDBSnapshotTests: XCTestCase {
             gridW: gw, gridH: gh, tickCount: 42, path: path
         )
         XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 35)
+        XCTAssertEqual(saved.uncompressedBodyBytes, eng1.nodeCount * 35)
 
         // Fresh engine — all zeros initially
         let (eng2, _, _) = try makeEngine(side: 8)
@@ -78,6 +79,36 @@ final class DagDBSnapshotTests: XCTestCase {
         XCTAssertTrue(buffersEqual(eng1.rankBuf,         eng2.rankBuf,         eng1.nodeCount),     "rank")
         XCTAssertTrue(buffersEqual(eng1.truthStateBuf,   eng2.truthStateBuf,   eng1.nodeCount),     "truth")
         XCTAssertTrue(buffersEqual(eng1.nodeTypeBuf,     eng2.nodeTypeBuf,     eng1.nodeCount),     "type")
+        XCTAssertTrue(buffersEqual(eng1.lut6LowBuf,      eng2.lut6LowBuf,      eng1.nodeCount * 4), "lut_low")
+        XCTAssertTrue(buffersEqual(eng1.lut6HighBuf,     eng2.lut6HighBuf,     eng1.nodeCount * 4), "lut_high")
+        XCTAssertTrue(buffersEqual(eng1.neighborsBuf,    eng2.neighborsBuf,    eng1.nodeCount * 24),"neighbors")
+    }
+
+    func testCompressedRoundTrip() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+
+        let path = NSTemporaryDirectory() + "dagdb_compressed.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+
+        let saved = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 7,
+            path: path, compressed: true
+        )
+        // Compressed body should be smaller than raw body (lots of zero padding).
+        XCTAssertLessThan(saved.bytesWritten, 32 + saved.uncompressedBodyBytes,
+                          "compressed snapshot should shrink vs raw")
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        let loaded = try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path
+        )
+        XCTAssertEqual(loaded.fileTicks, 7)
+
+        XCTAssertTrue(buffersEqual(eng1.rankBuf,         eng2.rankBuf,         eng1.nodeCount),     "rank")
+        XCTAssertTrue(buffersEqual(eng1.truthStateBuf,   eng2.truthStateBuf,   eng1.nodeCount),     "truth")
         XCTAssertTrue(buffersEqual(eng1.lut6LowBuf,      eng2.lut6LowBuf,      eng1.nodeCount * 4), "lut_low")
         XCTAssertTrue(buffersEqual(eng1.lut6HighBuf,     eng2.lut6HighBuf,     eng1.nodeCount * 4), "lut_high")
         XCTAssertTrue(buffersEqual(eng1.neighborsBuf,    eng2.neighborsBuf,    eng1.nodeCount * 24),"neighbors")

@@ -1,20 +1,19 @@
 /// DagDBSnapshot — Full-state binary serialization for DagDB.
 ///
-/// Dumps every GPU buffer in Morton order to a single file. On load,
-/// reads bytes directly back into the mmap'd shared-memory buffers.
-/// No compression, no deltas — this is the Tier-1 bulk path.
+/// Dumps every GPU buffer in Morton order. Optional zlib compression
+/// of the body. Validated before memcpy so bad files can't corrupt live state.
 ///
-/// Format ("DAGS" v1):
-///   Header (32 bytes):
+/// Format ("DAGS" v1, 32-byte header):
 ///     magic       [4]  = "DAGS"
 ///     version     u32  = 1
 ///     nodeCount   u32
 ///     gridW       u32
 ///     gridH       u32
 ///     tickCount   u32
-///     reserved    u32  = 0
-///     reserved2   u32  = 0
-///   Body:
+///     flags       u32  (bit 0 = body is zlib-compressed)
+///     bodyBytes   u32  (size of the body on disk — used when compressed)
+///
+/// Body — 35·N bytes when uncompressed, arbitrary size when compressed:
 ///     rank        [N]      UInt8
 ///     truth       [N]      UInt8
 ///     nodeType    [N]      UInt8
@@ -22,17 +21,24 @@
 ///     lut6High    [N * 4]  UInt32
 ///     neighbors   [N * 24] Int32 × 6
 ///
-///   Total: 33·N + 32 bytes.
-///   N = 10M → 330 MB. One fwrite / one fread. Zero parse cost.
+/// N = 10M uncompressed → 350 MB. With zlib the body typically drops to
+/// 20-30 % because the neighbors table is mostly -1 padding.
 
 import Foundation
 import Metal
+import Compression
 
 public enum DagDBSnapshot {
 
     public static let magic: [UInt8] = [0x44, 0x41, 0x47, 0x53]  // "DAGS"
     public static let version: UInt32 = 1
     public static let headerSize: Int = 32
+
+    public struct Flags: OptionSet {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+        public static let compressed = Flags(rawValue: 1 << 0)
+    }
 
     public enum SnapError: Error, CustomStringConvertible {
         case invalidMagic
@@ -95,14 +101,16 @@ public enum DagDBSnapshot {
     // MARK: - Save
 
     /// Dump all engine buffers to a single binary file.
+    /// - Parameter compressed: zlib-compress the body. Typically ~25% of raw size.
     public static func save(
         engine: DagDBEngine,
         nodeCount: Int,
         gridW: Int,
         gridH: Int,
         tickCount: UInt32,
-        path: String
-    ) throws -> (bytesWritten: Int, elapsedMs: Double) {
+        path: String,
+        compressed: Bool = false
+    ) throws -> (bytesWritten: Int, uncompressedBodyBytes: Int, elapsedMs: Double) {
         let t0 = Date()
 
         FileManager.default.createFile(atPath: path, contents: nil)
@@ -111,19 +119,9 @@ public enum DagDBSnapshot {
         }
         defer { try? handle.close() }
 
-        // Header
-        var header = Data(capacity: headerSize)
-        header.append(contentsOf: magic)
-        appendU32(&header, version)
-        appendU32(&header, UInt32(nodeCount))
-        appendU32(&header, UInt32(gridW))
-        appendU32(&header, UInt32(gridH))
-        appendU32(&header, tickCount)
-        appendU32(&header, 0)
-        appendU32(&header, 0)
-        handle.write(header)
+        let uncompressedBodySize = nodeCount * 35
 
-        // Body — direct from GPU buffers (UMA shared memory)
+        // Body source — direct from GPU buffers (UMA shared memory)
         let rankBytes   = engine.rankBuf.contents()
         let truthBytes  = engine.truthStateBuf.contents()
         let typeBytes   = engine.nodeTypeBuf.contents()
@@ -131,17 +129,65 @@ public enum DagDBSnapshot {
         let highBytes   = engine.lut6HighBuf.contents()
         let nbBytes     = engine.neighborsBuf.contents()
 
-        handle.write(Data(bytesNoCopy: rankBytes,  count: nodeCount,          deallocator: .none))
-        handle.write(Data(bytesNoCopy: truthBytes, count: nodeCount,          deallocator: .none))
-        handle.write(Data(bytesNoCopy: typeBytes,  count: nodeCount,          deallocator: .none))
-        handle.write(Data(bytesNoCopy: lowBytes,   count: nodeCount * 4,      deallocator: .none))
-        handle.write(Data(bytesNoCopy: highBytes,  count: nodeCount * 4,      deallocator: .none))
-        handle.write(Data(bytesNoCopy: nbBytes,    count: nodeCount * 6 * 4,  deallocator: .none))
+        // When compressing, gather body into a contiguous buffer first.
+        // When not, stream directly to disk from UMA (fastest path).
+        var flags = Flags()
+        var bodyBytes: Int
 
-        // Body = rank(N) + truth(N) + type(N) + lut_low(4N) + lut_high(4N) + neighbors(24N) = 35N
-        let total = headerSize + nodeCount * 35
+        if compressed {
+            flags.insert(.compressed)
+            // Gather uncompressed body
+            var buf = Data(count: uncompressedBodySize)
+            buf.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
+                var off = 0
+                memcpy(dst.baseAddress!.advanced(by: off), rankBytes,  nodeCount);            off += nodeCount
+                memcpy(dst.baseAddress!.advanced(by: off), truthBytes, nodeCount);            off += nodeCount
+                memcpy(dst.baseAddress!.advanced(by: off), typeBytes,  nodeCount);            off += nodeCount
+                memcpy(dst.baseAddress!.advanced(by: off), lowBytes,   nodeCount * 4);        off += nodeCount * 4
+                memcpy(dst.baseAddress!.advanced(by: off), highBytes,  nodeCount * 4);        off += nodeCount * 4
+                memcpy(dst.baseAddress!.advanced(by: off), nbBytes,    nodeCount * 6 * 4)
+            }
+            let compressed = zlibCompress(buf)
+            bodyBytes = compressed.count
+
+            var header = buildHeader(nodeCount: nodeCount, gridW: gridW, gridH: gridH,
+                                     tickCount: tickCount, flags: flags, bodyBytes: bodyBytes)
+            handle.write(header)
+            handle.write(compressed)
+            _ = header // keep explicit for clarity
+        } else {
+            bodyBytes = uncompressedBodySize
+            let header = buildHeader(nodeCount: nodeCount, gridW: gridW, gridH: gridH,
+                                     tickCount: tickCount, flags: flags, bodyBytes: bodyBytes)
+            handle.write(header)
+
+            handle.write(Data(bytesNoCopy: rankBytes,  count: nodeCount,          deallocator: .none))
+            handle.write(Data(bytesNoCopy: truthBytes, count: nodeCount,          deallocator: .none))
+            handle.write(Data(bytesNoCopy: typeBytes,  count: nodeCount,          deallocator: .none))
+            handle.write(Data(bytesNoCopy: lowBytes,   count: nodeCount * 4,      deallocator: .none))
+            handle.write(Data(bytesNoCopy: highBytes,  count: nodeCount * 4,      deallocator: .none))
+            handle.write(Data(bytesNoCopy: nbBytes,    count: nodeCount * 6 * 4,  deallocator: .none))
+        }
+
+        let total = headerSize + bodyBytes
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
-        return (total, elapsed)
+        return (total, uncompressedBodySize, elapsed)
+    }
+
+    private static func buildHeader(
+        nodeCount: Int, gridW: Int, gridH: Int,
+        tickCount: UInt32, flags: Flags, bodyBytes: Int
+    ) -> Data {
+        var header = Data(capacity: headerSize)
+        header.append(contentsOf: magic)
+        appendU32(&header, version)
+        appendU32(&header, UInt32(nodeCount))
+        appendU32(&header, UInt32(gridW))
+        appendU32(&header, UInt32(gridH))
+        appendU32(&header, tickCount)
+        appendU32(&header, flags.rawValue)
+        appendU32(&header, UInt32(bodyBytes))
+        return header
     }
 
     // MARK: - Load
@@ -175,6 +221,8 @@ public enum DagDBSnapshot {
         let fileGW    = Int(readU32(data, 12))
         let fileGH    = Int(readU32(data, 16))
         let fileTicks = readU32(data, 20)
+        let flags     = Flags(rawValue: readU32(data, 24))
+        let bodyBytes = Int(readU32(data, 28))
 
         guard fileNC == nodeCount else {
             throw SnapError.nodeCountMismatch(file: fileNC, engine: nodeCount)
@@ -183,29 +231,51 @@ public enum DagDBSnapshot {
             throw SnapError.gridMismatch(fileW: fileGW, fileH: fileGH, engineW: gridW, engineH: gridH)
         }
 
-        // Validate the file bytes BEFORE writing to live buffers.
-        // This way a malformed snapshot cannot corrupt a running graph.
+        let uncompressedBodySize = nodeCount * 35
+
+        // Resolve the body bytes — either the raw slice or the zlib-decoded buffer.
+        let bodyData: Data
+        if flags.contains(.compressed) {
+            // bodyBytes is the compressed size on disk. Slice and decompress.
+            let compressedSlice = data.subdata(in: headerSize..<(headerSize + bodyBytes))
+            bodyData = zlibDecompress(compressedSlice, expectedSize: uncompressedBodySize)
+            guard bodyData.count == uncompressedBodySize else {
+                throw SnapError.ioFailure("decompressed body size \(bodyData.count) != expected \(uncompressedBodySize)")
+            }
+        } else {
+            // v1 backward compat: files written before the flags/bodyBytes fields existed
+            // have bodyBytes = 0 in the header (those bytes were reserved = 0). Fall back
+            // to computing from nodeCount.
+            let effectiveBody = bodyBytes == 0 ? uncompressedBodySize : bodyBytes
+            guard effectiveBody == uncompressedBodySize else {
+                throw SnapError.ioFailure("body size \(effectiveBody) != expected \(uncompressedBodySize)")
+            }
+            bodyData = data.subdata(in: headerSize..<(headerSize + effectiveBody))
+        }
+
+        // Validate decoded bytes BEFORE writing to live buffers.
+        // The body here has the same layout as an uncompressed body.
         if validate {
-            if let violation = validateBytes(data: data, nodeCount: nodeCount) {
+            if let violation = validateDecodedBody(body: bodyData, nodeCount: nodeCount) {
                 throw SnapError.validationFailed(violation)
             }
         }
 
-        // Body copy into GPU buffers
-        var off = headerSize
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        // Commit into GPU buffers
+        bodyData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             let base = raw.baseAddress!
-
+            var off = 0
             memcpy(engine.rankBuf.contents(),       base.advanced(by: off), nodeCount);             off += nodeCount
             memcpy(engine.truthStateBuf.contents(), base.advanced(by: off), nodeCount);             off += nodeCount
             memcpy(engine.nodeTypeBuf.contents(),   base.advanced(by: off), nodeCount);             off += nodeCount
             memcpy(engine.lut6LowBuf.contents(),    base.advanced(by: off), nodeCount * 4);         off += nodeCount * 4
             memcpy(engine.lut6HighBuf.contents(),   base.advanced(by: off), nodeCount * 4);         off += nodeCount * 4
-            memcpy(engine.neighborsBuf.contents(),  base.advanced(by: off), nodeCount * 6 * 4);     off += nodeCount * 6 * 4
+            memcpy(engine.neighborsBuf.contents(),  base.advanced(by: off), nodeCount * 6 * 4)
         }
 
+        let totalRead = headerSize + (flags.contains(.compressed) ? bodyBytes : uncompressedBodySize)
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
-        return LoadResult(bytesRead: off, fileNodeCount: fileNC, fileTicks: fileTicks, elapsedMs: elapsed)
+        return LoadResult(bytesRead: totalRead, fileNodeCount: fileNC, fileTicks: fileTicks, elapsedMs: elapsed)
     }
 
     // MARK: - Morton export (raw per-buffer files for Tier-1 interop)
@@ -309,15 +379,16 @@ public enum DagDBSnapshot {
         return (total, elapsed)
     }
 
-    // MARK: - Byte-level validator (checks a file's bytes before loading)
+    // MARK: - Byte-level validator (checks decoded body bytes before committing)
 
     /// Check DAG invariants by scanning the body bytes directly.
-    /// Rank layout: offset 32..32+N. Neighbors layout: offset 32 + 3N + 8N = 32 + 11N, length 24N.
-    private static func validateBytes(data: Data, nodeCount: Int) -> String? {
-        let rankOff = headerSize
-        let nbOff   = headerSize + 3 * nodeCount + 8 * nodeCount  // rank + truth + type + 2*lut
+    /// Body layout: rank(N) + truth(N) + type(N) + lut_low(4N) + lut_high(4N) + neighbors(24N).
+    /// Rank at offset 0. Neighbors at offset 3N + 8N = 11N.
+    private static func validateDecodedBody(body: Data, nodeCount: Int) -> String? {
+        let rankOff = 0
+        let nbOff   = 3 * nodeCount + 8 * nodeCount
 
-        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> String? in
+        return body.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> String? in
             let base = raw.baseAddress!
             let rank = base.advanced(by: rankOff).assumingMemoryBound(to: UInt8.self)
             let nb   = base.advanced(by: nbOff  ).assumingMemoryBound(to: Int32.self)
@@ -345,6 +416,35 @@ public enum DagDBSnapshot {
             }
             return nil
         }
+    }
+
+    // MARK: - Compression
+
+    /// Compress a byte array with zlib. Returns a fresh Data.
+    static func zlibCompress(_ input: Data) -> Data {
+        let bufSize = max(input.count, 64)
+        var output = [UInt8](repeating: 0, count: bufSize)
+        let sz = input.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
+            return compression_encode_buffer(
+                &output, bufSize,
+                src.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
+                nil, COMPRESSION_ZLIB
+            )
+        }
+        return Data(output[0..<sz])
+    }
+
+    /// Decompress a zlib-compressed byte array of known uncompressed size.
+    static func zlibDecompress(_ input: Data, expectedSize: Int) -> Data {
+        var output = [UInt8](repeating: 0, count: expectedSize)
+        let sz = input.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
+            return compression_decode_buffer(
+                &output, expectedSize,
+                src.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
+                nil, COMPRESSION_ZLIB
+            )
+        }
+        return Data(output[0..<sz])
     }
 
     // MARK: - Helpers

@@ -23,7 +23,7 @@ enum DSLCommand {
     case connect(from: Int, to: Int)
     case clearEdges(node: Int)
     case graphInfo
-    case save(path: String)
+    case save(path: String, compressed: Bool)
     case load(path: String)
     case exportMorton(dir: String)
     case importMorton(dir: String)
@@ -78,8 +78,10 @@ struct DSLParser {
 
         switch first {
         case "SAVE":
+            // SAVE <path> [COMPRESSED]
             guard rawTokens.count >= 2 else { return .unknown(input) }
-            return .save(path: rawTokens[1])
+            let compressed = rawTokens.count >= 3 && tokens[2] == "COMPRESSED"
+            return .save(path: rawTokens[1], compressed: compressed)
 
         case "LOAD":
             guard rawTokens.count >= 2 else { return .unknown(input) }
