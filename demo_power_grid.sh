@@ -71,18 +71,21 @@ echo "  ── Rank 2: Zone Aggregators ──"
 # Node 118: North zone = AND (all 6 must be healthy)
 cmd "SET 118 RANK 2" >/dev/null
 cmd "SET 118 LUT AND" >/dev/null
+cmd "CLEAR 118 EDGES" >/dev/null
 for i in $(seq 100 105); do cmd "CONNECT FROM $i TO 118" >/dev/null; done
 echo "    Node 118: North zone AND gate (all must be true)"
 
 # Node 119: South zone = MAJORITY (4+ of 6 healthy = OK)
 cmd "SET 119 RANK 2" >/dev/null
 cmd "SET 119 LUT MAJ" >/dev/null
+cmd "CLEAR 119 EDGES" >/dev/null
 for i in $(seq 106 111); do cmd "CONNECT FROM $i TO 119" >/dev/null; done
 echo "    Node 119: South zone MAJORITY gate (4+ of 6)"
 
 # Node 120: East zone = OR (any sensor healthy = partially operational)
 cmd "SET 120 RANK 2" >/dev/null
 cmd "SET 120 LUT OR" >/dev/null
+cmd "CLEAR 120 EDGES" >/dev/null
 for i in $(seq 112 117); do cmd "CONNECT FROM $i TO 120" >/dev/null; done
 echo "    Node 120: East zone OR gate (any healthy = OK)"
 
@@ -93,6 +96,7 @@ echo "  ── Rank 1: Grid Controller ──"
 # Node 121: Grid = AND of all 3 zones
 cmd "SET 121 RANK 1" >/dev/null
 cmd "SET 121 LUT AND" >/dev/null
+cmd "CLEAR 121 EDGES" >/dev/null
 cmd "CONNECT FROM 118 TO 121" >/dev/null
 cmd "CONNECT FROM 119 TO 121" >/dev/null
 cmd "CONNECT FROM 120 TO 121" >/dev/null
@@ -104,6 +108,7 @@ echo "  ── Rank 0: Decision ──"
 
 cmd "SET 122 RANK 0" >/dev/null
 cmd "SET 122 LUT ID" >/dev/null
+cmd "CLEAR 122 EDGES" >/dev/null
 cmd "CONNECT FROM 121 TO 122" >/dev/null
 echo "    Node 122: Final decision IDENTITY (pass-through)"
 

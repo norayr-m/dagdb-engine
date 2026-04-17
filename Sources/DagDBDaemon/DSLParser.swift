@@ -21,6 +21,7 @@ enum DSLCommand {
     case setRank(node: Int, value: UInt8)
     case setLUT(node: Int, preset: String)
     case connect(from: Int, to: Int)
+    case clearEdges(node: Int)
     case graphInfo
     case unknown(String)
 }
@@ -135,6 +136,13 @@ struct DSLParser {
             default:
                 return .unknown(input)
             }
+
+        case "CLEAR":
+            // CLEAR <node> EDGES
+            guard tokens.count >= 3, let node = Int(tokens[1]), tokens[2] == "EDGES" else {
+                return .unknown(input)
+            }
+            return .clearEdges(node: node)
 
         case "CONNECT":
             // CONNECT FROM <src> TO <dst>

@@ -187,6 +187,12 @@ func handleCommand(_ input: String) -> String {
         engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)[node] = high
         return "OK SET node=\(node) lut=\(preset)"
 
+    case .clearEdges(let node):
+        guard node < nodeCount else { return "ERROR node \(node) out of range" }
+        let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: nodeCount * 6)
+        for d in 0..<6 { nbPtr[node * 6 + d] = -1 }
+        return "OK CLEAR node=\(node) edges"
+
     case .connect(let src, let dst):
         guard src < nodeCount && dst < nodeCount else { return "ERROR node out of range" }
         // Find first empty neighbor slot on dst
