@@ -55,17 +55,42 @@ cd dagdb-engine
 
 That's it. Builds, tests, starts the daemon, runs a smoke test.
 
-### Daemon Management
+### Start
+
+**Start with the included sample database:**
 
 ```bash
-./dagdb start                        # start with defaults (256 grid, ~/.dagdb)
-./dagdb start --data test_db/        # persist state to local folder
-./dagdb start --grid 512             # custom grid size
-./dagdb stop                         # save state and stop
+./dagdb start --data sample_db/
+```
+
+This loads a power grid graph (18 sensors, 3 zones, 3 injected faults). Ready to query immediately.
+
+### Query
+
+```bash
+./dagdb query 'STATUS'
+./dagdb query 'TICK 100'
+./dagdb query 'GRAPH INFO'
+./dagdb query 'NODES AT RANK 3'
+./dagdb query 'TRAVERSE FROM 122 DEPTH 3'
+```
+
+### Stop
+
+**Stop the daemon** (saves state, cleans up):
+
+```bash
+./dagdb stop
+```
+
+### Other Options
+
+```bash
+./dagdb start                        # empty graph, default settings
+./dagdb start --grid 512             # larger grid (262K nodes)
+./dagdb start --data my_project/     # your own data folder
+./dagdb status                       # is it running? show graph info
 ./dagdb restart                      # stop + start
-./dagdb status                       # is it running? graph info
-./dagdb query 'TICK 100'             # send DSL command
-./dagdb q 'STATUS'                   # short form
 ./dagdb log                          # view daemon log
 ```
 
