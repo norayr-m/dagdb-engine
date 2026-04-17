@@ -174,7 +174,7 @@ SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
 
 Results show up in DBeaver's table grid. Works with any tool that speaks PostgreSQL — Python (`psycopg2`), Node.js (`pg`), Go (`lib/pq`), JDBC, ODBC.
 
-**Set up views** (makes data browsable in DBeaver's navigator):
+**Set up views and visualizations:**
 
 ```bash
 psql dagdb -f setup_views.sql
@@ -190,6 +190,22 @@ SELECT * FROM dagdb_run(10);                  -- tick 10 times
 SELECT * FROM dagdb_rank(2);                  -- nodes at rank 2
 SELECT * FROM dagdb_traverse(42, 3);          -- walk from node 42
 SELECT rank, COUNT(*) FROM dagdb_nodes GROUP BY rank;  -- count by rank
+SELECT * FROM dagdb_ascii();                          -- ASCII art schema
+SELECT * FROM dagdb_show();                           -- LIVE graph with values
+```
+
+**`dagdb_show()`** — the star of the show. Full ASCII visualization with real node IDs, truth values, LUT gate types, edge connectivity, fault list, zone health ratios, and aggregation logic. All live from the GPU daemon:
+
+```
+  NORTH          SOUTH           EAST
+  100:● 101:● 102:●  106:● 107:● 108:●   112:● 113:● 114:○
+  103:● 104:● 105:●  109:○ 110:● 111:●   115:● 116:○ 117:●
+
+  FAULTS: 109 114 116
+  NORTH: 6/6 healthy  →  AND  → ●
+  SOUTH: 6/5 healthy  →  MAJ  → ●  (need 4+)
+  EAST:  6/4 healthy  →  OR   → ●  (need 1+)
+  GRID:  3 zones → AND → ○   DECISION: ○
 ```
 
 ## Test Results
