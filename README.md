@@ -19,6 +19,7 @@ DagDB/
 │   │   ├── DagDBGraph.swift      (graph builder: hub split, ghost nodes)
 │   │   ├── DagDBEngine+Graph.swift (micro-time resonance, Paradox Horizon)
 │   │   ├── DagDBDelta.swift      (Carlos Delta persistence, time-travel)
+│   │   ├── DagDBSnapshot.swift   (full-state binary SerDe, .dags format)
 │   │   ├── HexGrid.swift         (Morton Z-curve, 7-coloring)
 │   │   └── Shaders/dagdb.metal   (LUT6 + weighted tick kernels)
 │   │
@@ -79,10 +80,14 @@ This loads a power grid graph (18 sensors, 3 zones, 3 injected faults). Ready to
 ```bash
 ./dagdb start                        # empty graph, default settings
 ./dagdb start --grid 512             # larger grid (262K nodes)
+./dagdb start --grid 3200            # 10M-node grid (for bulk imports)
 ./dagdb start --data my_project/     # your own data folder
 ./dagdb status                       # is it running? show graph info
 ./dagdb restart                      # stop + start
 ./dagdb log                          # view daemon log
+./dagdb save foo.dags                # snapshot entire graph to one file
+./dagdb load foo.dags                # restore graph from snapshot
+./dagdb export dir/                  # dump 6 Morton-ordered raw buffers
 ```
 
 ### Query via netcat (no dependencies)
@@ -101,6 +106,41 @@ echo 'TRAVERSE FROM 0 DEPTH 2' | nc -U /tmp/dagdb.sock
 ```
 
 No PostgreSQL needed. No Rust needed. Just Swift and netcat.
+
+## Persistence & Bulk Load (SerDe)
+
+DagDB persists the entire engine state — rank, truth, node type, LUT6, and the full 6-edge neighbor table — as a single binary file. Format `.dags` v1, 32-byte header + `35·N` bytes of body (where `N` is the node count). Load is a direct `memcpy` into the mmap'd GPU buffers; no parse, no deserialization.
+
+```bash
+# Snapshot the live graph
+./dagdb save /path/graph.dags
+
+# Restore into a running daemon (node count must match grid size)
+./dagdb load /path/graph.dags
+
+# Per-buffer raw dump for interop (6 Morton-ordered files)
+./dagdb export /path/dir/
+```
+
+**Bulk import for millions of nodes.** The Python generator in `tools/gen_dags.py` writes valid `.dags` files directly without going through the socket or DSL — useful for scale tests or importing from external sources:
+
+```bash
+python3 tools/gen_dags.py --grid 3200 --nodes 10000000 --out /tmp/big.dags
+./dagdb start --grid 3200
+./dagdb load /tmp/big.dags
+```
+
+**Measured on one M5 Max, 10M-node ranked DAG (358 MB snapshot):**
+
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| Generate ranked tree (Python + numpy) | ~90 ms | — |
+| `LOAD` 358 MB snapshot | 21.8 ms | 16.4 GB/s |
+| `TICK 1` evaluation over 10M nodes | 18.6 ms | ~540M node-updates/s |
+| `SAVE` 358 MB back to disk | 32.4 ms | 11.0 GB/s |
+| `EXPORT` 6 Morton buffer files | 49.3 ms | — |
+
+Grid dimension caps the node count (`grid × grid` slots). Grid 3200 = 10.24M slots. Larger grids (4096 = 16.7M) currently hang at daemon init — a Metal or POSIX shm sizing limit to chase separately.
 
 ## SQL Access (Optional, Advanced)
 
@@ -207,8 +247,9 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
 
 ```
 27/27 tests pass
-1K nodes: 0.45 ms/tick
-1M nodes: 0.71 GCUPS
+1K nodes:   0.45 ms/tick
+1M nodes:   0.71 GCUPS
+10M nodes:  18.6 ms/tick  (load+save: 22 ms / 32 ms)
 All 7 verification gates: GREEN
 ```
 
