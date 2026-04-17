@@ -99,3 +99,47 @@ $$ LANGUAGE plpgsql;
 --
 --   -- Find all true nodes:
 --   SELECT * FROM dagdb_nodes WHERE truth = 1;
+--   SELECT graph FROM dagdb_map;                              -- ASCII DAG with live values
+
+-- Live hex DAG map — SELECT graph FROM dagdb_map;
+CREATE OR REPLACE VIEW dagdb_map AS
+SELECT row_number() OVER () AS line, graph FROM (
+SELECT 1 AS ord, '' AS graph
+UNION ALL SELECT 2, '  RANK 0 (ROOT)        RANK 1 (COMBINER)      RANK 2 (AGGREGATORS)         RANK 3 (LEAVES)'
+UNION ALL SELECT 3, '  ═══════════════       ═══════════════════     ══════════════════════       ══════════════════════════════'
+UNION ALL
+SELECT 4,
+  '  ┌───┐                 ┌───┐                  ┌───┐  ┌───┐  ┌───┐        ' ||
+  (SELECT string_agg(CASE WHEN truth=1 THEN '●' ELSE '○' END, ' ' ORDER BY node_id)
+   FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 100 AND 105)
+UNION ALL
+SELECT 5,
+  '  │' ||
+  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 122 DEPTH 1') WHERE node_id=122 LIMIT 1), ' · ') ||
+  '│ ────────────── │' ||
+  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 121 DEPTH 1') WHERE node_id=121 LIMIT 1), ' · ') ||
+  '│ ─────────┬──── │' ||
+  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 118 DEPTH 1') WHERE node_id=118 LIMIT 1), ' · ') ||
+  '│  │' ||
+  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 119 DEPTH 1') WHERE node_id=119 LIMIT 1), ' · ') ||
+  '│  │' ||
+  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 120 DEPTH 1') WHERE node_id=120 LIMIT 1), ' · ') ||
+  '│ ──── ' ||
+  (SELECT string_agg(CASE WHEN truth=1 THEN '●' ELSE '○' END, ' ' ORDER BY node_id)
+   FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 106 AND 111)
+UNION ALL
+SELECT 6,
+  '  │122│                 │121│                  │AND│  │MAJ│  │OR │        ' ||
+  (SELECT string_agg(CASE WHEN truth=1 THEN '●' ELSE '○' END, ' ' ORDER BY node_id)
+   FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 112 AND 117)
+UNION ALL SELECT 7, '  │ID │                 │AND│                  │118│  │119│  │120│'
+UNION ALL SELECT 8, '  └───┘                 └───┘                  └─┬─┘  └─┬─┘  └─┬─┘'
+UNION ALL SELECT 9, '    │                     │                      │       │       │'
+UNION ALL SELECT 10,'    └─────────────────────┘                      └───┬───┘───┬───┘'
+UNION ALL SELECT 11,'              reads: 121                             │       │'
+UNION ALL SELECT 12,'                                              ┌──────┘       └──────┐'
+UNION ALL SELECT 13,'                                        100-105 ──→ 118    112-117 ──→ 120'
+UNION ALL SELECT 14,'                                        106-111 ──→ 119'
+UNION ALL SELECT 15, ''
+UNION ALL SELECT 16, '  ● = TRUE    ○ = FALSE    ID = identity    AND = all    MAJ = majority(4+)    OR = any'
+) sub ORDER BY ord;
