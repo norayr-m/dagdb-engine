@@ -1,394 +1,422 @@
-# DagDB Engine
+# DagDB
 
-6-bounded ranked DAG database engine. Swift + Metal GPU compute on Apple Silicon.
+**6-bounded ranked DAG database on Apple Silicon, with a 4-cycle runtime on top.**
 
-[→ DagDB Overview (24 slides)](https://norayr-m.github.io/DagDB/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/DagDB/sql-architecture.html) | [→ **Bio-Twin Deck (12 slides)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/DagDB/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/DagDB/podcast.html) | [→ **Bio-Twin Podcast (6 min)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | [→ Grid Demo](https://norayr-m.github.io/DagDB/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/DagDB/citydrt.html) | [→ **Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html)
-
-## What It Does
-
-Every node connects to at most **6 directed edges**. Each node has a programmable **LUT6** (64-bit lookup table) that can implement any Boolean function of its 6 inputs. Nodes are organized in **ranks** (leaves to root) and evaluated leaves-up in parallel on the GPU.
-
----
-
-## 🔬 Experiments & Validation
-
-> Everything below runs on a single Apple M5 Max laptop. No controlled benchmark, no peer review. All numbers reproducible from the repo.
-
-**Resources for this section:**
-
-| | | |
-|--|--|--|
-| 🎞️ [**Bio-Twin Slide Deck**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | 🎙️ [**Podcast (6m 20s)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | 🧪 [**Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html) |
+> **Humble disclaimer.** Amateur engineering project. We are not HPC
+> professionals and make no competitive claims. The numbers here come
+> from a single M5 Max laptop, no controlled benchmark, no peer
+> review. Errors likely. Numbers speak.
 
 ---
 
-### Experiment 1 — Bio-digital liver (acetaminophen overdose)
+## What it is
 
-A 711-node ranked DAG models hepatic architecture: **600 hepatocytes** organised into **100 lobules** across **3 zones** (periportal / midzonal / centrilobular), feeding **3 liver functions** and one organ-health root.
+A graph database where every node has at most six directed inputs, a
+64-bit programmable truth table (LUT6), a ternary state (−1, 0, +1),
+and a 64-bit rank. Edges always go from higher rank to lower rank, so
+the graph is acyclic by construction.
 
-Systemic condition nodes (`toxin_APAP`, `hypoxia`, `inflammation`) sit above the cells and are *shared* across all subscribing hepatocytes — this is the core "properties-as-nodes" pattern. Zone specificity lives in the edge topology, not in cell code.
+Two layers in one tree:
 
-<table align="center"><tr>
-<td align="center"><img src="examples/liver/liver_architecture.png" width="320" alt="architecture"/><br/><sub><b>Fig 1.</b> full ranked DAG, 6 ranks</sub></td>
-<td align="center"><img src="examples/liver/liver_lobule_zoom.png" width="320" alt="lobule zoom"/><br/><sub><b>Fig 2.</b> shared subscription pattern — one node, many cells</sub></td>
-<td align="center"><img src="examples/liver/liver_apap_damage.png" width="320" alt="APAP damage"/><br/><sub><b>Fig 3.</b> zone-3-specific damage from one LUT flip</sub></td>
-</tr></table>
+| Layer | Path | Role |
+|---|---|---|
+| **Database** | `dagdb/` | 6-bounded ranked DAG store: library, `dagdb-cli`, `dagdb-daemon`, Python biology and Loom plug-ins, MCP server, PostgreSQL extension, sample graphs. All active development lives here. |
+| **Runtime** | `Sources/` + `Package.swift` at repo root | 4-cycle optimiser-executor (paper 4 scaffold). Independent build. Uses a DagDB substrate as its computation graph. |
 
-#### Measured cascade
+Between 2026-04-19 and 2026-04-21 the database layer was extended
+with a rank-widening + MVCC + secondary-index pass — u32→u64 rank,
+WAL, snapshot-on-read, ancestry and similarity primitives.
 
-| State                          | Hepatocytes firing | Lobules | Liver root       | Note |
-|--------------------------------|-------------------:|--------:|:-----------------|:-----|
-| Healthy baseline               | 600 / 600          | 100/100 | 🟢 **ALIVE**     | all systemic signals off |
-| + APAP only                    | **400 / 600**      | 67/100  | 🟢 **ALIVE**     | only zone 3 dies; OR-gate keeps organ alive at 33 % loss |
-| + APAP + hypoxia               | 0 / 600            | 0/100   | 🔴 **FAILED**    | hypoxia hits every cell — universal subscription |
-| + APAP + hypoxia + inflammation| 0 / 600            | 0/100   | 🔴 **FAILED**    | fulminant failure, 3/3 systemic |
-| NAC antidote applied           | 600 / 600          | 100/100 | 🟢 **ALIVE**     | full recovery in 5 ticks (~5 ms) |
+**Ship-storm 2026-04-21.** Six items landed on the engine in a single
+day, all tests green:
 
-**The key frame is row 2:** one LUT flip on `toxin_APAP` → exactly 200 zone-3 cells die in ~7 ms → zones 1 & 2 untouched → organ still functional thanks to the OR-gate at zone-3 (graceful degradation by topology, not by heuristic).
+- **u32 rank refactor** (T1, 2026-04-20) — address space 255 → 4.3 billion;
+  snapshot format v2 (38 B/node).
+- **u64 rank refactor** (T1b, 2026-04-21) — address space 4.3 billion →
+  1.8 × 10¹⁹; snapshot format v3 (42 B/node). Backward-compat load
+  accepts v1 (u8) and v2 (u32) and widens on read.
+- **`rankPolicy` Protocol + three defaults** (T2) —
+  sequence-position / chain-band / topological-sort.
+- **`SET_RANKS_BULK`** (T3) — shm-fed u32 vector rewrite, bypasses
+  per-edge validation.
+- **MVCC snapshot-on-read** (T7) — `OPEN_READER` / `READER id …`
+  sessions memcpy a stable engine copy; writers unblocked.
+- **`bfsDepths` primitive + `BFS_DEPTHS FROM <seed>` DSL** —
+  undirected and backward.
+- **Loom Pass 1 complete** — 694 events ingested end-to-end on the
+  004 / u32 daemon, nodes 0–693, ~140 ms aggregate, ~4.6–5.2 k
+  events/sec. Adapter conforms to the Protocol. Dual-write through
+  `capture_latest` is live.
 
-```
-Write cost: O(1)   (one LUT byte flipped)
-State change: O(N) (200 hepatocyte truth bytes updated)
-Wall-clock:  ~7 ms propagation, ~15 ms full evaluation
-```
+**Tests.** 98 Swift test cases + 16 Python adapter tests green as of
+2026-04-21. No skips, no xfails. Counts cited separately on purpose.
 
----
+**Persistence policy (standing rule).** All persistent DagDB state on
+this machine lives under `~/dag_databases/`. The daemon enforces this
+via `DAGDB_DATA_ROOT`; any out-of-root `SAVE`/`LOAD`/`BACKUP` is
+rejected. Gitignore is tightened to allow exactly one sample
+(`dagdb/sample_db/demo_graph.dagdb`); every other `.dags`/`.dagdb`/
+`.wal` is blocked. See
+[`docs/wiki/data-and-persistence.md`](docs/wiki/data-and-persistence.md)
+for the contract.
 
-### Experiment 2 — SerDe at 10 M nodes
-
-Full-state binary snapshot (`.dags` format, 32-byte header + Morton-ordered body) round-tripped through a 10.2 M-node graph.
-
-| Operation                    | Time       | Size                     |
-|------------------------------|-----------:|:-------------------------|
-| Generate ranked tree (Python + numpy) | ~90 ms | 358 MB raw        |
-| **SAVE** raw                 | **28.5 ms**| 358 MB (12.6 GB/s)       |
-| **SAVE** zlib-compressed     | 1.32 s     | **14.4 MB (4 % of raw)** |
-| **LOAD** w/ byte validation  | 6.5 s      | 60 M edge slots scanned  |
-| **TICK** over 10 M nodes     | **18.6 ms**| ~540 M node-updates/s    |
-| **EXPORT** 6 Morton buffers  | 49.3 ms    | interop with external tools |
-
-Compression hits 4 % because sparse neighbour tables are dominated by `-1` padding; zlib collapses long runs to almost nothing.
-
----
-
-### Experiment 3 — DAG invariant enforcement
-
-The `CONNECT` handler runs **four guards** before writing any edge (`Sources/DagDBDaemon/main.swift:196`):
-
-1. Bounds check (both endpoints within `nodeCount`)
-2. Self-loop rejection (`src == dst`)
-3. **Acyclicity**: `rank(src) > rank(dst)` — the DAG property
-4. Duplicate-edge rejection
-
-The same invariants are checked byte-level on every `LOAD`, *before* the memcpy into live GPU buffers — so a malformed `.dags` file cannot corrupt a running graph. The `VALIDATE` DSL verb runs the full scan against the live engine in O(N).
+**The wiki** is at [`docs/wiki/`](docs/wiki/README.md). Start with
+[`data-and-persistence.md`](docs/wiki/data-and-persistence.md) if
+you want to know where every byte lives before you run anything.
 
 ---
 
-### Experiment 4 — MCP integration
+## Quick start — database
 
-Four MCP servers bridged through `mcpo` (MCP → OpenAPI) at `http://localhost:8787/`:
+```
+cd dagdb
+swift build -c release
+```
 
-| Server      | Tools | Purpose                                         |
-|-------------|------:|-------------------------------------------------|
-| **dagdb**   |    17 | daemon status · graph queries · SerDe · VALIDATE |
-| **dialogue**|     4 | Kokoro two-voice TTS (podcast generation)       |
-| **image**   |     3 | FLUX image generation via `mflux`               |
-| **diagram** |     4 | Graphviz-based structural diagrams              |
+Start the daemon (listens on `/tmp/dagdb.sock`, grid 1024 ≈ 1 M nodes):
 
-A `launchd` agent (`com.dagdb.mcpo`) keeps the bridge running across reboots. The live explorer in Experiment 1 is a client of this bridge.
+```
+.build/release/dagdb-daemon --grid 1024 --socket /tmp/dagdb.sock
+```
+
+Durability envs (point these inside `~/dag_databases/`):
+
+```
+DAGDB_DATA_ROOT=$HOME/dag_databases \
+DAGDB_WAL=$HOME/dag_databases/live.wal \
+DAGDB_AUTOSAVE=$HOME/dag_databases/auto.dags \
+  .build/release/dagdb-daemon --grid 1024
+```
+
+`DAGDB_DATA_ROOT` is the single persistent-DB root; any `SAVE`/
+`LOAD`/`BACKUP` path outside it is rejected with
+`ERROR io: path: '<p>' outside DAGDB_DATA_ROOT`. The launchd plist
+(`~/Library/LaunchAgents/com.hari.dagdb.plist`) wires all three
+envs automatically on this machine.
+
+Send a command from another terminal:
+
+```
+echo "STATUS" | nc -U /tmp/dagdb.sock
+```
+
+## Quick start — 4-cycle runtime
+
+```
+swift build                 # builds the engine at the repo root
+.build/debug/dagdb-engine-cli
+```
+
+The runtime depends on nothing under `dagdb/` — the two layers are
+decoupled. Paper: `paper/dagdb_intermezzo.pdf`.
+
+## Quick start — dashboard
+
+```
+python3 -m pip install pyyaml
+python3 dashboard/gen_dashboard.py
+open -a "Google Chrome" dashboard/index.html
+```
+
+Auto-refreshes every 30 seconds. Edit `dashboard/features.yaml` to
+change the ledger.
+
+## Quick start — biology ingestion
+
+```python
+from dagdb.plugins.biology.rank_policies import SequencePositionPolicy
+import numpy as np
+
+policy = SequencePositionPolicy()
+ranks = policy.assign_ranks(
+    node_count=N,
+    max_rank=N,
+    seq_indices=np.arange(N),
+)
+# Write `ranks` to shm offset 8 and call SET_RANKS_BULK — or use
+# per-node SET <id> RANK <r> calls if you prefer.
+```
+
+See `dagdb/plugins/biology/rank_policies.py` for all three default
+policies (sequence-position / chain-band / topological-sort).
+
+## Quick start — Loom events
+
+Stop-hook adapter in `dagdb/plugins/loom/adapter.py`:
+
+```python
+from dagdb.plugins.loom.adapter import event_to_node, apply_ingest
+
+record = event_to_node(loom_event, ctx)  # pure function
+_submit_insert(record)                   # your socket / MCP call
+ctx = apply_ingest(record, ctx)
+```
+
+Ingest context lives at `~/jarvis_workspace/dagdb_ingest_ctx.json` by
+convention. See `dagdb/plugins/loom/backfill.py` for the one-shot
+JSONL → DagDB ingester used for historical loads.
 
 ---
 
-### Experiment 5 — Test coverage
+## Features
 
-```
-34 / 34 tests pass
-  27 core   — LUT6 presets, state, engine, graph, evaluation, delta codec
-   7 SerDe  — round-trip, compressed round-trip, magic-check, grid-mismatch,
-              validator: rank violation / self-loop / duplicate
-```
+Authoritative ledger: `dashboard/features.yaml`. At a glance:
 
----
+### Core engine
+- 6-bounded ranked DAG, 64-bit rank (u8 → u32 on 2026-04-20 T1,
+  then u32 → u64 on 2026-04-21 T1b; address space now 1.8 × 10¹⁹).
+- LUT6 per node — any six-input Boolean function is one table lookup
+  per tick.
+- Ternary state; zero is the free level.
+- Morton Z-curve memory layout + 7-colouring for lock-free intra-rank
+  parallelism on the GPU.
+- Metal tick kernel, hex-grid substrate, Apple Silicon UMA.
 
-### ⚠️ What has NOT been validated
-
-Honest limits, spelled out:
-
-- **Grid ≥ 4096** (16.7 M slots) hangs at daemon init — Metal or POSIX shm sizing limit, root cause unknown.
-- **TICK + SAVE concurrency**: single-threaded socket server makes interleaving impossible today; no mutex if the server model changes.
-- **Motif / subgraph-match operators** — the query primitive that would genuinely distinguish DagDB from property-bag graph DBs. Not yet built.
-- **Time-travel replay**: `DagDBDelta` codec exists (truth-state time-series with keyframe + XOR-delta compression) but is not wired into the daemon as `RECORD` / `REPLAY` DSL verbs yet.
-- **Property-bag ingestion** from Neo4j-shaped input — no tooling.
-- **LOAD validator** is sequential Swift. 6.5 s at 10 M nodes. A GPU-parallel version is the next honest performance win.
-
-Not lies of omission. Seventeen holes were audited this session; nine closed, three partially addressed, five remain genuine future work.
-
-
-## Architecture
-
-```
-DagDB/
-├── Sources/
-│   ├── DagDB/                    (core library)
-│   │   ├── DagDBEngine.swift     (Metal GPU engine)
-│   │   ├── DagDBState.swift      (node state buffers + LUT6 presets)
-│   │   ├── DagDBGraph.swift      (graph builder: hub split, ghost nodes)
-│   │   ├── DagDBEngine+Graph.swift (micro-time resonance, Paradox Horizon)
-│   │   ├── DagDBDelta.swift      (Carlos Delta persistence, time-travel)
-│   │   ├── DagDBSnapshot.swift   (full-state binary SerDe, .dags format)
-│   │   ├── HexGrid.swift         (Morton Z-curve, 7-coloring)
-│   │   └── Shaders/dagdb.metal   (LUT6 + weighted tick kernels)
-│   │
-│   ├── DagDBDaemon/              (GPU daemon server)
-│   │   ├── main.swift            (socket listener + shared memory)
-│   │   ├── SocketServer.swift    (Unix domain socket)
-│   │   └── DSLParser.swift       (graph query DSL)
-│   │
-│   └── DagDBCLI/main.swift       (test harness)
-│
-├── pg_dagdb/                     (PostgreSQL extension, Rust/pgrx)
-│   ├── Cargo.toml
-│   └── src/lib.rs                (dagdb_exec SQL function)
-│
-└── Tests/DagDBTests/             (27 tests, all pass)
-```
-
-## Quick Start
-
-```bash
-git clone https://github.com/norayr-m/dagdb-engine.git
-cd dagdb-engine
-./install.sh
-```
-
-That's it. Builds, tests, starts the daemon, runs a smoke test.
-
-### Start
-
-**Start with the included sample database:**
-
-```bash
-./dagdb start --data sample_db/
-```
-
-This loads a power grid graph (18 sensors, 3 zones, 3 injected faults). Ready to query immediately.
+### Persistence
+- **Snapshot v3** (`.dags`) — atomic save via tmp + `F_FULLFSYNC` +
+  `replaceItemAt` + dir fsync. Body is 42 B/node (u64 rank + truth +
+  type + LUT + 6 neighbor slots). Loads v1 (u8 rank), v2 (u32 rank),
+  and v3 (u64 rank), widening in place. Optional zlib body compression.
+- **JSON / CSV round-trip** — `dagdb-json` schema mirrors the six
+  engine buffers; CSV is two files (`nodes.csv` + `edges.csv`). Both
+  paths use the same atomic-save discipline.
+- **Backup chain** — `base.dags` + ordered `NNNNN.diff` XOR diffs,
+  append / compact / restore. Single-bit mutations produce diffs
+  under 5 % of raw state.
+- **WAL** — append-only log (`DAGW` format), fsync-before-apply per
+  mutation. Truncated-tail records drop silently on replay.
+  `CHECKPOINT` markers bound replay after snapshot. Opt-in via
+  `DAGDB_WAL` env.
 
 ### Query
+- **`SELECT truth <k> rank <lo>-<hi>`** — secondary index
+  (`TruthRankIndex`) with lazy rebuild on a dirty flag. Common
+  "all events of type X in rank window Y" query, O(log N +
+  matches).
+- **`BFS_DEPTHS FROM <seed> [BACKWARD]`** — per-node depth vector,
+  undirected (inputs ∪ fanout) or backward (inputs only). Zero-copy
+  shared-memory output.
+- **`ANCESTRY FROM <node> DEPTH <n>`** — reverse BFS bounded by
+  depth, shared-memory `(node, depth)` pairs.
+- **`SIMILAR_DECISIONS TO <node> DEPTH <d> K <k> [AMONG TRUTH <t>]`** —
+  top-K ranked by Weisfeiler-Lehman-1 histogram L1 distance over
+  local ancestral subgraphs. Truth filter narrows the candidate pool.
+- **`TRAVERSE FROM <node> DEPTH <n>`** — k-rank expansion, legacy
+  walk.
+- **Eight built-in subgraph distance metrics** — Jaccard nodes,
+  Jaccard edges, rank-profile L1 + L2, node-type L1, bounded GED,
+  Weisfeiler-Lehman-1 histogram L1, spectral L2 over Laplacian
+  eigenvalues via an inline Jacobi eigensolver.
 
-```bash
-./dagdb query 'STATUS'
-./dagdb query 'TICK 100'
-./dagdb query 'GRAPH INFO'
-./dagdb query 'NODES AT RANK 3'
-./dagdb query 'TRAVERSE FROM 122 DEPTH 3'
-```
+### Isolation (MVCC)
+- **`OPEN_READER` / `CLOSE_READER` / `LIST_READERS`** — open a
+  snapshot-on-read session (memcpy of the six buffers into a fresh
+  `DagDBEngine`). Writers run unblocked on primary.
+- **`READER <id> <inner command>`** — route a read-only command to
+  the session's snapshot. Writes and `EVAL` are rejected.
 
-### Stop
+### ACID status
 
-**Stop the daemon** (saves state, cleans up):
+| | Property | Status | Evidence |
+|---|---|---|---|
+| A | Atomicity | **pass** | `DagDBSnapshot.save`: tmp + F_FULLFSYNC + `replaceItemAt` + dir fsync. 3 durability tests. |
+| C | Consistency | partial | Rank monotonicity on insert + validator on load. No cross-transaction invariant checking. |
+| I | Isolation | **pass** | Serial accept loop + snapshot-on-read MVCC. Readers get a stable point-in-time view; writers unblocked. |
+| D | Durability | **pass** | F_FULLFSYNC on snapshot body + dir fsync on rename + WAL fsync-before-apply. |
 
-```bash
-./dagdb stop
-```
+### Interfaces
+- **CLI** — `dagdb`, `dagdb-cli`, `dagdb-daemon`.
+- **Python MCP server** (`dagdb/mcp_server.py`) — 37 tools on
+  `http://localhost:8787/dagdb/…` via `mcpo`.
+- **PostgreSQL extension** (`dagdb/pg_dagdb/`).
+- **Browser bridge** (`dagdb/web/bridge.py`).
+- **Plugins**:
+  - `dagdb/plugins/biology/rank_policies.py` — `RankPolicy` Protocol
+    + three defaults (sequence-position / chain-band /
+    topological-sort).
+  - `dagdb/plugins/loom/` — hive-event adapter (`adapter.py`,
+    `backfill.py`, `test_adapter.py`) for Loom-as-DagDB.
 
-### Other Options
+### Error taxonomy
 
-```bash
-./dagdb start                        # empty graph, default settings
-./dagdb start --grid 512             # larger grid (262K nodes)
-./dagdb start --grid 3200            # 10M-node grid (for bulk imports)
-./dagdb start --data my_project/     # your own data folder
-./dagdb status                       # is it running? show graph info
-./dagdb restart                      # stop + start
-./dagdb log                          # view daemon log
-./dagdb save foo.dags                # snapshot entire graph to one file
-./dagdb load foo.dags                # restore graph from snapshot
-./dagdb export dir/                  # dump 6 Morton-ordered raw buffers
-```
-
-### Query via netcat (no dependencies)
-
-```bash
-echo 'STATUS' | nc -U /tmp/dagdb.sock
-echo 'TICK 10' | nc -U /tmp/dagdb.sock
-echo 'GRAPH INFO' | nc -U /tmp/dagdb.sock
-echo 'SET 0 RANK 3' | nc -U /tmp/dagdb.sock
-echo 'SET 0 TRUTH 1' | nc -U /tmp/dagdb.sock
-echo 'SET 0 LUT AND' | nc -U /tmp/dagdb.sock
-echo 'CLEAR 0 EDGES' | nc -U /tmp/dagdb.sock
-echo 'CONNECT FROM 1 TO 0' | nc -U /tmp/dagdb.sock
-echo 'NODES AT RANK 3' | nc -U /tmp/dagdb.sock
-echo 'TRAVERSE FROM 0 DEPTH 2' | nc -U /tmp/dagdb.sock
-```
-
-No PostgreSQL needed. No Rust needed. Just Swift and netcat.
-
-## Persistence & Bulk Load (SerDe)
-
-DagDB persists the entire engine state — rank, truth, node type, LUT6, and the full 6-edge neighbor table — as a single binary file. Format `.dags` v1, 32-byte header + `35·N` bytes of body (where `N` is the node count). Load is a direct `memcpy` into the mmap'd GPU buffers; no parse, no deserialization.
-
-```bash
-# Snapshot the live graph
-./dagdb save /path/graph.dags
-
-# Snapshot with zlib compression (often ~4% of raw size)
-./dagdb save /path/graph.dags --compressed
-
-# Restore into a running daemon (node count + grid must match)
-./dagdb load /path/graph.dags
-
-# Per-buffer raw dump for interop (6 Morton-ordered files)
-./dagdb export /path/dir/
-./dagdb import /path/dir/
-
-# Verify the live DAG satisfies rank-ordering, bounds, no self-loops/duplicates
-./dagdb validate
-```
-
-**Bulk import for millions of nodes.** The Python generator in `tools/gen_dags.py` writes valid `.dags` files directly without going through the socket or DSL — useful for scale tests or importing from external sources:
-
-```bash
-python3 tools/gen_dags.py --grid 3200 --nodes 10000000 --out /tmp/big.dags
-./dagdb start --grid 3200
-./dagdb load /tmp/big.dags
-```
-
-**Measured on one M5 Max, 10M-node ranked DAG:**
-
-| Operation | Time | File / Throughput |
-|-----------|------|-------------------|
-| Generate ranked tree (Python + numpy) | ~90 ms | — |
-| `SAVE` raw | 28.5 ms | 358 MB @ 12.6 GB/s |
-| `SAVE` zlib-compressed | 1.32 s | **14.4 MB (4.0% of raw)** |
-| `LOAD` w/ validation | 6.5 s | validator scans 60M edge slots |
-| `VALIDATE` live graph | 5.5 s | — |
-| `TICK 1` evaluation over 10M nodes | 18.6 ms | ~540M node-updates/s |
-| `EXPORT` 6 Morton buffer files | 49.3 ms | — |
-
-Compression is extreme on sparse graphs because most of the 60M neighbor-slots are `-1` padding. LOAD is now dominated by validation (scans rank + neighbors); skip with `--no-validate` if you trust the file.
-
-Grid dimension caps the node count (`grid × grid` slots). Grid 3200 = 10.24M slots. Larger grids (4096 = 16.7M) currently hang at daemon init — a Metal or POSIX shm sizing limit to chase separately.
-
-## SQL Access (Optional, Advanced)
-
-If you want SQL access via PostgreSQL, you need PostgreSQL 17 and Rust installed. See `pg_dagdb/` directory for the pgrx extension. The daemon must be running first.
-
-Start the daemon first, then run the installer:
-
-```bash
-# Terminal 1: start daemon
-.build/debug/dagdb-daemon --grid 256
-
-# Terminal 2: install Postgres extension
-./install_postgres.sh
-```
-
-The script installs Rust, PostgreSQL 17, pgrx, builds the extension, creates the database, and tests everything. One command.
-
-**⚠️ Do NOT run `cargo build` in pg_dagdb/.** It will fail with linker errors. pgrx extensions must use `cargo pgrx install`.
-
-Once installed, connect and query (daemon must be running):
-
-```sql
-psql dagdb
-
-SELECT * FROM dagdb_exec('STATUS');
-SELECT * FROM dagdb_exec('TICK 100');
-SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
-SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
-SELECT * FROM dagdb_exec('GRAPH INFO');
-SELECT * FROM dagdb_exec('SET 0 TRUTH 1');
-SELECT * FROM dagdb_exec('EVAL');
-```
-
-## Connect with DBeaver (or any SQL client)
-
-DagDB sits behind PostgreSQL, so any SQL client works — DBeaver, DataGrip, pgAdmin, Python, etc.
-
-**Install DBeaver** (free, open source):
-
-```bash
-brew install --cask dbeaver-community
-```
-
-**Connect:**
-
-1. Open DBeaver → New Connection → **PostgreSQL**
-2. Host: `localhost`, Port: `5432`, Database: `dagdb`
-3. Username: your macOS username, Password: (leave blank)
-4. Click **Test Connection** → should say "Connected"
-5. Click **Finish**
-
-**Query:**
-
-Open a SQL editor (right-click connection → SQL Editor) and run:
-
-```sql
-SELECT * FROM dagdb_exec('STATUS');
-SELECT * FROM dagdb_exec('TICK 100');
-SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
-SELECT * FROM dagdb_exec('TRAVERSE FROM 42 DEPTH 3');
-```
-
-Results show up in DBeaver's table grid. Works with any tool that speaks PostgreSQL — Python (`psycopg2`), Node.js (`pg`), Go (`lib/pq`), JDBC, ODBC.
-
-**Set up views and visualizations:**
-
-```bash
-psql dagdb -f setup_views.sql
-```
-
-This creates views and functions that show up as clickable objects:
-
-```sql
-SELECT * FROM dagdb_nodes;                    -- browse all nodes
-SELECT * FROM dagdb_status_view;              -- GPU status
-SELECT * FROM dagdb_info;                     -- graph statistics
-SELECT * FROM dagdb_run(10);                  -- tick 10 times
-SELECT * FROM dagdb_rank(2);                  -- nodes at rank 2
-SELECT * FROM dagdb_traverse(42, 3);          -- walk from node 42
-SELECT rank, COUNT(*) FROM dagdb_nodes GROUP BY rank;  -- count by rank
-SELECT * FROM dagdb_ascii();                          -- ASCII art schema
-SELECT * FROM dagdb_show();                           -- LIVE graph with values
-```
-
-**`dagdb_hex(node, depth)`** — the hex DAG as a 6-column table:
-
-![dagdb_hex in DBeaver](docs/dagdb_hex_dbeaver.png)
-
-**`dagdb_show()`** — the star of the show. Full ASCII visualization with real node IDs, truth values, LUT gate types, edge connectivity, fault list, zone health ratios, and aggregation logic. All live from the GPU daemon:
+Daemon error responses carry a category prefix so scripts can
+distinguish failure modes without phrase matching:
 
 ```
-  NORTH          SOUTH           EAST
-  100:● 101:● 102:●  106:● 107:● 108:●   112:● 113:● 114:○
-  103:● 104:● 105:●  109:○ 110:● 111:●   115:● 116:○ 117:●
-
-  FAULTS: 109 114 116
-  NORTH: 6/6 healthy  →  AND  → ●
-  SOUTH: 6/5 healthy  →  MAJ  → ●  (need 4+)
-  EAST:  6/4 healthy  →  OR   → ●  (need 1+)
-  GRID:  3 zones → AND → ○   DECISION: ○
+ERROR out_of_range: …     node/index bounds
+ERROR dsl_parse: …        bad args, unknown LUT preset, unknown metric
+ERROR unknown_command: …  entire verb not recognized
+ERROR schema: …           rank violation, self-loop, duplicate edge,
+                          6-bound overflow
+ERROR io: …               save / load / import / export / backup /
+                          json / csv
+ERROR wal: …              WAL append or replay failure
+ERROR bfs: …              BFS primitive failure
+ERROR not_found: …        missing session id, missing file
+ERROR forbidden: …        reader-session write attempt
 ```
 
-## Test Results
+Additive — payloads after the prefix are preserved verbatim, so
+legacy substring matchers still hit.
+
+---
+
+## Repository layout
 
 ```
-34/34 tests pass (27 core + 7 SerDe)
-1K nodes:   0.45 ms/tick
-1M nodes:   0.71 GCUPS
-10M nodes:  18.6 ms/tick
-            save raw        28.5 ms (358 MB)
-            save compressed 1.3 s   (14.4 MB, 4% of raw)
-All 7 verification gates: GREEN
+.
+├── README.md                       you are here
+├── ARCHITECTURE.md                 module map, data model, invariants
+├── CHANGES.md                      session-by-session log
+├── CONTRIBUTING.md                 short contributor note
+├── LICENSE                         GPL-3.0
+├── Package.swift                   runtime build (4-cycle engine)
+├── Sources/DagDBEngine/            4-cycle runtime engine + shader
+├── Sources/DagDBCLI/               engine CLI
+├── tests/                          runtime test scaffold (Python M0)
+├── paper/                          dagdb_intermezzo.tex / .pdf
+├── dashboard/                      feature ledger + HTML status page
+│   ├── features.yaml
+│   ├── gen_dashboard.py
+│   ├── index.html
+│   └── README.md
+├── docs/
+│   ├── engine.md                   the 4-cycle runtime in depth
+│   ├── bfs_usage.md                BFS primitive cheat sheet
+│   └── (internal architecture sketches live outside the repo)
+└── dagdb/                          the DagDB database (canonical)
+    ├── Package.swift               database layer build
+    ├── Sources/DagDB/              engine, persistence, WAL, backup,
+    │                                distance, BFS, MVCC, index
+    ├── Sources/DagDBCLI/           dagdb CLI
+    ├── Sources/DagDBDaemon/        dagdb-daemon + socket + DSL
+    ├── Tests/DagDBTests/           98 tests, ~2.8 s
+    ├── mcp_server.py               Python MCP server (37 tools)
+    ├── mcpo_config.json            local MCP bridge config (gitignored)
+    ├── pg_dagdb/                   PostgreSQL extension
+    ├── web/bridge.py               browser bridge
+    ├── sample_db/                  one allow-listed demo graph
+    ├── plugins/
+    │   ├── biology/                rank_policies.py
+    │   └── loom/                   adapter.py, backfill.py, tests
+    └── README.md                   database-layer overview
 ```
 
-## Requirements
+---
 
-- macOS 14+ (Sonoma)
-- Apple Silicon (M1/M2/M3/M4/M5)
-- Swift 5.9+
-- PostgreSQL 17 + Rust (for pg_dagdb extension, optional)
+## DSL reference
 
-## Humble Disclaimer
+Full grammar in `dagdb/Sources/DagDBDaemon/DSLParser.swift`.
 
-This is an amateur engineering project. We are not HPC or database professionals and make no competitive claims. Numbers speak; ego does not. Errors likely.
+```
+# Lifecycle
+STATUS
+TICK <n>
+EVAL [WHERE <field><op><value>] [RANK <lo> TO <hi>]
+VALIDATE
+
+# Read
+NODES [AT RANK <n>] [WHERE <field><op><value>]
+TRAVERSE FROM <node> DEPTH <n>
+GRAPH INFO
+
+# Mutate
+SET <node> TRUTH <0|1|2>
+SET <node> RANK <n>
+SET <node> LUT <PRESET>
+CONNECT FROM <src> TO <dst>
+CLEAR <node> EDGES
+SET_RANKS_BULK          # reads u32 vector from shm offset 8
+
+# Persistence
+SAVE <path> [COMPRESSED]
+LOAD <path>
+EXPORT MORTON <dir>
+IMPORT MORTON <dir>
+
+# JSON / CSV
+SAVE JSON <path>
+LOAD JSON <path>
+SAVE CSV <dir>
+LOAD CSV <dir>
+
+# Backup chain
+BACKUP INIT    <dir>
+BACKUP APPEND  <dir>
+BACKUP RESTORE <dir>
+BACKUP COMPACT <dir>
+BACKUP INFO    <dir>
+
+# Secondary index
+SELECT truth <k> rank <lo>-<hi>
+
+# BFS and hive queries
+BFS_DEPTHS FROM <seed> [BACKWARD]
+ANCESTRY FROM <node> DEPTH <d>
+SIMILAR_DECISIONS TO <node> DEPTH <d> K <k> [AMONG TRUTH <t>]
+
+# Subgraph distances (rank-range subgraphs)
+DISTANCE <metric> <loA>-<hiA> <loB>-<hiB>
+
+# MVCC reader sessions
+OPEN_READER
+CLOSE_READER <id>
+LIST_READERS
+READER <id> <inner read-only command>
+```
+
+Metrics: `jaccardNodes`, `jaccardEdges`, `rankL1`, `rankL2`, `typeL1`,
+`boundedGED`, `wlL1`, `spectralL2`.
+
+---
+
+## MCP server
+
+`dagdb/mcp_server.py` exposes the daemon as a Model Context Protocol
+server. 37 tools wrap every DSL command above. `mcpo` bridges them to
+HTTP on port 8787:
+
+```
+http://localhost:8787/dagdb/<tool_name>
+http://localhost:8787/dagdb/openapi.json       # tool catalog
+```
+
+Launched via `~/Library/LaunchAgents/com.dagdb.mcpo.plist` (local,
+not in repo). The daemon itself is supervised by
+`~/Library/LaunchAgents/com.hari.dagdb.plist` and points at
+`dagdb/.build/release/dagdb-daemon --grid 1024`.
+
+---
+
+## Development
+
+```
+cd dagdb
+swift test                                      # 98 tests, ~2.8 s
+python3 plugins/biology/rank_policies.py        # self-test
+python3 -m pytest plugins/loom/test_adapter.py -q   # 16 tests
+```
+
+Per-module Swift test suites:
+
+```
+swift test --filter DagDBSnapshotTests
+swift test --filter DagDBJSONIOTests
+swift test --filter DagDBBackupTests
+swift test --filter DagDBDistanceTests
+swift test --filter DagDBWALTests
+swift test --filter DagDBBFSTests
+swift test --filter DagDBReaderSessionTests
+swift test --filter DagDBSecondaryIndexTests
+```
+
+---
+
+## License
+
+GPL-3.0. See `LICENSE`.
+
+## Humble disclaimer
+
+Amateur engineering project. Research prototype. Errors likely.
+Numbers speak. No competitive claims.

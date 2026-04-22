@@ -3,33 +3,27 @@
 import PackageDescription
 
 let package = Package(
-    name: "DagDB",
+    name: "DagDBEngine",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "DagDB", targets: ["DagDB"]),
-        .executable(name: "dagdb-cli", targets: ["DagDBCLI"]),
-        .executable(name: "dagdb-daemon", targets: ["DagDBDaemon"]),
+        .library(name: "DagDBEngine", targets: ["DagDBEngine"]),
+        .executable(name: "dagdb-engine-cli", targets: ["DagDBCLI"]),
     ],
     targets: [
         .target(
-            name: "DagDB",
-            path: "Sources/DagDB",
-            resources: [.process("Shaders")]
+            name: "DagDBEngine",
+            path: "Sources/DagDBEngine",
+            resources: [.copy("Shaders/engine.metal")]
         ),
         .executableTarget(
             name: "DagDBCLI",
-            dependencies: ["DagDB"],
+            dependencies: ["DagDBEngine"],
             path: "Sources/DagDBCLI"
         ),
-        .executableTarget(
-            name: "DagDBDaemon",
-            dependencies: ["DagDB"],
-            path: "Sources/DagDBDaemon"
-        ),
         .testTarget(
-            name: "DagDBTests",
-            dependencies: ["DagDB"],
-            path: "Tests/DagDBTests"
+            name: "DagDBEngineTests",
+            dependencies: ["DagDBEngine"],
+            path: "Tests/DagDBEngineTests"
         ),
     ]
 )

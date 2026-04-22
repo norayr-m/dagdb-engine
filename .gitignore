@@ -3,17 +3,56 @@
 *.xcodeproj/
 xcuserdata/
 DerivedData/
-pg_dagdb/target/
+
+# Compiled native
 *.o
 *.dylib
 *.so
+
+# macOS
 .DS_Store
 
-# Local MCP bridge config (machine-specific paths)
-mcpo_config.json
-
-# Auto-generated status snapshots
-sample_db/last_status.txt
-
-# Benchmark outputs (large binaries, local-only)
+# Local daemon artefacts — persistent state. Never commit user DB content.
 *.dags
+*.dagdb
+*.dagb
+*.diff
+*.wal
+*.log
+wal.log
+sample_db/last_status.txt
+dagdb/mcpo_config.json
+
+# Allow exactly one named sample. Everything else — user DB state —
+# stays private under ~/dag_databases (single persistent DB root).
+!dagdb/sample_db/demo_graph.dagdb
+
+# Convention: any path inside these dirs is user-local, never committed.
+# Use them (or an absolute path outside the repo) when SAVE-ing your
+# own DB content. Safe under `git add .`.
+.dagdb-local/
+data/
+scratch/
+
+# Dashboard generated output (regenerate from features.yaml)
+# keep committed for github preview: dashboard/index.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Secrets (never commit)
+.env
+.env.*
+*.pem
+*.key
+.claude/
+.claude.json
+.secrets

@@ -1,0 +1,9 @@
+{
+  "_comment": "Template for mcpo_config.json. Copy to mcpo_config.json (gitignored) and edit the paths for your machine. The real file's entries must point at the absolute paths of the MCP scripts you want mcpo to expose.",
+  "mcpServers": {
+    "dagdb": {
+      "command": "/opt/homebrew/bin/python3",
+      "args": ["/absolute/path/to/dagdb/mcp_server.py"]
+    }
+  }
+}

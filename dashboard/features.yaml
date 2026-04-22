@@ -1,0 +1,86 @@
+# DagDB feature ledger — single source of truth for the dashboard.
+# status: done | wip | planned | blocked
+# evidence: free-text pointer to code / test / demo
+
+sections:
+
+  - name: Core engine
+    features:
+      - { id: ranked-dag,       title: "6-bounded ranked DAG substrate",  status: done,    evidence: "dagdb/Sources/DagDB/DagDBEngine.swift" }
+      - { id: lut6,             title: "LUT6 gate evaluator",             status: done,    evidence: "dagdb/Sources/DagDB/Shaders/dagdb.metal" }
+      - { id: ternary-state,    title: "Ternary state (−1, 0, +1)",       status: done,    evidence: "dagdb/Sources/DagDB/DagDBState.swift" }
+      - { id: morton-7col,      title: "Morton + 7-coloring partition",   status: done,    evidence: "dagdb/Sources/DagDB/DagDBEngine+Graph.swift" }
+      - { id: hex-grid,         title: "Hex-grid substrate option",       status: done,    evidence: "dagdb/Sources/DagDB/HexGrid.swift" }
+      - { id: four-cycle,       title: "4-cycle forward/mirror runtime",  status: wip,     evidence: "Sources/DagDBEngine/Waves/Engine4Cycle.swift" }
+
+  - name: Persistence & ACID
+    features:
+      - { id: serde-zlib,       title: "Full-state SerDe + zlib",         status: done,    evidence: "dagdb/Sources/DagDB/DagDBDelta.swift" }
+      - { id: sigterm-snapshot, title: "SIGTERM snapshot",                status: done,    evidence: "dagdb/Sources/DagDB/DagDBSnapshot.swift" }
+      - { id: crash-recovery,   title: "Crash recovery on load",          status: done,    evidence: "historical commit 096f66e (pre-rename)" }
+      - { id: wal,              title: "Write-ahead log",                 status: done,    evidence: "DagDBWAL: Appender + replay + truncate + daemon wiring; 8 tests" }
+      - { id: atomic-commit,    title: "Atomic commit (fsync + rename)",  status: done,    evidence: "DagDBSnapshot.save: tmp + F_FULLFSYNC + replaceItemAt" }
+      - { id: isolation,        title: "Serial dispatch (implicit isolation)", status: done, evidence: "SocketServer.swift: single-threaded accept loop" }
+      - { id: mvcc,             title: "MVCC snapshot-on-read (T7)",      status: done,    evidence: "DagDBReaderSession + OPEN_READER/CLOSE_READER/READER DSL; 9 tests" }
+      - { id: secondary-index,  title: "Secondary index (truth, rank-range) (T15)", status: done, evidence: "TruthRankIndex + SELECT DSL + dirty-flag on mutations; 11 tests" }
+      - { id: hive-query,       title: "ANCESTRY / SIMILAR_DECISIONS / HIVE_QUERY (T8)", status: done, evidence: "3 new DSL + MCP wrappers; WL-1 local-subgraph similarity with truth-filter" }
+      - { id: error-taxonomy,   title: "Error-message taxonomy (io/schema/wal/bfs/…)", status: done, evidence: "ERROR <category>: <detail> prefix across daemon; additive, old substring matches survive" }
+      - { id: kill9-harness,    title: "kill-9 durability harness",       status: done,    evidence: "DagDBSnapshotTests: dangling-tmp, no-tmp-leak, atomic-overwrite" }
+
+  - name: Load / Export / Backup
+    features:
+      - { id: delta-compress,   title: "Delta compression (time-series)", status: done,    evidence: "dagdb/Sources/DagDB/CarlosDelta.swift + DagDBDelta.swift" }
+      - { id: json-io,          title: "JSON import / export",            status: done,    evidence: "DagDBJSONIO.saveJSON/loadJSON; 3 round-trip + rank-violation tests" }
+      - { id: csv-io,           title: "CSV import / export",             status: done,    evidence: "DagDBJSONIO.saveCSV/loadCSV; two-file round-trip test" }
+      - { id: backup-chain,     title: "Backup chain (base + XOR diffs)", status: done,    evidence: "DagDBBackup: init/append/restore/compact + 6 tests" }
+      - { id: restore,          title: "Restore from backup chain",       status: done,    evidence: "DagDBBackup.restore replays base + diffs" }
+
+  - name: Traversal
+    features:
+      - { id: bfs-undirected,   title: "bfsDepthsUndirected (inputs ∪ fanout)", status: done, evidence: "DagDBBFS.swift; 7 tests; single-node-per-residue encoding for protein contacts" }
+      - { id: bfs-backward,     title: "bfsDepthsBackward (inputs only)",       status: done, evidence: "DagDBBFS.swift; O(N·6) no fanout build" }
+      - { id: bfs-dsl,          title: "DSL: BFS_DEPTHS FROM <seed> [BACKWARD]", status: done, evidence: "DSLParser + main.swift; writes Int32 vector to shm offset 8" }
+      - { id: bfs-mcp,          title: "MCP: dagdb_bfs_depths(seed, backward)",  status: done, evidence: "mcp_server.py tool with numpy-view docs" }
+
+  - name: Subgraph comparison
+    features:
+      - { id: dist-subgraph,    title: "DagSubgraph type + rank-range",   status: done,    evidence: "DagDBDistance.swift: DagSubgraph struct" }
+      - { id: dist-jaccard,     title: "Jaccard (node-set, edge-set)",    status: done,    evidence: "DagDBDistance.jaccardNodes / jaccardEdges" }
+      - { id: dist-rank,        title: "Rank-profile L1 + L2 (DAG)",      status: done,    evidence: "DagDBDistance.rankProfileL1/L2" }
+      - { id: dist-type,        title: "Node-type profile L1",            status: done,    evidence: "DagDBDistance.nodeTypeProfileL1" }
+      - { id: dist-ged,         title: "Bounded graph edit distance",     status: done,    evidence: "DagDBDistance.boundedGED: node + induced-edge symdiff" }
+      - { id: dist-wl,          title: "Weisfeiler-Lehman-1 kernel L1",   status: done,    evidence: "DagDBDistance.weisfeilerLehmanL1" }
+      - { id: dist-dispatch,    title: "compute(metric:) one-shot dispatch", status: done, evidence: "DagDBDistance.Metric enum + compute()" }
+      - { id: dist-spectral,    title: "Spectral L2 (Laplacian eigs)",    status: done,    evidence: "DagDBDistance.spectralL2 via Jacobi eigensolver; K_{1,6} spectrum verified" }
+
+  - name: Interfaces
+    features:
+      - { id: cli,              title: "CLI (dagdb)",                     status: done,    evidence: "dagdb/dagdb binary" }
+      - { id: daemon,           title: "Daemon + socket server",          status: done,    evidence: "dagdb/Sources/DagDBDaemon/" }
+      - { id: mcp-server,       title: "MCP server (Python)",             status: done,    evidence: "dagdb/mcp_server.py" }
+      - { id: pg-ext,           title: "PostgreSQL extension",            status: done,    evidence: "dagdb/pg_dagdb/" }
+      - { id: web-bridge,       title: "Web bridge",                      status: done,    evidence: "dagdb/web/bridge.py" }
+      - { id: dashboard,        title: "Live status dashboard",           status: done,    evidence: "dashboard/gen_dashboard.py + dashboard/README.md" }
+      - { id: dsl-json,         title: "DSL: SAVE/LOAD JSON",             status: done,    evidence: "DSLParser + main.swift + mcp_server.dagdb_save_json/load_json" }
+      - { id: dsl-csv,          title: "DSL: SAVE/LOAD CSV",              status: done,    evidence: "DSLParser + main.swift + mcp_server.dagdb_save_csv/load_csv" }
+      - { id: dsl-backup,       title: "DSL: BACKUP INIT/APPEND/RESTORE/COMPACT/INFO", status: done, evidence: "5 daemon commands + 5 MCP tools" }
+      - { id: dsl-distance,     title: "DSL: DISTANCE <metric> <lo>-<hi> <lo>-<hi>", status: done, evidence: "all 8 metrics via rank-range subgraphs; dagdb_distance MCP tool" }
+      - { id: mcp-restart,      title: "Live MCP process picks up new tools", status: planned, evidence: "— running daemon/MCP need restart to see new commands" }
+
+acid:
+  A:
+    property: "Atomicity"
+    status: pass
+    note: "Save via tmp + F_FULLFSYNC + atomic replace; 3 tests prove dangling-tmp safety"
+  C:
+    property: "Consistency"
+    status: partial
+    note: "Rank monotonicity enforced on insert + validator on load; no cross-tx invariant yet"
+  I:
+    property: "Isolation"
+    status: pass
+    note: "Serial accept loop + snapshot-on-read MVCC (T7) — readers get a point-in-time view, writers unblocked by reader session state"
+  D:
+    property: "Durability"
+    status: pass
+    note: "F_FULLFSYNC on snapshot body + dir fsync on rename + WAL for incremental edits (fsync-before-apply)"

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DagDB · Status</title>
+<meta http-equiv="refresh" content="30">
+<style>
+  :root {
+    --bg:        #0d0a04;
+    --panel:     #1a1408;
+    --gold:      #d4af37;
+    --gold-dim:  #7a6020;
+    --ink:       #e8dcb2;
+    --ink-dim:   #8a7a48;
+    --rule:      #3a2c10;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); margin: 0;
+    font: 14px/1.45 -apple-system, "SF Mono", ui-monospace, monospace;
+    padding: 24px 32px;
+  }
+  h1 { color: var(--gold); font-weight: 500; letter-spacing: .04em; margin: 0 0 4px; font-size: 22px; }
+  .sub { color: var(--ink-dim); margin-bottom: 24px; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); padding: 14px 16px; border-radius: 2px; }
+  .card .k { color: var(--ink-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; }
+  .card .v { color: var(--gold); font-size: 24px; font-weight: 500; margin-top: 4px; }
+  .bar { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+  .bar > i { display: block; height: 100%; background: var(--gold); width: 95%; }
+  h2 { color: var(--gold); font-weight: 500; letter-spacing: .04em; margin: 24px 0 8px; font-size: 15px; border-bottom: 1px solid var(--rule); padding-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  td { padding: 5px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  tr.sec td { color: var(--gold-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; border-bottom: 1px solid var(--gold-dim); padding-top: 10px; }
+  td.status { width: 150px; font-weight: 500; }
+  td.title { width: 40%; }
+  td.ev { color: var(--ink-dim); font-family: "SF Mono", monospace; font-size: 12px; }
+  td.acid-letter { color: var(--gold); width: 24px; font-weight: 600; font-size: 18px; }
+  td.sha { color: var(--gold-dim); font-family: "SF Mono", monospace; width: 80px; }
+  td.when { color: var(--ink-dim); width: 140px; }
+  footer { color: var(--ink-dim); font-size: 11px; margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--rule); }
+</style>
+</head>
+<body>
+
+<h1>DagDB · Status Dashboard</h1>
+<div class="sub">generated 2026-04-21 04:09:00 · auto-refresh 30s · feature ledger: dashboard/features.yaml</div>
+
+<div class="grid">
+  <div class="card"><div class="k">Done</div><div class="v">43</div><div class="bar"><i></i></div></div>
+  <div class="card"><div class="k">WIP</div><div class="v">1</div></div>
+  <div class="card"><div class="k">Planned</div><div class="v">1</div></div>
+  <div class="card"><div class="k">Blocked</div><div class="v">0</div></div>
+</div>
+
+<h2>ACID</h2>
+<table>
+<tr><td class="acid-letter">A</td><td>Atomicity</td><td class="status" style="color:#d4af37">● pass</td><td class="ev">Save via tmp + F_FULLFSYNC + atomic replace; 3 tests prove dangling-tmp safety</td></tr>
+<tr><td class="acid-letter">C</td><td>Consistency</td><td class="status" style="color:#e0a040">◐ partial</td><td class="ev">Rank monotonicity enforced on insert + validator on load; no cross-tx invariant yet</td></tr>
+<tr><td class="acid-letter">I</td><td>Isolation</td><td class="status" style="color:#d4af37">● pass</td><td class="ev">Serial accept loop + snapshot-on-read MVCC (T7) — readers get a point-in-time view, writers unblocked by reader session state</td></tr>
+<tr><td class="acid-letter">D</td><td>Durability</td><td class="status" style="color:#d4af37">● pass</td><td class="ev">F_FULLFSYNC on snapshot body + dir fsync on rename + WAL for incremental edits (fsync-before-apply)</td></tr>
+</table>
+
+<h2>Features</h2>
+<table>
+<tr class="sec"><td colspan="3">Core engine</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">6-bounded ranked DAG substrate</td><td class="ev">dagdb/Sources/DagDB/DagDBEngine.swift</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">LUT6 gate evaluator</td><td class="ev">dagdb/Sources/DagDB/Shaders/dagdb.metal</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Ternary state (−1, 0, +1)</td><td class="ev">dagdb/Sources/DagDB/DagDBState.swift</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Morton + 7-coloring partition</td><td class="ev">dagdb/Sources/DagDB/DagDBEngine+Graph.swift</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Hex-grid substrate option</td><td class="ev">dagdb/Sources/DagDB/HexGrid.swift</td></tr>
+<tr><td class="status" style="color:#e0a040">◐ wip</td><td class="title">4-cycle forward/mirror runtime</td><td class="ev">Sources/DagDBEngine/Waves/Engine4Cycle.swift</td></tr>
+<tr class="sec"><td colspan="3">Persistence &amp; ACID</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Full-state SerDe + zlib</td><td class="ev">dagdb/Sources/DagDB/DagDBDelta.swift</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">SIGTERM snapshot</td><td class="ev">dagdb/Sources/DagDB/DagDBSnapshot.swift</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Crash recovery on load</td><td class="ev">historical commit 096f66e (pre-rename)</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Write-ahead log</td><td class="ev">DagDBWAL: Appender + replay + truncate + daemon wiring; 8 tests</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Atomic commit (fsync + rename)</td><td class="ev">DagDBSnapshot.save: tmp + F_FULLFSYNC + replaceItemAt</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Serial dispatch (implicit isolation)</td><td class="ev">SocketServer.swift: single-threaded accept loop</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">MVCC snapshot-on-read (T7)</td><td class="ev">DagDBReaderSession + OPEN_READER/CLOSE_READER/READER DSL; 9 tests</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Secondary index (truth, rank-range) (T15)</td><td class="ev">TruthRankIndex + SELECT DSL + dirty-flag on mutations; 11 tests</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">ANCESTRY / SIMILAR_DECISIONS / HIVE_QUERY (T8)</td><td class="ev">3 new DSL + MCP wrappers; WL-1 local-subgraph similarity with truth-filter</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Error-message taxonomy (io/schema/wal/bfs/…)</td><td class="ev">ERROR &lt;category&gt;: &lt;detail&gt; prefix across daemon; additive, old substring matches survive</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">kill-9 durability harness</td><td class="ev">DagDBSnapshotTests: dangling-tmp, no-tmp-leak, atomic-overwrite</td></tr>
+<tr class="sec"><td colspan="3">Load / Export / Backup</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Delta compression (time-series)</td><td class="ev">dagdb/Sources/DagDB/CarlosDelta.swift + DagDBDelta.swift</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">JSON import / export</td><td class="ev">DagDBJSONIO.saveJSON/loadJSON; 3 round-trip + rank-violation tests</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">CSV import / export</td><td class="ev">DagDBJSONIO.saveCSV/loadCSV; two-file round-trip test</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Backup chain (base + XOR diffs)</td><td class="ev">DagDBBackup: init/append/restore/compact + 6 tests</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Restore from backup chain</td><td class="ev">DagDBBackup.restore replays base + diffs</td></tr>
+<tr class="sec"><td colspan="3">Traversal</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">bfsDepthsUndirected (inputs ∪ fanout)</td><td class="ev">DagDBBFS.swift; 7 tests; single-node-per-residue encoding for protein contacts</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">bfsDepthsBackward (inputs only)</td><td class="ev">DagDBBFS.swift; O(N·6) no fanout build</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">DSL: BFS_DEPTHS FROM &lt;seed&gt; [BACKWARD]</td><td class="ev">DSLParser + main.swift; writes Int32 vector to shm offset 8</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">MCP: dagdb_bfs_depths(seed, backward)</td><td class="ev">mcp_server.py tool with numpy-view docs</td></tr>
+<tr class="sec"><td colspan="3">Subgraph comparison</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">DagSubgraph type + rank-range</td><td class="ev">DagDBDistance.swift: DagSubgraph struct</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Jaccard (node-set, edge-set)</td><td class="ev">DagDBDistance.jaccardNodes / jaccardEdges</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Rank-profile L1 + L2 (DAG)</td><td class="ev">DagDBDistance.rankProfileL1/L2</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Node-type profile L1</td><td class="ev">DagDBDistance.nodeTypeProfileL1</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Bounded graph edit distance</td><td class="ev">DagDBDistance.boundedGED: node + induced-edge symdiff</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Weisfeiler-Lehman-1 kernel L1</td><td class="ev">DagDBDistance.weisfeilerLehmanL1</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">compute(metric:) one-shot dispatch</td><td class="ev">DagDBDistance.Metric enum + compute()</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Spectral L2 (Laplacian eigs)</td><td class="ev">DagDBDistance.spectralL2 via Jacobi eigensolver; K_{1,6} spectrum verified</td></tr>
+<tr class="sec"><td colspan="3">Interfaces</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">CLI (dagdb)</td><td class="ev">dagdb/dagdb binary</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Daemon + socket server</td><td class="ev">dagdb/Sources/DagDBDaemon/</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">MCP server (Python)</td><td class="ev">dagdb/mcp_server.py</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">PostgreSQL extension</td><td class="ev">dagdb/pg_dagdb/</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Web bridge</td><td class="ev">dagdb/web/bridge.py</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">Live status dashboard</td><td class="ev">dashboard/gen_dashboard.py + dashboard/README.md</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">DSL: SAVE/LOAD JSON</td><td class="ev">DSLParser + main.swift + mcp_server.dagdb_save_json/load_json</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">DSL: SAVE/LOAD CSV</td><td class="ev">DSLParser + main.swift + mcp_server.dagdb_save_csv/load_csv</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">DSL: BACKUP INIT/APPEND/RESTORE/COMPACT/INFO</td><td class="ev">5 daemon commands + 5 MCP tools</td></tr>
+<tr><td class="status" style="color:#d4af37">● done</td><td class="title">DSL: DISTANCE &lt;metric&gt; &lt;lo&gt;-&lt;hi&gt; &lt;lo&gt;-&lt;hi&gt;</td><td class="ev">all 8 metrics via rank-range subgraphs; dagdb_distance MCP tool</td></tr>
+<tr><td class="status" style="color:#7a6020">○ planned</td><td class="title">Live MCP process picks up new tools</td><td class="ev">— running daemon/MCP need restart to see new commands</td></tr>
+</table>
+
+<h2>Recent activity</h2>
+<table>
+<tr><td class="sha">a71e3b1</td><td class="when">22 minutes ago</td><td>docs: refresh README, ARCHITECTURE, CHANGES, CONTRIBUTING,       bfs_usage for three-day Demerzel 6 arc + post-rename state</td></tr>
+<tr><td class="sha">4afa80f</td><td class="when">45 minutes ago</td><td>consolidate: pull loom_to_dagdb + LOOM_AS_DAGDB sketch into 004</td></tr>
+<tr><td class="sha">c184721</td><td class="when">55 minutes ago</td><td>rename: legacy/ → dagdb/</td></tr>
+<tr><td class="sha">39c33bd</td><td class="when">10 hours ago</td><td>chore: remove committed taxonomy backup + gitignore *.bak</td></tr>
+<tr><td class="sha">1e5c410</td><td class="when">10 hours ago</td><td>T8: ANCESTRY + SIMILAR_DECISIONS + HIVE_QUERY DSL + MCP; error taxonomy</td></tr>
+<tr><td class="sha">8876feb</td><td class="when">10 hours ago</td><td>T15: secondary index (truth, rank-range) + SELECT DSL</td></tr>
+<tr><td class="sha">d4b008d</td><td class="when">10 hours ago</td><td>T7: MVCC snapshot-on-read — reader sessions + DSL + MCP</td></tr>
+<tr><td class="sha">579ff1d</td><td class="when">11 hours ago</td><td>T3: SET_RANKS_BULK DSL + MCP tool</td></tr>
+<tr><td class="sha">7d49476</td><td class="when">11 hours ago</td><td>T1: u32 rank refactor — core + Metal shader + all IO paths</td></tr>
+<tr><td class="sha">c73b824</td><td class="when">11 hours ago</td><td>T2 rankPolicy protocol + 3 defaults in biology plugin</td></tr>
+<tr><td class="sha">67026c2</td><td class="when">17 hours ago</td><td>docs: BFS primitive usage cheat sheet for Fold&#x27;s ingestion</td></tr>
+<tr><td class="sha">c1c306c</td><td class="when">17 hours ago</td><td>BFS primitive: bfsDepths{Undirected,Backward} + DSL + MCP</td></tr>
+</table>
+
+<footer>DagDB · amateur engineering project · numbers speak · bzz.</footer>
+</body>
+</html>

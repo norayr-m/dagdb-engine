@@ -1,0 +1,40 @@
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+pg_dagdb/target/
+*.o
+*.dylib
+*.so
+.DS_Store
+
+# Local MCP bridge config (machine-specific paths)
+mcpo_config.json
+
+# Auto-generated status snapshots
+sample_db/last_status.txt
+
+# Persistent state — never commit user DB content.
+*.dags
+*.dagdb
+*.dagb
+*.diff
+*.wal
+*.log
+Sources/DagDBDaemon/*.bak
+
+# Allow exactly one named sample. All other user DB state lives in
+# ~/dag_databases (private, never tracked, never shipped).
+!sample_db/demo_graph.dagdb
+
+# Convention: any path inside these dirs is user-local, never committed.
+.dagdb-local/
+data/
+scratch/
+
+# Python (plugins/)
+__pycache__/
+*.pyc
+.pytest_cache/
+plugins/loom/_backfill_out/
