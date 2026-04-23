@@ -2,7 +2,7 @@
 
 6-bounded ranked DAG database engine. Swift + Metal GPU compute on Apple Silicon.
 
-[→ DagDB Overview (24 slides)](https://norayr-m.github.io/DagDB/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/DagDB/sql-architecture.html) | [→ **Bio-Twin Deck (12 slides)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/DagDB/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/DagDB/podcast.html) | [→ **Bio-Twin Podcast (6 min)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | [→ Grid Demo](https://norayr-m.github.io/DagDB/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/DagDB/citydrt.html) | [→ **Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html)
+[→ DagDB Overview (24 slides)](https://norayr-m.github.io/dagdb-engine/site/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/dagdb-engine/site/sql-architecture.html) | [→ **Bio-Twin Deck (12 slides)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/dagdb-engine/site/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/dagdb-engine/site/podcast.html) | [→ **Bio-Twin Podcast (6 min)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | [→ Grid Demo](https://norayr-m.github.io/dagdb-engine/site/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/dagdb-engine/site/citydrt.html) | [→ **Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html)
 
 ## What It Does
 

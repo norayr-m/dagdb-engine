@@ -21,9 +21,9 @@ sections:
       - { id: wal,              title: "Write-ahead log",                 status: done,    evidence: "DagDBWAL: Appender + replay + truncate + daemon wiring; 8 tests" }
       - { id: atomic-commit,    title: "Atomic commit (fsync + rename)",  status: done,    evidence: "DagDBSnapshot.save: tmp + F_FULLFSYNC + replaceItemAt" }
       - { id: isolation,        title: "Serial dispatch (implicit isolation)", status: done, evidence: "SocketServer.swift: single-threaded accept loop" }
-      - { id: mvcc,             title: "MVCC snapshot-on-read (T7)",      status: done,    evidence: "DagDBReaderSession + OPEN_READER/CLOSE_READER/READER DSL; 9 tests" }
-      - { id: secondary-index,  title: "Secondary index (truth, rank-range) (T15)", status: done, evidence: "TruthRankIndex + SELECT DSL + dirty-flag on mutations; 11 tests" }
-      - { id: hive-query,       title: "ANCESTRY / SIMILAR_DECISIONS / HIVE_QUERY (T8)", status: done, evidence: "3 new DSL + MCP wrappers; WL-1 local-subgraph similarity with truth-filter" }
+      - { id: mvcc,             title: "MVCC snapshot-on-read",      status: done,    evidence: "DagDBReaderSession + OPEN_READER/CLOSE_READER/READER DSL; 9 tests" }
+      - { id: secondary-index,  title: "Secondary index (truth, rank-range)", status: done, evidence: "TruthRankIndex + SELECT DSL + dirty-flag on mutations; 11 tests" }
+      - { id: range-query,       title: "ANCESTRY / SIMILAR_DECISIONS / HIVE_QUERY", status: done, evidence: "3 new DSL + MCP wrappers; WL-1 local-subgraph similarity with truth-filter" }
       - { id: error-taxonomy,   title: "Error-message taxonomy (io/schema/wal/bfs/…)", status: done, evidence: "ERROR <category>: <detail> prefix across daemon; additive, old substring matches survive" }
       - { id: kill9-harness,    title: "kill-9 durability harness",       status: done,    evidence: "DagDBSnapshotTests: dangling-tmp, no-tmp-leak, atomic-overwrite" }
 
@@ -79,7 +79,7 @@ acid:
   I:
     property: "Isolation"
     status: pass
-    note: "Serial accept loop + snapshot-on-read MVCC (T7) — readers get a point-in-time view, writers unblocked by reader session state"
+    note: "Serial accept loop + snapshot-on-read MVCC — readers get a point-in-time view, writers unblocked by reader session state"
   D:
     property: "Durability"
     status: pass

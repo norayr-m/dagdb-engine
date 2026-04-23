@@ -56,3 +56,6 @@ venv/
 .claude/
 .claude.json
 .secrets
+
+# Generated output — rebuild with `python3 dashboard/gen_dashboard.py`
+dashboard/index.html

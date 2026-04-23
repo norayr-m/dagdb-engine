@@ -178,7 +178,7 @@ TEMPLATE = """<!doctype html>
 {log_rows}
 </table>
 
-<footer>DagDB · amateur engineering project · numbers speak · bzz.</footer>
+<footer>DagDB · amateur engineering project · numbers speak · errors likely</footer>
 </body>
 </html>
 """

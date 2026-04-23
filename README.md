@@ -16,12 +16,13 @@ A graph database where every node has at most six directed inputs, a
 and a 64-bit rank. Edges always go from higher rank to lower rank, so
 the graph is acyclic by construction.
 
-Two layers in one tree:
+Three trees in one repo:
 
 | Layer | Path | Role |
 |---|---|---|
 | **Database** | `dagdb/` | 6-bounded ranked DAG store: library, `dagdb-cli`, `dagdb-daemon`, Python biology and Loom plug-ins, MCP server, PostgreSQL extension, sample graphs. All active development lives here. |
 | **Runtime** | `Sources/` + `Package.swift` at repo root | 4-cycle optimiser-executor (paper 4 scaffold). Independent build. Uses a DagDB substrate as its computation graph. |
+| **Site** | `site/` | Slide decks, podcasts, HTML demos. Folded in from the former `norayr-m/DagDB` repo on 2026-04-22; see [`site/README.md`](site/README.md). GitHub Pages publishes this subtree. |
 
 Between 2026-04-19 and 2026-04-21 the database layer was extended
 with a rank-widening + MVCC + secondary-index pass — u32→u64 rank,

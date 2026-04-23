@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DagDB Podcast — George & Emma</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0806; color:#a09070; font:18px/1.6 Georgia,serif; display:flex; justify-content:center; align-items:center; min-height:100vh; }
+.player { max-width:600px; width:90%; padding:40px; }
+h1 { font:32px/1.2 'SF Mono',Menlo,monospace; color:#c4a35a; text-align:center; }
+.sub { color:#5a4a2a; font-style:italic; text-align:center; margin:8px 0 30px; font-size:15px; }
+.art { text-align:center; margin-bottom:20px; }
+.controls { display:flex; align-items:center; gap:16px; margin-bottom:16px; }
+.play-btn { background:rgba(138,122,90,0.15); border:2px solid #c4a35a; color:#c4a35a; width:56px; height:56px; border-radius:50%; cursor:pointer; font-size:22px; }
+.play-btn:hover { background:rgba(138,122,90,0.3); }
+.bar-wrap { flex:1; cursor:pointer; height:6px; background:rgba(138,122,90,0.15); border-radius:3px; }
+.bar { height:100%; background:#c4a35a; border-radius:3px; width:0%; }
+.time { display:flex; justify-content:space-between; font:13px 'SF Mono',monospace; color:#5a4a2a; margin-bottom:20px; }
+.speed { display:flex; gap:8px; justify-content:center; margin-bottom:20px; }
+.speed button { background:rgba(138,122,90,0.1); border:1px solid rgba(138,122,90,0.2); color:#8a7a5a; padding:4px 12px; border-radius:4px; cursor:pointer; font:12px 'SF Mono',monospace; }
+.speed button.active { background:rgba(138,122,90,0.3); color:#c4a35a; border-color:#c4a35a; }
+.desc { color:#706050; font-size:14px; line-height:1.8; margin-top:20px; }
+.footer { text-align:center; margin-top:30px; color:#3a2a1a; font:11px 'SF Mono',monospace; }
+a { color:#c4a35a; }
+</style></head><body>
+<div class="player">
+<div class="art"><svg width="80" height="80" viewBox="0 0 120 120"><polygon points="60,5 108,30 108,80 60,105 12,80 12,30" fill="none" stroke="#c4a35a" stroke-width="2"/><circle cx="60" cy="52" r="8" fill="#c4a35a" opacity="0.8"/></svg></div>
+<h1>DagDB Interview</h1>
+<div class="sub">George interviews Emma &middot; 8 minutes</div>
+<audio id="a" preload="auto"><source src="DagDB_Podcast_Dialogue.mp3" type="audio/mpeg"></audio>
+<div class="controls"><button class="play-btn" id="pb" onclick="togglePlay()">&#9654;</button><div class="bar-wrap" onclick="seek(event)"><div class="bar" id="bar"></div></div></div>
+<div class="time"><span id="ct">0:00</span><span id="tt">--:--</span></div>
+<div class="speed">
+<button onclick="sp(0.75)">0.75x</button>
+<button onclick="sp(1.0)" class="active">1x</button>
+<button onclick="sp(1.25)">1.25x</button>
+<button onclick="sp(1.5)">1.5x</button>
+</div>
+<div class="desc">
+<strong>Topics covered:</strong><br>
+Why everything is a graph &middot; JOINs are graph traversals &middot; The Rule of Six &middot;
+LUT6 lookup tables &middot; GPU on Apple Silicon &middot; The fork() problem &middot;
+Daemon architecture &middot; Zero-copy shared memory &middot; UMA vs PCIe &middot;
+Graph DSL through PostgreSQL &middot; ASCII art in DBeaver &middot; Scale to billions
+</div>
+<div class="footer"><a href="./">DagDB on GitHub</a> &middot; Voices: Kokoro bf_emma + bm_george &middot; 2026</div>
+</div>
+<script>
+const a=document.getElementById('a'),pb=document.getElementById('pb'),bar=document.getElementById('bar');
+function fmt(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+(sec<10?'0':'')+sec;}
+function togglePlay(){if(a.paused){a.play();pb.innerHTML='&#9646;&#9646;';}else{a.pause();pb.innerHTML='&#9654;';}}
+a.addEventListener('timeupdate',()=>{if(a.duration){bar.style.width=(a.currentTime/a.duration*100)+'%';document.getElementById('ct').textContent=fmt(a.currentTime);}});
+a.addEventListener('loadedmetadata',()=>{document.getElementById('tt').textContent=fmt(a.duration);});
+a.addEventListener('ended',()=>{pb.innerHTML='&#9654;';});
+function seek(e){const r=e.currentTarget.getBoundingClientRect();a.currentTime=(e.clientX-r.left)/r.width*a.duration;}
+function sp(r){a.playbackRate=r;document.querySelectorAll('.speed button').forEach(b=>b.classList.remove('active'));event.target.classList.add('active');}
+</script></body></html>

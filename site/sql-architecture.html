@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DagDB SQL Architecture — The Fork Problem</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0806; color: #a09070; font: 18px/1.6 'Georgia', serif; scroll-behavior: smooth; }
+  .slide { min-height: 100vh; padding: 40px 20px 40px 60px; display: flex; flex-direction: column; justify-content: center; align-items: center; border-bottom: 1px solid rgba(138,122,90,0.15); max-width: 900px; margin: 0 auto; position: relative; }
+  h1 { font: 42px/1.2 'SF Mono', 'Menlo', 'Courier New', monospace; color: #c4a35a; letter-spacing: 3px; text-align: center; }
+  h2 { font: 26px/1.3 'SF Mono', 'Menlo', 'Courier New', monospace; color: #c4a35a; margin-bottom: 20px; text-align: center; }
+  h3 { font: 20px/1.3 'SF Mono', 'Menlo', 'Courier New', monospace; color: #8a7a5a; margin: 16px 0 8px; }
+  .subtitle { color: #5a4a2a; font-style: italic; text-align: center; margin: 10px 0 30px; font-size: 16px; }
+  .narration { color: #706050; font-size: 16px; line-height: 1.7; margin: 16px 0; padding: 16px; border-left: 3px solid rgba(138,122,90,0.2); }
+  .controls { display: flex; gap: 12px; margin: 20px 0; justify-content: center; }
+  .controls button { background: rgba(138,122,90,0.15); border: 1px solid rgba(138,122,90,0.3); color: #c4a35a; padding: 8px 20px; border-radius: 6px; cursor: pointer; font: 16px 'SF Mono', monospace; }
+  .controls button:hover { background: rgba(138,122,90,0.3); }
+  .diagram { background: rgba(26,20,8,0.9); border: 1px solid rgba(138,122,90,0.2); border-radius: 8px; padding: 20px; font: 14px/1.5 'SF Mono', 'Menlo', 'Courier New', monospace; color: #8a7a5a; white-space: pre; overflow-x: auto; margin: 16px 0; width: 100%; }
+  .hl { color: #c4a35a; font-weight: bold; }
+  .green { color: #6a9a3a; }
+  .red { color: #c04030; }
+  .blue { color: #4080c0; }
+  .dim { color: #5a4a2a; }
+  .nav { position: fixed; left: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 12px; z-index: 20; }
+  .nav button { background: rgba(26,20,8,0.8); border: 1px solid rgba(138,122,90,0.3); color: #c4a35a; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-size: 18px; }
+  .nav button:hover { background: rgba(138,122,90,0.3); }
+  .slide-num { position: absolute; top: 16px; right: 20px; color: #3a2a1a; font: 14px 'SF Mono', monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid rgba(138,122,90,0.15); font: 14px 'SF Mono', monospace; }
+  th { color: #c4a35a; }
+  a { color: #c4a35a; }
+  ul, ol { margin: 10px 0; padding-left: 24px; }
+  li { margin: 6px 0; font-size: 16px; }
+  .big-num { font: bold 72px 'SF Mono', monospace; color: #c4a35a; text-align: center; margin: 10px 0; }
+  .big-label { font: 20px 'SF Mono', monospace; color: #8a7a5a; text-align: center; }
+  .stat-row { display: flex; gap: 40px; justify-content: center; margin: 20px 0; flex-wrap: wrap; }
+  .stat-box { text-align: center; }
+  .stat-box .val { font: bold 36px 'SF Mono', monospace; color: #c4a35a; }
+  .stat-box .lbl { font: 14px 'SF Mono', monospace; color: #706050; margin-top: 4px; }
+  .quote { font-style: italic; color: #8a7a5a; border-left: 3px solid #c4a35a; padding: 12px 20px; margin: 16px 0; }
+  .danger { border-left-color: #c04030; }
+  .danger .hl { color: #c04030; }
+  svg text { font-family: 'SF Mono', 'Menlo', 'Courier New', monospace; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <button onclick="goSlide(currentSlide-1)" title="Previous">&#9650;</button>
+  <button onclick="speak(currentSlide)" title="Play/Pause" id="nav-play">&#9654;</button>
+  <button onclick="goSlide(currentSlide+1)" title="Next">&#9660;</button>
+</div>
+
+<!-- SLIDE 1: TITLE -->
+<div class="slide" id="s1">
+  <h1>DagDB + SQL</h1>
+  <div class="subtitle">How to connect a GPU graph engine to PostgreSQL<br>without destroying everything</div>
+  <div style="color: #5a4a2a; font: 14px 'SF Mono', monospace; text-align: center; margin-top: 30px;">
+    A deep technical walkthrough<br>
+    The fork() problem &middot; The daemon solution &middot; The DSL<br><br>
+    Norayr Matevosyan &middot; 2026-04-16
+  </div>
+  <div class="narration" id="n1">DagDB plus SQL. How to connect a GPU graph engine to PostgreSQL without destroying everything. This presentation walks through the full problem, step by step. Why it's harder than it looks. Where ninety-nine percent of naive architectures fail. And the solution that emerged from three independent AI review passes.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(1)">&#9654;</button></div>
+  <div class="slide-num">1 / 26</div>
+</div>
+
+<!-- SLIDE 2: WHERE WE ARE -->
+<div class="slide" id="s2">
+  <h2>Where We Are</h2>
+  <div class="stat-row">
+    <div class="stat-box"><div class="val">21/21</div><div class="lbl">Tests Pass</div></div>
+    <div class="stat-box"><div class="val">0.43ms</div><div class="lbl">Per Tick</div></div>
+    <div class="stat-box"><div class="val">14</div><div class="lbl">GCUPS</div></div>
+  </div>
+  <table>
+    <tr><th>Component</th><th>Status</th></tr>
+    <tr><td>DagDBEngine (Metal GPU)</td><td class="green">Working</td></tr>
+    <tr><td>LUT6 evaluation kernel</td><td class="green">8/8 tests pass</td></tr>
+    <tr><td>Ranked DAG execution</td><td class="green">Leaves-up, multi-rank</td></tr>
+    <tr><td>Graph builder API</td><td class="green">Hub splitting, ghost nodes</td></tr>
+    <tr><td>Carlos Delta persistence</td><td class="green">Save/restore working</td></tr>
+    <tr><td><span class="red">SQL access</span></td><td class="red">Not built</td></tr>
+  </table>
+  <div class="narration" id="n2">Where we are. The DagDB engine works. Twenty-one out of twenty-one tests pass. Zero point four three milliseconds per tick. Fourteen giga cell updates per second on Apple M five Max. The graph builder, LUT six evaluation, ranked execution, Carlos Delta persistence, all working. One thing missing: SQL access. That's what this presentation is about.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(2)">&#9654;</button></div>
+  <div class="slide-num">2 / 26</div>
+</div>
+
+<!-- SLIDE 3: THE GOAL -->
+<div class="slide" id="s3">
+  <h2>The Goal</h2>
+  <div class="diagram" style="text-align: center; font-size: 15px;"><span class="hl">What we want:</span>
+
+  A user types SQL:
+
+    <span class="green">SELECT</span> * <span class="green">FROM</span> dagdb_nodes
+    <span class="green">WHERE</span> rank = 2 <span class="green">AND</span> truth = 1;
+
+  The GPU evaluates the graph.
+  Results come back as normal Postgres rows.
+  Standard tools (psql, Python, BI dashboards) just work.</div>
+  <div class="narration" id="n3">The goal is simple to state. A user types SQL. Select star from dagdb nodes where rank equals two and truth equals one. The GPU evaluates the graph. Results come back as normal Postgres rows. Standard tools, psql, Python, BI dashboards, they all just work. Simple to state. Extremely hard to build correctly.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(3)">&#9654;</button></div>
+  <div class="slide-num">3 / 26</div>
+</div>
+
+<!-- SLIDE 4: TWO WORLDS -->
+<div class="slide" id="s4">
+  <h2>Two Worlds That Don't Mix</h2>
+  <div style="margin: 16px 0;">
+    <svg width="650" height="220" viewBox="0 0 650 220">
+      <rect x="20" y="20" width="280" height="180" rx="10" fill="rgba(64,128,192,0.08)" stroke="#4080c0" stroke-width="2"/>
+      <text x="160" y="50" fill="#4080c0" text-anchor="middle" font-size="16" font-weight="bold">PostgreSQL</text>
+      <g fill="#8a7a5a" font-size="12">
+        <text x="40" y="80">Written in C (1986)</text>
+        <text x="40" y="100">Multi-PROCESS (fork)</text>
+        <text x="40" y="120">Synchronous execution</text>
+        <text x="40" y="140">Error handling: longjmp</text>
+        <text x="40" y="160">CPU-bound, row-at-a-time</text>
+        <text x="40" y="180">40 years of optimization</text>
+      </g>
+      <rect x="350" y="20" width="280" height="180" rx="10" fill="rgba(106,154,58,0.08)" stroke="#6a9a3a" stroke-width="2"/>
+      <text x="490" y="50" fill="#6a9a3a" text-anchor="middle" font-size="16" font-weight="bold">Apple Metal</text>
+      <g fill="#8a7a5a" font-size="12">
+        <text x="370" y="80">Written in Swift/C++ (2014)</text>
+        <text x="370" y="100">Single-PROCESS, GPU singleton</text>
+        <text x="370" y="120">Asynchronous (GCD queues)</text>
+        <text x="370" y="140">Error handling: Swift/ARC</text>
+        <text x="370" y="160">GPU-bound, SIMD parallel</text>
+        <text x="370" y="180">Unified Memory (zero-copy)</text>
+      </g>
+      <text x="325" y="115" fill="#c04030" font-size="24" text-anchor="middle">&#x26A0;</text>
+    </svg>
+  </div>
+  <div class="quote danger"><span class="hl">These two systems have fundamentally incompatible execution models.</span> Connecting them naively will crash, deadlock, or leak memory.</div>
+  <div class="narration" id="n4">Two worlds that don't mix. On the left: PostgreSQL. Written in C in nineteen eighty-six. Multi-process architecture using fork. Synchronous execution. Error handling via long jump. CPU-bound, row-at-a-time processing. Forty years of battle-tested optimization. On the right: Apple Metal. Swift and C plus plus, twenty fourteen. Single-process GPU singleton. Asynchronous via Grand Central Dispatch. Error handling via Swift ARC. GPU-bound, SIMD parallel. Unified memory with zero-copy. These two systems have fundamentally incompatible execution models. Connecting them naively will crash, deadlock, or leak memory.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(4)">&#9654;</button></div>
+  <div class="slide-num">4 / 26</div>
+</div>
+
+<!-- SLIDE 5: HOW POSTGRES WORKS -->
+<div class="slide" id="s5">
+  <h2>How PostgreSQL Works</h2>
+  <div class="diagram" style="text-align: center;">                    <span class="blue">postmaster</span>
+                    (parent process)
+                         |
+          ┌──────────────┼──────────────┐
+          |              |              |
+     <span class="hl">fork()</span>          <span class="hl">fork()</span>          <span class="hl">fork()</span>
+          |              |              |
+     <span class="green">backend 1</span>       <span class="green">backend 2</span>       <span class="green">backend 3</span>
+     (client A)      (client B)      (client C)
+
+  Each client gets its OWN OS process.
+  Each process has its OWN memory space.
+  Processes share data via <span class="hl">shared memory buffers</span>.
+  This is NOT threading. This is process isolation.</div>
+  <div class="narration" id="n5">How PostgreSQL works internally. There is one parent process called the postmaster. When a client connects, Postgres calls fork to create a brand new operating system process called a backend. Each client gets its own backend process. Each process has its own isolated memory space. They share data through shared memory buffers. This is critical to understand: Postgres is NOT multi-threaded. It is multi-process. Fork creates a complete copy of the parent process. This has deep implications for GPU compute.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(5)">&#9654;</button></div>
+  <div class="slide-num">5 / 26</div>
+</div>
+
+<!-- SLIDE 6: HOW METAL WORKS -->
+<div class="slide" id="s6">
+  <h2>How Apple Metal Works</h2>
+  <div class="diagram" style="text-align: center;">     <span class="green">MTLDevice</span> (GPU singleton)
+          |
+     <span class="green">MTLCommandQueue</span>
+          |
+     <span class="hl">MTLCommandBuffer</span> ──→ <span class="hl">MTLCommandBuffer</span> ──→ ...
+          |                    |
+     <span class="blue">Compute Encoder</span>       <span class="blue">Compute Encoder</span>
+     (dispatch kernels)   (dispatch kernels)
+          |                    |
+     ┌────┴────┐          ┌────┴────┐
+     |  <span class="dim">MTLBuffer</span> |          |  <span class="dim">MTLBuffer</span> |
+     |  (shared  |          |  (shared  |
+     |   memory) |          |   memory) |
+     └─────────┘          └─────────┘
+
+  ONE device. ONE queue. Shared memory.
+  The GPU is a <span class="red">global singleton</span>.
+  You cannot fork() it.</div>
+  <div class="narration" id="n6">How Apple Metal works. There is one MTL Device. It represents the physical GPU. It is a singleton. You get one per machine. From it, you create a command queue. Into the queue, you submit command buffers, each containing compute encoders that dispatch your kernels. The kernels read and write MTL Buffers, which on Apple Silicon live in unified memory, the same physical RAM the CPU uses. The key point: the GPU is a global singleton. There is one device, one queue. You cannot fork it. You cannot duplicate it. It does not survive process boundaries.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(6)">&#9654;</button></div>
+  <div class="slide-num">6 / 26</div>
+</div>
+
+<!-- SLIDE 7: THE FATAL COLLISION -->
+<div class="slide" id="s7">
+  <h2>The Fatal Collision</h2>
+  <div style="margin: 16px 0;">
+    <svg width="650" height="280" viewBox="0 0 650 280">
+      <text x="325" y="30" fill="#c04030" text-anchor="middle" font-size="18" font-weight="bold">Postgres fork() + Metal = CRASH</text>
+      <!-- Postmaster -->
+      <rect x="240" y="50" width="170" height="40" rx="6" fill="rgba(64,128,192,0.15)" stroke="#4080c0" stroke-width="1.5"/>
+      <text x="325" y="75" fill="#4080c0" text-anchor="middle" font-size="13">postmaster + Metal</text>
+      <!-- Fork arrows -->
+      <line x1="260" y1="90" x2="120" y2="140" stroke="#c04030" stroke-width="2"/>
+      <line x1="325" y1="90" x2="325" y2="140" stroke="#c04030" stroke-width="2"/>
+      <line x1="390" y1="90" x2="530" y2="140" stroke="#c04030" stroke-width="2"/>
+      <text x="180" y="120" fill="#c04030" font-size="11">fork()</text>
+      <text x="340" y="120" fill="#c04030" font-size="11">fork()</text>
+      <text x="460" y="120" fill="#c04030" font-size="11">fork()</text>
+      <!-- Backends -->
+      <rect x="40" y="140" width="160" height="50" rx="6" fill="rgba(192,64,48,0.15)" stroke="#c04030" stroke-width="1.5"/>
+      <text x="120" y="162" fill="#c04030" text-anchor="middle" font-size="11">Backend 1</text>
+      <text x="120" y="178" fill="#c04030" text-anchor="middle" font-size="10">MTLDevice? INVALID</text>
+      <rect x="245" y="140" width="160" height="50" rx="6" fill="rgba(192,64,48,0.15)" stroke="#c04030" stroke-width="1.5"/>
+      <text x="325" y="162" fill="#c04030" text-anchor="middle" font-size="11">Backend 2</text>
+      <text x="325" y="178" fill="#c04030" text-anchor="middle" font-size="10">MTLDevice? INVALID</text>
+      <rect x="450" y="140" width="160" height="50" rx="6" fill="rgba(192,64,48,0.15)" stroke="#c04030" stroke-width="1.5"/>
+      <text x="530" y="162" fill="#c04030" text-anchor="middle" font-size="11">Backend 3</text>
+      <text x="530" y="178" fill="#c04030" text-anchor="middle" font-size="10">MTLDevice? INVALID</text>
+      <!-- Explosion -->
+      <text x="120" y="220" fill="#c04030" text-anchor="middle" font-size="12">New MTLDevice</text>
+      <text x="120" y="236" fill="#c04030" text-anchor="middle" font-size="12">= 128GB alloc</text>
+      <text x="325" y="220" fill="#c04030" text-anchor="middle" font-size="12">New MTLDevice</text>
+      <text x="325" y="236" fill="#c04030" text-anchor="middle" font-size="12">= 128GB alloc</text>
+      <text x="530" y="220" fill="#c04030" text-anchor="middle" font-size="12">New MTLDevice</text>
+      <text x="530" y="236" fill="#c04030" text-anchor="middle" font-size="12">= 128GB alloc</text>
+      <text x="325" y="270" fill="#c04030" text-anchor="middle" font-size="14" font-weight="bold">3 x 128GB = OOM = kernel panic</text>
+    </svg>
+  </div>
+  <div class="narration" id="n7">The fatal collision. If you embed your Metal engine inside the Postgres extension, here is what happens. Postgres forks a new process for client one. That process inherits the Metal device reference, but Metal state does not survive fork. It is invalid. So the backend creates a new MTL Device. That device tries to map the entire unified memory space. One hundred twenty-eight gigabytes. Client two connects. Fork. Another MTL Device. Another one hundred twenty-eight gigabyte allocation. Client three. Fork. Three times one hundred twenty-eight gigabytes. Out of memory. Kernel panic. Your machine is dead.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(7)">&#9654;</button></div>
+  <div class="slide-num">7 / 26</div>
+</div>
+
+<!-- SLIDE 8: THREE ADDITIONAL TRAPS -->
+<div class="slide" id="s8">
+  <h2>Three More Traps</h2>
+  <h3>1. The longjmp Trap</h3>
+  <ul>
+    <li>Postgres handles errors with C-style <span class="hl">setjmp/longjmp</span></li>
+    <li>If an error fires while inside your Rust/Swift FFI call...</li>
+    <li>longjmp <span class="red">violently unwinds the stack</span></li>
+    <li>Rust's <code>Drop</code> traits never run. Swift ARC never decrements.</li>
+    <li>You permanently leak unified memory. Every error = memory leak.</li>
+  </ul>
+  <h3>2. The Async/Sync Deadlock</h3>
+  <ul>
+    <li>Postgres backends are <span class="hl">strictly single-threaded and synchronous</span></li>
+    <li>Metal is asynchronous (Grand Central Dispatch)</li>
+    <li>Blocking on <code>commandBuffer.waitUntilCompleted()</code> freezes Postgres</li>
+    <li>Postgres can't process <code>Ctrl+C</code> (SIGINT). OS-level deadlock.</li>
+  </ul>
+  <h3>3. The ARC Mismatch</h3>
+  <ul>
+    <li>Swift uses Automatic Reference Counting. Rust uses ownership.</li>
+    <li>Crossing the boundary requires <code>Unmanaged.passRetained</code> (bypass ARC)</li>
+    <li>Miss one <code>.release()</code> call = permanent memory leak</li>
+  </ul>
+  <div class="narration" id="n8">Three more traps beyond fork. First, the long jump trap. Postgres handles errors using C-style set jump long jump. If a Postgres error fires while you're inside a Rust or Swift F F I call, long jump violently unwinds the stack. Rust's drop traits never run. Swift ARC never decrements. You permanently leak unified memory. Every single error is a memory leak. Second, the async sync deadlock. Postgres backends are strictly single-threaded and synchronous. Metal is asynchronous via Grand Central Dispatch. If you naively block on command buffer wait until completed, Postgres freezes. It can't process control-C. OS-level deadlock. Third, ARC mismatch. Swift uses automatic reference counting. Rust uses ownership. Crossing the boundary requires bypassing ARC with unmanaged pass retained. Miss one release call and you leak forever.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(8)">&#9654;</button></div>
+  <div class="slide-num">8 / 26</div>
+</div>
+
+<!-- SLIDE 9: THE FOUR OPTIONS -->
+<div class="slide" id="s9">
+  <h2>Four Options Were Debated</h2>
+  <table>
+    <tr><th>Option</th><th>What</th><th>Effort</th><th>Power</th></tr>
+    <tr><td><span class="hl">A</span></td><td>pgrx table functions (Rust)</td><td>Low</td><td>Basic SQL, no JOIN push</td></tr>
+    <tr><td><span class="hl">B</span></td><td>pgrx CustomScan (Rust)</td><td>High</td><td>Full optimizer integration</td></tr>
+    <tr><td><span class="hl">C</span></td><td>Pure Swift, skip Postgres</td><td>Medium</td><td>Clean but loses ecosystem</td></tr>
+    <tr><td><span class="hl">D</span></td><td>Hybrid: start A, add B later</td><td>Progressive</td><td>Ship fast, optimize later</td></tr>
+  </table>
+  <div style="margin-top: 16px;">
+    <div class="quote">Three AI models debated these across 3 rounds with persona rotation. 9 viewpoints total. <span class="hl">Unanimous verdict: Option D.</span> Then Gemini Deep Think found that ALL four options have the same fatal flaw: fork() vs Metal.</div>
+  </div>
+  <div class="narration" id="n9">Four options were debated. Option A: Rust table functions via pgrx. Low effort, basic SQL, no join push-down. Option B: Rust custom scan. High effort, full Postgres optimizer integration. Option C: pure Swift, skip Postgres entirely. Clean but loses the ecosystem. Option D: hybrid, start with A, add B later. Progressive effort. Three AI models debated these across three rounds with Z mod three persona rotation. Nine viewpoints total. Unanimous verdict: Option D. Then Gemini Deep Think reviewed the five challenged claims and found something all nine viewpoints missed: all four options share the same fatal flaw. Fork versus Metal.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(9)">&#9654;</button></div>
+  <div class="slide-num">9 / 26</div>
+</div>
+
+<!-- SLIDE 10: OPTION A DETAIL -->
+<div class="slide" id="s10">
+  <h2>Option A: Table Functions</h2>
+  <div class="diagram" style="text-align: center; font-size: 13px;"><span class="hl">How it would work (naive):</span>
+
+  <span class="blue">SQL Client</span>
+      |
+  <span class="blue">Postgres backend</span> (forked process)
+      |
+  <span class="green">pgrx Rust extension</span>
+      |  extern "C" FFI call
+  <span class="green">Swift DagDBEngine</span>
+      |
+  <span class="green">Metal GPU kernels</span>
+      |
+  Result tuples back to Postgres
+
+<span class="red">PROBLEM: The Swift/Metal engine lives INSIDE the forked process.</span>
+<span class="red">Fork + Metal = crash (see slide 7).</span></div>
+  <div class="narration" id="n10">Option A in detail. Table functions via pgrx. The naive version: SQL client connects. Postgres forks a backend process. Inside that process, the pgrx Rust extension calls Swift DagDB Engine via C F F I. The engine creates a Metal device, dispatches kernels, gets results, returns tuples to Postgres. The problem: the Swift Metal engine lives inside the forked process. Fork plus Metal equals crash. See slide seven. This architecture cannot work as described.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(10)">&#9654;</button></div>
+  <div class="slide-num">10 / 26</div>
+</div>
+
+<!-- SLIDE 11: PG-STROM REFERENCE -->
+<div class="slide" id="s11">
+  <h2>PG-Strom: The Reference</h2>
+  <ul>
+    <li>Built by HeteroDB (Japan). Production GPU acceleration for Postgres.</li>
+    <li>Uses CustomScan to intercept <span class="hl">GpuJoin</span> and <span class="hl">GpuPreAgg</span></li>
+    <li>Offers alternative plans with cost estimates to the optimizer</li>
+    <li>100,000+ lines of C code</li>
+  </ul>
+  <h3>Why PG-Strom doesn't have the fork problem:</h3>
+  <ul>
+    <li>NVIDIA CUDA supports <span class="green">cuDevicePrimaryCtxRetain()</span></li>
+    <li>Multiple processes can share the same GPU context</li>
+    <li>PCIe serialization handles process isolation naturally</li>
+    <li><span class="red">Apple Metal has NO equivalent.</span> Metal is single-process only.</li>
+  </ul>
+  <div class="quote">PG-Strom works because CUDA was designed for multi-process HPC. Metal was designed for single-app graphics and compute. Different worlds.</div>
+  <div class="narration" id="n11">PG-Strom, the reference implementation. Built by Hetero DB in Japan. Production GPU acceleration for Postgres. Over one hundred thousand lines of C. It uses custom scan to intercept GPU join and GPU pre-aggregate operations. It offers alternative plans with cost estimates to the Postgres optimizer. Here's why PG-Strom doesn't have the fork problem: NVIDIA CUDA supports CU device primary context retain. Multiple processes can share the same GPU context. PCIe serialization handles process isolation naturally. Apple Metal has no equivalent. Metal is single-process only. PG-Strom works because CUDA was designed for multi-process HPC. Metal was designed for single-app graphics and compute. Different worlds.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(11)">&#9654;</button></div>
+  <div class="slide-num">11 / 26</div>
+</div>
+
+<!-- SLIDE 12: THE SOLUTION -->
+<div class="slide" id="s12">
+  <h2>The Solution: Daemon Architecture</h2>
+  <div class="big-label" style="color: #6a9a3a; margin-bottom: 20px;">Compute / Storage Separation via POSIX Shared Memory</div>
+  <div class="quote"><span class="hl">Do not embed the engine in the Postgres extension.</span><br>Run the Metal engine as a separate daemon process. Communicate via Unix socket. Share results via shared memory. Zero-copy on UMA.</div>
+  <ul>
+    <li>The daemon owns the GPU singleton. One process, one device, one queue.</li>
+    <li>Postgres backends are stateless clients. They never touch Metal.</li>
+    <li>Shared memory gives zero-copy access to GPU results on Apple Silicon.</li>
+    <li>Fork is no longer a problem. Backends don't inherit Metal state.</li>
+  </ul>
+  <div class="narration" id="n12">The solution. Compute storage separation via POSIX shared memory. Do not embed the engine in the Postgres extension. Instead, run the Metal engine as a separate daemon process. The daemon owns the GPU singleton. One process, one Metal device, one command queue. Postgres backends are stateless clients. They never touch Metal. They communicate with the daemon via Unix domain socket. Results are shared via POSIX shared memory. On Apple Silicon, this is zero-copy. The CPU and GPU share the same physical RAM, so the Postgres backend reads the exact bytes the GPU just wrote. Fork is no longer a problem because backends don't inherit any Metal state.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(12)">&#9654;</button></div>
+  <div class="slide-num">12 / 26</div>
+</div>
+
+<!-- SLIDE 13: DAEMON DETAIL -->
+<div class="slide" id="s13">
+  <h2>The Daemon: dagdb_daemon</h2>
+  <div class="diagram" style="font-size: 13px;"><span class="green">dagdb_daemon</span> (Swift process, runs forever)
+  |
+  ├── <span class="hl">MTLDevice</span> (GPU singleton, initialized once)
+  ├── <span class="hl">MTLCommandQueue</span> (single queue, serialized)
+  ├── <span class="hl">DagDBEngine</span> (your existing Swift code, unchanged)
+  ├── <span class="hl">CarlosDelta</span> (persistence, NVMe)
+  |
+  ├── <span class="blue">Unix Domain Socket</span>: /tmp/dagdb.sock
+  |   (receives DSL commands from Postgres backends)
+  |
+  └── <span class="blue">POSIX Shared Memory</span>: /dagdb_shm
+      created via shm_open() + mmap()
+      Metal buffers point here:
+        device.makeBuffer(bytesNoCopy: shm_ptr, ...)
+
+  <span class="dim">The daemon IS your existing DagDB engine.</span>
+  <span class="dim">Just add a socket listener and shared memory export.</span></div>
+  <div class="narration" id="n13">The daemon in detail. DagDB daemon is a Swift process that runs forever. It initializes the Metal device once. It creates a single command queue. It runs your existing DagDB engine code unchanged. Carlos Delta handles persistence. The daemon listens on a Unix domain socket at slash tmp slash dagdb dot sock. It receives commands from Postgres backends. It also creates a POSIX shared memory region via shm open and mmap. Metal buffers are created pointing to this shared memory using device make buffer bytes no copy. The daemon IS your existing DagDB engine. You just add a socket listener and a shared memory export. Minimal new code.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(13)">&#9654;</button></div>
+  <div class="slide-num">13 / 26</div>
+</div>
+
+<!-- SLIDE 14: CLIENT DETAIL -->
+<div class="slide" id="s14">
+  <h2>The Client: pgrx Extension</h2>
+  <div class="diagram" style="font-size: 13px;"><span class="green">Postgres backend</span> (forked process, one per client)
+  |
+  └── <span class="hl">pgrx Rust extension</span> (stateless, lightweight)
+      |
+      ├── <span class="blue">mmap()</span> the shared memory region /dagdb_shm
+      |   (read-only access to GPU results)
+      |
+      ├── <span class="blue">connect()</span> to Unix socket /tmp/dagdb.sock
+      |   send: DSL command string
+      |   recv: "OK" + result metadata
+      |
+      └── <span class="green">Read results directly from shared memory</span>
+          Zero serialization. Zero copy on UMA.
+          Yield Postgres tuples via SRF iterator.
+
+  <span class="dim">The extension NEVER touches Metal.</span>
+  <span class="dim">It is a thin Unix socket client + shared memory reader.</span></div>
+  <div class="narration" id="n14">The client side. Inside each Postgres backend, the pgrx Rust extension is stateless and lightweight. It does three things. First, mmap the shared memory region dagdb shm. Read-only access to GPU results. Second, connect to the Unix domain socket and send a DSL command string. Receive OK plus result metadata. Third, read results directly from shared memory. Zero serialization. Zero copy on Apple Silicon unified memory. Yield standard Postgres tuples via a set-returning function iterator. The extension never touches Metal. It never creates a device. It never dispatches a kernel. It is a thin Unix socket client plus shared memory reader.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(14)">&#9654;</button></div>
+  <div class="slide-num">14 / 26</div>
+</div>
+
+<!-- SLIDE 15: FULL ARCHITECTURE -->
+<div class="slide" id="s15">
+  <h2>The Full Architecture</h2>
+  <div style="margin: 16px 0;">
+    <svg width="700" height="360" viewBox="0 0 700 360">
+      <!-- SQL Clients -->
+      <g fill="rgba(64,128,192,0.1)" stroke="#4080c0" stroke-width="1">
+        <rect x="20" y="10" width="90" height="35" rx="4"/>
+        <rect x="120" y="10" width="90" height="35" rx="4"/>
+        <rect x="220" y="10" width="90" height="35" rx="4"/>
+      </g>
+      <text x="65" y="32" fill="#4080c0" text-anchor="middle" font-size="10">psql</text>
+      <text x="165" y="32" fill="#4080c0" text-anchor="middle" font-size="10">Python</text>
+      <text x="265" y="32" fill="#4080c0" text-anchor="middle" font-size="10">BI Tool</text>
+      <!-- Postgres -->
+      <rect x="20" y="60" width="290" height="100" rx="8" fill="rgba(64,128,192,0.06)" stroke="#4080c0" stroke-width="1.5"/>
+      <text x="165" y="82" fill="#4080c0" text-anchor="middle" font-size="13" font-weight="bold">PostgreSQL</text>
+      <g fill="rgba(138,122,90,0.1)" stroke="#8a7a5a" stroke-width="1">
+        <rect x="40" y="95" width="75" height="50" rx="4"/>
+        <rect x="128" y="95" width="75" height="50" rx="4"/>
+        <rect x="216" y="95" width="75" height="50" rx="4"/>
+      </g>
+      <text x="77" y="115" fill="#8a7a5a" text-anchor="middle" font-size="9">backend 1</text>
+      <text x="77" y="130" fill="#c4a35a" text-anchor="middle" font-size="8">pgrx ext</text>
+      <text x="165" y="115" fill="#8a7a5a" text-anchor="middle" font-size="9">backend 2</text>
+      <text x="165" y="130" fill="#c4a35a" text-anchor="middle" font-size="8">pgrx ext</text>
+      <text x="253" y="115" fill="#8a7a5a" text-anchor="middle" font-size="9">backend 3</text>
+      <text x="253" y="130" fill="#c4a35a" text-anchor="middle" font-size="8">pgrx ext</text>
+      <!-- Socket arrows -->
+      <g stroke="#c4a35a" stroke-width="1.5" stroke-dasharray="4">
+        <line x1="77" y1="145" x2="500" y2="200"/>
+        <line x1="165" y1="145" x2="500" y2="210"/>
+        <line x1="253" y1="145" x2="500" y2="220"/>
+      </g>
+      <text x="330" y="185" fill="#c4a35a" font-size="10">Unix Socket</text>
+      <!-- Daemon -->
+      <rect x="420" y="170" width="260" height="180" rx="10" fill="rgba(106,154,58,0.08)" stroke="#6a9a3a" stroke-width="2"/>
+      <text x="550" y="195" fill="#6a9a3a" text-anchor="middle" font-size="14" font-weight="bold">dagdb_daemon (Swift)</text>
+      <g fill="#8a7a5a" font-size="11">
+        <text x="440" y="220">MTLDevice (singleton)</text>
+        <text x="440" y="240">MTLCommandQueue</text>
+        <text x="440" y="260">DagDBEngine</text>
+        <text x="440" y="280">CarlosDelta</text>
+        <text x="440" y="300">Morton Z-curve</text>
+      </g>
+      <!-- Shared memory -->
+      <rect x="100" y="200" width="200" height="50" rx="6" fill="rgba(196,163,90,0.1)" stroke="#c4a35a" stroke-width="1.5"/>
+      <text x="200" y="222" fill="#c4a35a" text-anchor="middle" font-size="12" font-weight="bold">POSIX Shared Memory</text>
+      <text x="200" y="240" fill="#8a7a5a" text-anchor="middle" font-size="10">/dagdb_shm (mmap, zero-copy UMA)</text>
+      <!-- Shared mem connections -->
+      <line x1="300" y1="225" x2="420" y2="260" stroke="#c4a35a" stroke-width="1.5"/>
+      <line x1="200" y1="200" x2="165" y2="145" stroke="#c4a35a" stroke-width="1" stroke-dasharray="3"/>
+      <!-- GPU -->
+      <rect x="440" y="320" width="220" height="30" rx="4" fill="rgba(106,154,58,0.15)" stroke="#6a9a3a" stroke-width="1.5"/>
+      <text x="550" y="340" fill="#6a9a3a" text-anchor="middle" font-size="11" font-weight="bold">Apple M5 Max GPU (Metal)</text>
+    </svg>
+  </div>
+  <div class="narration" id="n15">The full architecture. SQL clients, psql, Python, BI tools, connect to PostgreSQL. Postgres forks backend processes, each with the lightweight pgrx Rust extension. The extension connects to the DagDB daemon via Unix domain socket and sends DSL commands. The daemon, a separate Swift process, owns the Metal GPU singleton, the DagDB engine, Carlos Delta, and Morton Z-curve. It executes on the GPU and writes results to POSIX shared memory. The Postgres backends mmap the same shared memory and read results with zero copy on Apple Silicon unified memory. No fork collision. No FFI memory traps. No longjmp. No ARC mismatch. Clean separation.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(15)">&#9654;</button></div>
+  <div class="slide-num">15 / 26</div>
+</div>
+
+<!-- SLIDE 16: UMA ZERO COPY -->
+<div class="slide" id="s16">
+  <h2>Why UMA Makes This Work</h2>
+  <div style="margin: 16px 0;">
+    <svg width="600" height="200" viewBox="0 0 600 200">
+      <!-- NVIDIA path -->
+      <rect x="20" y="20" width="250" height="80" rx="6" fill="rgba(192,64,48,0.06)" stroke="#c04030" stroke-width="1"/>
+      <text x="145" y="45" fill="#c04030" text-anchor="middle" font-size="12" font-weight="bold">NVIDIA (PG-Strom)</text>
+      <text x="145" y="65" fill="#8a7a5a" text-anchor="middle" font-size="10">CPU RAM --PCIe--&gt; GPU VRAM</text>
+      <text x="145" y="80" fill="#8a7a5a" text-anchor="middle" font-size="10">GPU VRAM --PCIe--&gt; CPU RAM</text>
+      <text x="145" y="95" fill="#c04030" text-anchor="middle" font-size="10">2 copies per query</text>
+      <!-- Apple path -->
+      <rect x="320" y="20" width="260" height="80" rx="6" fill="rgba(106,154,58,0.06)" stroke="#6a9a3a" stroke-width="1"/>
+      <text x="450" y="45" fill="#6a9a3a" text-anchor="middle" font-size="12" font-weight="bold">Apple Silicon (DagDB)</text>
+      <text x="450" y="65" fill="#8a7a5a" text-anchor="middle" font-size="10">CPU + GPU = same physical RAM</text>
+      <text x="450" y="80" fill="#8a7a5a" text-anchor="middle" font-size="10">mmap = pointer to GPU output</text>
+      <text x="450" y="95" fill="#6a9a3a" text-anchor="middle" font-size="10">0 copies per query</text>
+      <!-- Bottom -->
+      <rect x="20" y="130" width="560" height="50" rx="6" fill="rgba(196,163,90,0.06)" stroke="#c4a35a" stroke-width="1"/>
+      <text x="300" y="155" fill="#c4a35a" text-anchor="middle" font-size="13">Shared memory on UMA = the Postgres backend reads the</text>
+      <text x="300" y="172" fill="#c4a35a" text-anchor="middle" font-size="13">exact physical bytes the GPU just wrote. Zero overhead.</text>
+    </svg>
+  </div>
+  <div class="narration" id="n16">Why unified memory architecture makes this work. On NVIDIA with PG-Strom, data must cross the PCIe bus. CPU RAM to GPU VRAM, then GPU VRAM back to CPU RAM. Two copies per query. That's the bottleneck. On Apple Silicon with DagDB, CPU and GPU share the same physical RAM. When the daemon creates a Metal buffer pointing to shared memory, and a Postgres backend mmaps the same shared memory, they're looking at the exact same physical bytes. The GPU writes. The CPU reads. Zero copies. Zero serialization. This is the fundamental advantage of the daemon architecture on Apple Silicon.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(16)">&#9654;</button></div>
+  <div class="slide-num">16 / 26</div>
+</div>
+
+<!-- SLIDE 17: THE DSL -->
+<div class="slide" id="s17">
+  <h2>The DSL: Graph-Native Queries</h2>
+  <div class="diagram" style="font-size: 13px;"><span class="hl">SQL is built for relational sets.</span>
+<span class="hl">DagDB is a ranked, 6-bounded fractal DAG.</span>
+<span class="hl">SQL maps horribly to this.</span>
+
+Instead of forcing SQL semantics, pass a micro-DSL through Postgres:
+
+  <span class="green">SELECT</span> * <span class="green">FROM</span> dagdb_exec(<span class="blue">'EVAL ROOT WHERE state=1 RANK 5 TO 0'</span>);
+  <span class="green">SELECT</span> * <span class="green">FROM</span> dagdb_exec(<span class="blue">'TICK 100'</span>);
+  <span class="green">SELECT</span> * <span class="green">FROM</span> dagdb_exec(<span class="blue">'NODES AT RANK 3 WHERE truth=1'</span>);
+  <span class="green">SELECT</span> * <span class="green">FROM</span> dagdb_exec(<span class="blue">'TRAVERSE FROM 42 DEPTH 3'</span>);
+
+Postgres provides the <span class="hl">network interface</span> (wire protocol, auth, SSL).
+The DSL provides the <span class="hl">computational semantics</span> (graph evaluation).
+Rust parses the DSL with <span class="hl">nom</span> crate (48 hours of work).
+Daemon executes. Results via shared memory.</div>
+  <div class="narration" id="n17">The DSL. Graph-native queries. SQL is built for relational sets. DagDB is a ranked six-bounded fractal DAG. SQL maps horribly to this. Instead of forcing SQL semantics onto a graph engine, we pass a micro domain-specific language through Postgres. Select star from dagdb exec, eval root where state equals one rank five to zero. Or tick one hundred. Or nodes at rank three where truth equals one. Or traverse from node forty-two depth three. Postgres provides the network interface: wire protocol, authentication, SSL. The DSL provides the computational semantics: graph evaluation. Rust parses the DSL with the nom crate, about forty-eight hours of work. The daemon executes. Results come back via shared memory.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(17)">&#9654;</button></div>
+  <div class="slide-num">17 / 26</div>
+</div>
+
+<!-- SLIDE 18: COEXISTENCE -->
+<div class="slide" id="s18">
+  <h2>SRF + CustomScan Coexistence</h2>
+  <ul>
+    <li>A Postgres extension is a single shared library (.so / .dylib)</li>
+    <li><span class="hl">Table Functions (SRFs)</span> hook into the <span class="blue">Executor</span> phase</li>
+    <li><span class="hl">CustomScan</span> hooks into the <span class="blue">Planner</span> phase</li>
+    <li>Different lifecycle stages. No namespace conflict.</li>
+  </ul>
+  <div class="diagram" style="font-size: 13px;">  Query lifecycle in Postgres:
+
+  1. <span class="dim">Parse</span>        (SQL text → parse tree)
+  2. <span class="dim">Analyze</span>      (resolve names, types)
+  3. <span class="blue">Plan</span>         ← CustomScan hooks HERE (set_rel_pathlist_hook)
+  4. <span class="dim">Optimize</span>     (cost-based plan selection)
+  5. <span class="green">Execute</span>      ← Table Functions hook HERE (SRF)
+  6. <span class="dim">Return</span>       (tuples to client)
+
+  <span class="hl">Phase 1:</span> Ship SRFs (dagdb_exec). Fast to build.
+  <span class="hl">Phase 2:</span> Add CustomScan alongside. SRFs still work.
+  <span class="dim">Both live in the same .dylib. No conflict.</span></div>
+  <div class="narration" id="n18">SRF and custom scan coexistence. This was the strongest stone in the debate: can they coexist? Yes. A Postgres extension is a single shared library. Table functions hook into the executor phase. Custom scan hooks into the planner phase. These are different lifecycle stages in Postgres query processing. Parse, analyze, plan — custom scan hooks here. Optimize, execute — table functions hook here. Return. No namespace conflict. Phase one: ship set-returning functions via dagdb exec. Fast to build. Phase two: add custom scan alongside. The SRFs still work. Both live in the same dylib. No conflict. The key insight: A to B is not migration. It is accumulation.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(18)">&#9654;</button></div>
+  <div class="slide-num">18 / 26</div>
+</div>
+
+<!-- SLIDE 19: RESOLVER RESULTS -->
+<div class="slide" id="s19">
+  <h2>What the Resolver Found</h2>
+  <div class="stat-row">
+    <div class="stat-box"><div class="val">29</div><div class="lbl">Claims</div></div>
+    <div class="stat-box"><div class="val">9</div><div class="lbl">Viewpoints</div></div>
+    <div class="stat-box"><div class="val">24</div><div class="lbl">Supported</div></div>
+    <div class="stat-box"><div class="val">5</div><div class="lbl">Challenged</div></div>
+  </div>
+  <table>
+    <tr><th>#</th><th>Challenged Claim</th><th>Resolution</th></tr>
+    <tr><td>C5</td><td>Effort is LOW (days)</td><td class="red">Refuted. 2-4 weeks.</td></tr>
+    <tr><td>C15</td><td>Basic SQL parser in Swift</td><td>Scope hides complexity</td></tr>
+    <tr><td>C22</td><td>A→B is incremental</td><td>Refined: A+B coexist</td></tr>
+    <tr><td>C27</td><td>FFI is critical path</td><td>Architecture > FFI</td></tr>
+    <tr><td>C28</td><td>objc2-metal eliminates Swift</td><td class="red">Skip. Don't rewrite.</td></tr>
+  </table>
+  <div class="narration" id="n19">What the resolver found. Twenty-nine claims across four options. Nine viewpoints from three models across three rounds. Twenty-four claims supported. Five challenged. The five challenged claims and their resolutions: C five, effort is low, refuted, realistic timeline is two to four weeks. C fifteen, basic SQL parser in Swift, scope hides enormous complexity. C twenty-two, A to B is incremental, refined: A and B coexist, they don't evolve into each other. C twenty-seven, FFI is critical path, the architecture choice matters more than FFI mechanics. C twenty-eight, objc2-metal eliminates Swift, skip it, don't rewrite working code.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(19)">&#9654;</button></div>
+  <div class="slide-num">19 / 26</div>
+</div>
+
+<!-- SLIDE 20: GEMINI'S ADDITIONS -->
+<div class="slide" id="s20">
+  <h2>What Gemini Deep Think Added</h2>
+  <table>
+    <tr><th>Finding</th><th>Impact</th></tr>
+    <tr><td class="red">fork() vs Metal (HIDDEN RISK)</td><td>Kills all naive embed approaches</td></tr>
+    <tr><td>longjmp bypasses Rust Drop + Swift ARC</td><td>Memory leaks on every Postgres error</td></tr>
+    <tr><td>Metal async vs Postgres sync</td><td>Deadlock on query cancellation</td></tr>
+    <tr><td>POSIX shared memory + UMA = zero-copy</td><td>Daemon pattern is optimal</td></tr>
+    <tr><td>DSL through SRF > native SQL mapping</td><td>Graph semantics preserved</td></tr>
+    <tr><td>Unmanaged.passRetained for ARC bypass</td><td>Safe Rust-Swift FFI pattern</td></tr>
+    <tr><td>objc2-metal is a trap</td><td>Rewriting Swift = wasted work</td></tr>
+  </table>
+  <div class="quote">Gemini found the one risk that all three resolver models missed: the OS-level incompatibility between Postgres process model and Metal GPU singleton.</div>
+  <div class="narration" id="n20">What Gemini Deep Think added beyond the resolver. The fatal hidden risk: fork versus Metal. This kills all naive embedding approaches. Long jump bypasses both Rust drop and Swift ARC, causing memory leaks on every Postgres error. Metal async versus Postgres sync creates deadlock on query cancellation. The solution: POSIX shared memory plus UMA gives zero-copy, making the daemon pattern optimal. A DSL through a set-returning function is better than trying to map SQL natively to graph operations. Unmanaged pass retained provides a safe Rust-Swift FFI pattern. And objc2-metal is a trap: rewriting working Swift code in Rust is wasted effort. Gemini found the one risk that all three resolver models missed.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(20)">&#9654;</button></div>
+  <div class="slide-num">20 / 26</div>
+</div>
+
+<!-- SLIDE 21: PHASE 1 PLAN -->
+<div class="slide" id="s21">
+  <h2>Phase 1: What to Build</h2>
+  <div class="diagram" style="font-size: 13px;"><span class="hl">Three components:</span>
+
+  1. <span class="green">dagdb_daemon</span> (Swift)
+     - Your existing DagDBEngine + socket listener
+     - shm_open() for shared memory region
+     - device.makeBuffer(bytesNoCopy: shm_ptr)
+     - Listen on /tmp/dagdb.sock
+     - Parse incoming DSL commands
+     - Execute on GPU, write results to shared memory
+     - Reply "OK {nrows} {schema}" on socket
+
+  2. <span class="green">pg_dagdb</span> (Rust, pgrx)
+     - cargo pgrx init + new
+     - One SRF: dagdb_exec(text) RETURNS SETOF record
+     - connect() to Unix socket, send DSL
+     - mmap() shared memory, read results
+     - Yield tuples via TableIterator
+
+  3. <span class="green">DSL parser</span> (Rust, nom)
+     - TICK {n}
+     - EVAL ROOT [WHERE predicate] [RANK from TO to]
+     - NODES [AT RANK n] [WHERE predicate]
+     - TRAVERSE FROM {node} DEPTH {n}
+     - STATUS</div>
+  <div class="narration" id="n21">Phase one, what to build. Three components. First, dagdb daemon in Swift. Take your existing DagDB engine, add a socket listener. Create a POSIX shared memory region via shm open. Create Metal buffers pointing to that shared memory via device make buffer bytes no copy. Listen on slash tmp slash dagdb dot sock. Parse incoming DSL commands. Execute on GPU, write results to shared memory. Reply OK with row count and schema on the socket. Second, pg dagdb in Rust via pgrx. One set-returning function: dagdb exec takes text, returns set of record. Connect to the Unix socket, send the DSL. Mmap the shared memory, read results. Yield tuples via table iterator. Third, the DSL parser in Rust using the nom crate. Commands: tick, eval, nodes, traverse, status.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(21)">&#9654;</button></div>
+  <div class="slide-num">21 / 26</div>
+</div>
+
+<!-- SLIDE 22: FILE STRUCTURE -->
+<div class="slide" id="s22">
+  <h2>File Structure</h2>
+  <div class="diagram" style="font-size: 12px;">DagDB/
+├── Sources/
+│   ├── DagDB/                    <span class="dim">(existing library)</span>
+│   │   ├── DagDBEngine.swift
+│   │   ├── DagDBState.swift
+│   │   ├── DagDBGraph.swift
+│   │   ├── DagDBDelta.swift
+│   │   └── Shaders/dagdb.metal
+│   │
+│   ├── DagDBDaemon/              <span class="green">(NEW — Phase 1)</span>
+│   │   ├── main.swift            <span class="dim">(socket listener + shared mem)</span>
+│   │   ├── SharedMemory.swift    <span class="dim">(shm_open + mmap wrapper)</span>
+│   │   └── DSLParser.swift       <span class="dim">(command parsing)</span>
+│   │
+│   └── DagDBCLI/main.swift       <span class="dim">(existing test harness)</span>
+│
+├── pg_dagdb/                     <span class="green">(NEW — Rust pgrx extension)</span>
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── lib.rs                <span class="dim">(pgrx extension entry)</span>
+│   │   ├── client.rs             <span class="dim">(Unix socket client)</span>
+│   │   ├── shm.rs                <span class="dim">(shared memory reader)</span>
+│   │   └── dsl.rs                <span class="dim">(nom DSL parser)</span>
+│   └── sql/
+│       └── pg_dagdb--0.1.sql     <span class="dim">(CREATE FUNCTION)</span>
+│
+└── Tests/DagDBTests/             <span class="dim">(existing, 21 tests)</span></div>
+  <div class="narration" id="n22">File structure. The existing DagDB library stays untouched. Two new components are added. First, DagDB Daemon under Sources. Main dot swift for the socket listener and shared memory setup. Shared memory dot swift wrapping shm open and mmap. DSL parser dot swift for command parsing. Second, pg dagdb, a separate Rust directory with its own Cargo dot toml. Lib dot rs for the pgrx extension entry point. Client dot rs for the Unix socket client. Shm dot rs for the shared memory reader. DSL dot rs for the nom parser. And a SQL file defining the Postgres function. The existing test suite stays. Twenty-one tests, all passing.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(22)">&#9654;</button></div>
+  <div class="slide-num">22 / 26</div>
+</div>
+
+<!-- SLIDE 23: WHAT EACH LAYER DOES -->
+<div class="slide" id="s23">
+  <h2>Responsibilities: Who Does What</h2>
+  <table>
+    <tr><th>Layer</th><th>Responsible For</th><th>NOT Responsible For</th></tr>
+    <tr><td><span class="blue">Postgres</span></td><td>Auth, SSL, wire protocol, connections</td><td>GPU, graph eval, persistence</td></tr>
+    <tr><td><span class="hl">pgrx ext</span></td><td>DSL parsing, socket IPC, tuple yield</td><td>Metal, engine state, queries</td></tr>
+    <tr><td><span class="green">Daemon</span></td><td>GPU singleton, engine, Carlos Delta</td><td>SQL, auth, client management</td></tr>
+    <tr><td><span class="green">Metal</span></td><td>LUT6 eval, SpMV, SIMD compute</td><td>Everything above</td></tr>
+  </table>
+  <div class="quote">Clean separation. Each layer does one thing. No layer reaches into another's domain.</div>
+  <div class="narration" id="n23">Responsibilities. Who does what. Postgres handles authentication, SSL, wire protocol, and client connections. It is NOT responsible for GPU compute, graph evaluation, or persistence. The pgrx extension handles DSL parsing, socket IPC, and tuple yielding. It is NOT responsible for Metal, engine state, or query execution. The daemon handles the GPU singleton, the DagDB engine, and Carlos Delta persistence. It is NOT responsible for SQL, auth, or client management. Metal handles LUT six evaluation, sparse matrix-vector multiplication, and SIMD compute. It is NOT responsible for anything above it. Clean separation. Each layer does one thing.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(23)">&#9654;</button></div>
+  <div class="slide-num">23 / 26</div>
+</div>
+
+<!-- SLIDE 24: DATA FLOW -->
+<div class="slide" id="s24">
+  <h2>Data Flow: One Query</h2>
+  <div class="diagram" style="font-size: 12px;"><span class="hl">User types:</span>  SELECT * FROM dagdb_exec('NODES AT RANK 2 WHERE truth=1');
+
+  1. <span class="blue">Postgres</span> parses SQL, finds dagdb_exec SRF
+  2. <span class="blue">Postgres</span> calls pgrx extension function
+  3. <span class="hl">pgrx</span> parses DSL string: NODES AT RANK 2 WHERE truth=1
+  4. <span class="hl">pgrx</span> connects to /tmp/dagdb.sock
+  5. <span class="hl">pgrx</span> sends: {"cmd":"nodes","rank":2,"filter":"truth=1"}
+  6. <span class="green">Daemon</span> receives command
+  7. <span class="green">Daemon</span> dispatches Metal kernel: filter rank=2, truth=1
+  8. <span class="green">GPU</span> writes matching node IDs + states to shared memory
+  9. <span class="green">Daemon</span> replies: "OK 1247 (id:i32,rank:u8,truth:u8,lut:u64)"
+  10. <span class="hl">pgrx</span> reads 1247 rows from mmap'd shared memory
+  11. <span class="hl">pgrx</span> yields Postgres tuples via SRF iterator
+  12. <span class="blue">Postgres</span> returns rows to client
+
+  <span class="dim">Total copies of actual data: ZERO (UMA shared memory)</span>
+  <span class="dim">Serialization overhead: command string + metadata only</span></div>
+  <div class="narration" id="n24">Data flow for one query. User types select star from dagdb exec, nodes at rank two where truth equals one. Postgres parses the SQL and finds the dagdb exec set-returning function. Calls the pgrx extension. The extension parses the DSL string. Connects to the Unix socket. Sends the command as JSON. The daemon receives it. Dispatches a Metal kernel to filter rank two, truth equals one. The GPU writes matching node IDs and states to shared memory. The daemon replies OK with row count and schema. The pgrx extension reads the rows directly from mmap'd shared memory. Yields Postgres tuples via the SRF iterator. Postgres returns rows to the client. Total copies of actual data: zero. UMA shared memory. The only serialization is the command string and metadata.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(24)">&#9654;</button></div>
+  <div class="slide-num">24 / 26</div>
+</div>
+
+<!-- SLIDE 25: TIMELINE -->
+<div class="slide" id="s25">
+  <h2>Timeline: Phase 1</h2>
+  <table>
+    <tr><th>Week</th><th>Component</th><th>Deliverable</th></tr>
+    <tr><td>1</td><td>Daemon skeleton</td><td>Socket listener + shared memory + basic commands</td></tr>
+    <tr><td>2</td><td>DSL parser + pgrx extension</td><td>TICK, NODES, EVAL commands working end-to-end</td></tr>
+    <tr><td>3</td><td>Integration testing</td><td>psql queries return GPU results</td></tr>
+    <tr><td>4</td><td>Polish + error handling</td><td>Reconnection, timeouts, concurrent clients</td></tr>
+  </table>
+  <div style="margin-top: 20px;">
+    <h3>Verification Gates</h3>
+    <table>
+      <tr><td>G5</td><td>SELECT * FROM dagdb_exec('STATUS') returns daemon info</td></tr>
+      <tr><td>G6</td><td>SELECT * FROM dagdb_exec('TICK 100') evaluates 100 ticks</td></tr>
+      <tr><td>G7</td><td>SELECT * FROM dagdb_exec('NODES AT RANK 2') returns correct nodes</td></tr>
+      <tr><td>G8</td><td>3 concurrent psql sessions don't crash</td></tr>
+    </table>
+  </div>
+  <div class="narration" id="n25">Timeline for Phase one. Week one: daemon skeleton. Socket listener, shared memory setup, basic command handling. Week two: DSL parser and pgrx extension. Tick, nodes, and eval commands working end to end. Week three: integration testing. Psql queries returning GPU results correctly. Week four: polish and error handling. Reconnection logic, timeouts, concurrent client support. Four verification gates. G five: status command returns daemon info. G six: tick one hundred evaluates one hundred ticks via SQL. G seven: nodes at rank two returns correct filtered nodes. G eight: three concurrent psql sessions don't crash.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(25)">&#9654;</button></div>
+  <div class="slide-num">25 / 26</div>
+</div>
+
+<!-- SLIDE 26: CLOSING -->
+<div class="slide" id="s26">
+  <h1>DagDB + SQL</h1>
+  <div class="subtitle">The daemon pattern solves fork, longjmp, ARC, and async<br>in one architectural stroke.</div>
+  <div style="margin: 30px 0; text-align: center; color: #5a4a2a; font: 14px 'SF Mono', monospace;">
+    Daemon (Swift/Metal) &middot; Client (Rust/pgrx) &middot; Shared Memory (UMA zero-copy)<br>
+    DSL through SRF &middot; CustomScan when needed &middot; Keep compiling.
+  </div>
+  <div style="margin-top: 20px; text-align: center; color: #5a4a2a; font: 11px 'SF Mono', monospace;">
+    Review: 29 claims &middot; 14 gates &middot; 9 viewpoints &middot; 3 rounds &middot; Gemini Deep Think<br>
+    Unanimous consensus &middot; 1 fatal risk found &middot; 1 solution<br><br>
+    This is an amateur engineering project. Numbers speak; ego does not. Errors likely.
+  </div>
+  <div class="narration" id="n26">DagDB plus SQL. The daemon pattern solves fork, long jump, ARC, and async in one architectural stroke. A Swift Metal daemon owns the GPU singleton. A Rust pgrx extension provides the Postgres bridge. POSIX shared memory on Apple Silicon unified memory gives zero-copy data transfer. A domain-specific language flows through set-returning functions. Custom scan can be added alongside when needed. This architecture emerged from twenty-nine claims, fourteen gates, nine viewpoints across three debate rounds, and Gemini Deep Think review. Unanimous consensus. One fatal risk found. One solution. Keep compiling.</div>
+  <div class="controls"><button class="play-btn" onclick="speak(26)">&#9654;</button></div>
+  <div class="slide-num">26 / 26</div>
+</div>
+
+<!-- FOOTER -->
+<div style="text-align:center;padding:40px;color:#3a2a1a;font:13px 'SF Mono',monospace;">
+  <span style="color:#5a4a2a;">Press Space to narrate &middot; &uarr;&darr; to navigate &middot; Works offline</span>
+</div>
+
+<script>
+let currentSlide = 1;
+let playing = false;
+let currentAudio = null;
+const totalSlides = 26;
+
+function speak(n) {
+  if (playing && currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; playing = false; updateBtns(); return; }
+  if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; }
+  // Try audio file first, fall back to Web Speech
+  currentAudio = new Audio('audio_sql/slide_' + n + '.mp3');
+  currentAudio.onended = () => { playing = false; updateBtns(); };
+  currentAudio.onerror = () => {
+    const el = document.getElementById('n' + n);
+    if (!el) return;
+    const utt = new SpeechSynthesisUtterance(el.textContent.trim());
+    utt.rate = 0.9;
+    const voices = speechSynthesis.getVoices();
+    const pref = voices.find(v => v.name.includes('George')) ||
+                 voices.find(v => v.name.includes('Daniel')) ||
+                 voices.find(v => v.lang.startsWith('en-GB')) ||
+                 voices.find(v => v.lang.startsWith('en')) || voices[0];
+    if (pref) utt.voice = pref;
+    utt.onend = () => { playing = false; updateBtns(); };
+    speechSynthesis.speak(utt);
+  };
+  currentAudio.play();
+  playing = true;
+  currentSlide = n;
+  updateBtns();
+}
+
+function updateBtns() {
+  document.querySelectorAll('.play-btn').forEach(b => b.textContent = '\u25B6');
+  if (playing) {
+    const btns = document.querySelectorAll('.play-btn');
+    if (btns[currentSlide-1]) btns[currentSlide-1].textContent = '\u23F8';
+  }
+  document.getElementById('nav-play').textContent = playing ? '\u23F8' : '\u25B6';
+}
+
+function goSlide(n) {
+  n = Math.max(1, Math.min(totalSlides, n));
+  currentSlide = n;
+  document.getElementById('s'+n).scrollIntoView({ behavior: 'smooth' });
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'ArrowUp' || e.code === 'PageUp') { e.preventDefault(); goSlide(currentSlide-1); }
+  if (e.code === 'ArrowDown' || e.code === 'PageDown') { e.preventDefault(); goSlide(currentSlide+1); }
+  if (e.code === 'Space') { e.preventDefault(); speak(currentSlide); }
+});
+
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => { if (e.isIntersecting) currentSlide = parseInt(e.target.id.replace('s','')); });
+}, { threshold: 0.5 });
+document.querySelectorAll('.slide').forEach(s => observer.observe(s));
+
+speechSynthesis.getVoices();
+</script>
+</body>
+</html>

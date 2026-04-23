@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DagDB Podcast — Emma Narrates</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0806; color: #a09070; font: 18px/1.6 'Georgia', serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .player { max-width: 600px; width: 90%; padding: 40px; }
+  h1 { font: 32px/1.2 'SF Mono', 'Menlo', 'Courier New', monospace; color: #c4a35a; text-align: center; margin-bottom: 8px; }
+  .subtitle { color: #5a4a2a; font-style: italic; text-align: center; margin-bottom: 30px; font-size: 15px; }
+  .art { text-align: center; margin-bottom: 30px; }
+  .controls { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .play-btn { background: rgba(138,122,90,0.15); border: 2px solid #c4a35a; color: #c4a35a; width: 56px; height: 56px; border-radius: 50%; cursor: pointer; font-size: 22px; flex-shrink: 0; transition: background 0.2s; }
+  .play-btn:hover { background: rgba(138,122,90,0.3); }
+  .progress-wrap { flex: 1; cursor: pointer; height: 6px; background: rgba(138,122,90,0.15); border-radius: 3px; position: relative; }
+  .progress-bar { height: 100%; background: #c4a35a; border-radius: 3px; width: 0%; transition: width 0.3s; }
+  .time { display: flex; justify-content: space-between; font: 13px 'SF Mono', monospace; color: #5a4a2a; margin-bottom: 24px; }
+  .speed { display: flex; gap: 8px; justify-content: center; margin-bottom: 24px; }
+  .speed button { background: rgba(138,122,90,0.1); border: 1px solid rgba(138,122,90,0.2); color: #8a7a5a; padding: 4px 12px; border-radius: 4px; cursor: pointer; font: 12px 'SF Mono', monospace; }
+  .speed button.active { background: rgba(138,122,90,0.3); color: #c4a35a; border-color: #c4a35a; }
+  .tracklist { margin-top: 20px; }
+  .tracklist h3 { font: 16px 'SF Mono', monospace; color: #c4a35a; margin-bottom: 10px; }
+  .track { font: 13px/2 'SF Mono', monospace; color: #706050; cursor: pointer; padding: 2px 8px; border-radius: 4px; }
+  .track:hover { background: rgba(138,122,90,0.1); color: #a09070; }
+  .track.active { color: #c4a35a; }
+  .track .dur { float: right; color: #3a2a1a; }
+  .footer { text-align: center; margin-top: 30px; color: #3a2a1a; font: 11px 'SF Mono', monospace; }
+  a { color: #c4a35a; }
+</style>
+</head>
+<body>
+<div class="player">
+  <div class="art">
+    <svg width="100" height="100" viewBox="0 0 120 120">
+      <polygon points="60,5 108,30 108,80 60,105 12,80 12,30" fill="none" stroke="#c4a35a" stroke-width="2"/>
+      <polygon points="60,20 92,37 92,71 60,88 28,71 28,37" fill="none" stroke="#c4a35a" stroke-width="1" opacity="0.5"/>
+      <circle cx="60" cy="52" r="8" fill="#c4a35a" opacity="0.8"/>
+    </svg>
+  </div>
+  <h1>DagDB Podcast</h1>
+  <div class="subtitle">Emma narrates the architecture &middot; 30 minutes</div>
+
+  <audio id="audio" preload="auto">
+    <source src="DagDB_Podcast_Carlos.mp3" type="audio/mpeg">
+  </audio>
+
+  <div class="controls">
+    <button class="play-btn" id="playBtn" onclick="togglePlay()">&#9654;</button>
+    <div class="progress-wrap" id="progressWrap" onclick="seek(event)">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+  </div>
+
+  <div class="time">
+    <span id="currentTime">0:00</span>
+    <span id="totalTime">--:--</span>
+  </div>
+
+  <div class="speed">
+    <button onclick="setSpeed(0.75)">0.75x</button>
+    <button onclick="setSpeed(1.0)" class="active" id="speed1">1x</button>
+    <button onclick="setSpeed(1.25)">1.25x</button>
+    <button onclick="setSpeed(1.5)">1.5x</button>
+    <button onclick="setSpeed(2.0)">2x</button>
+  </div>
+
+  <div class="tracklist">
+    <h3>Part 1 — DagDB Overview</h3>
+    <div class="track" onclick="seekTo(0)">1. Title <span class="dur">0:00</span></div>
+    <div class="track" onclick="seekTo(32)">2. The Problem <span class="dur">0:32</span></div>
+    <div class="track" onclick="seekTo(75)">3. The Rule of 6 <span class="dur">1:15</span></div>
+    <div class="track" onclick="seekTo(130)">4. LUT6: The Core Primitive <span class="dur">2:10</span></div>
+    <div class="track" onclick="seekTo(185)">5. The Ranked DAG <span class="dur">3:05</span></div>
+    <div class="track" onclick="seekTo(225)">6. Dual-Time Execution <span class="dur">3:45</span></div>
+    <div class="track" onclick="seekTo(285)">7. Morton Z-Curve <span class="dur">4:45</span></div>
+    <div class="track" onclick="seekTo(335)">8. Octaves <span class="dur">5:35</span></div>
+    <div class="track" onclick="seekTo(375)">9. Savanna Engine <span class="dur">6:15</span></div>
+    <div class="track" onclick="seekTo(420)">10. Mathematical Isomorphism <span class="dur">7:00</span></div>
+    <div class="track" onclick="seekTo(470)">11. Hub Node Splitting <span class="dur">7:50</span></div>
+    <div class="track" onclick="seekTo(525)">12. Convergence <span class="dur">8:45</span></div>
+    <div class="track" onclick="seekTo(580)">13. Ghost Nodes <span class="dur">9:40</span></div>
+    <div class="track" onclick="seekTo(630)">14. Wavefronts <span class="dur">10:30</span></div>
+    <div class="track" onclick="seekTo(680)">15-20. Infrastructure <span class="dur">11:20</span></div>
+    <div class="track" onclick="seekTo(830)">21-24. Status + Roadmap <span class="dur">13:50</span></div>
+
+    <h3 style="margin-top: 16px;">Part 2 — SQL Architecture</h3>
+    <div class="track" onclick="seekTo(920)">1. Title <span class="dur">15:20</span></div>
+    <div class="track" onclick="seekTo(950)">2-3. Where We Are + The Goal <span class="dur">15:50</span></div>
+    <div class="track" onclick="seekTo(1010)">4. Two Worlds That Don't Mix <span class="dur">16:50</span></div>
+    <div class="track" onclick="seekTo(1070)">5-6. How Postgres + Metal Work <span class="dur">17:50</span></div>
+    <div class="track" onclick="seekTo(1150)">7. The Fatal Collision: fork() <span class="dur">19:10</span></div>
+    <div class="track" onclick="seekTo(1210)">8. Three More Traps <span class="dur">20:10</span></div>
+    <div class="track" onclick="seekTo(1290)">9-11. Options + PG-Strom <span class="dur">21:30</span></div>
+    <div class="track" onclick="seekTo(1380)">12-14. The Daemon Solution <span class="dur">23:00</span></div>
+    <div class="track" onclick="seekTo(1480)">15-16. Full Architecture + UMA <span class="dur">24:40</span></div>
+    <div class="track" onclick="seekTo(1550)">17-18. The DSL + Coexistence <span class="dur">25:50</span></div>
+    <div class="track" onclick="seekTo(1630)">19-22. Verdicts + File Structure <span class="dur">27:10</span></div>
+    <div class="track" onclick="seekTo(1720)">23-26. Plan + Closing <span class="dur">28:40</span></div>
+  </div>
+
+  <div class="footer">
+    <a href="./">DagDB on GitHub</a> &middot; Voice: Kokoro bf_emma &middot; 2026<br>
+    Amateur project. No competitive claims. Errors likely.
+  </div>
+</div>
+
+<script>
+const audio = document.getElementById('audio');
+const playBtn = document.getElementById('playBtn');
+const progressBar = document.getElementById('progressBar');
+const currentTimeEl = document.getElementById('currentTime');
+const totalTimeEl = document.getElementById('totalTime');
+
+function fmt(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function togglePlay() {
+  if (audio.paused) { audio.play(); playBtn.innerHTML = '&#9646;&#9646;'; }
+  else { audio.pause(); playBtn.innerHTML = '&#9654;'; }
+}
+
+audio.addEventListener('timeupdate', () => {
+  if (audio.duration) {
+    progressBar.style.width = (audio.currentTime / audio.duration * 100) + '%';
+    currentTimeEl.textContent = fmt(audio.currentTime);
+  }
+  // Highlight active track
+  document.querySelectorAll('.track').forEach(t => t.classList.remove('active'));
+  const tracks = document.querySelectorAll('.track');
+  let activeIdx = 0;
+  tracks.forEach((t, i) => {
+    const onclick = t.getAttribute('onclick');
+    const m = onclick && onclick.match(/seekTo\((\d+)\)/);
+    if (m && audio.currentTime >= parseInt(m[1])) activeIdx = i;
+  });
+  if (tracks[activeIdx]) tracks[activeIdx].classList.add('active');
+});
+
+audio.addEventListener('loadedmetadata', () => {
+  totalTimeEl.textContent = fmt(audio.duration);
+});
+
+audio.addEventListener('ended', () => {
+  playBtn.innerHTML = '&#9654;';
+});
+
+function seek(e) {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  audio.currentTime = pct * audio.duration;
+}
+
+function seekTo(seconds) {
+  audio.currentTime = seconds;
+  if (audio.paused) togglePlay();
+}
+
+function setSpeed(rate) {
+  audio.playbackRate = rate;
+  document.querySelectorAll('.speed button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>
