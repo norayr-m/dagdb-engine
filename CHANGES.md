@@ -5,6 +5,82 @@ engineering project, no competitive claims.
 
 ---
 
+## 2026-04-29 — BACK_EDGE primitive + bitwise LUT composition (vNext, version-bump pending)
+
+Two engine features landed since v0.1.1 (2026-04-23). Version bump
+held pending Norayr's trigger; this entry placeholds the release
+notes so the next tag has them ready.
+
+### BACK_EDGE primitive
+
+A typed second edge type that latches `truth[src]` into `truth[dst]`
+at tick boundary, after the combinational pass settles. The
+synchronous-circuit register pattern applied to a 6-bounded ranked
+DAG with GPU-evaluated truth tables. Unlocks in-substrate iteration
+to convergence — belief propagation, AC-3 constraint propagation,
+Hopfield-style associative recall, Boolean networks with feedback.
+
+- **Engine**: two-phase CPU latch on `.shared truthState` (snapshot
+  every back-edge src first, then write every dst). `is_register[]`
+  flag in the rank kernel; combinational pass skips registers.
+- **Validation**: `engine.addBackEdge` rejects if dst has
+  combinational fan-in; `graph.connect` rejects if dst is a
+  back-edge destination. A node is either combinational or a
+  register, not both.
+- **DSL** (and MCP): `CONNECT BACK FROM <src> TO <dst>`,
+  `CLEAR <node> BACK_EDGES`, `GET <node> TRUTH`, `SET <node> LUT
+  0x<hex>` for arbitrary 64-bit LUT integers.
+- **WAL**: opcodes `0x10` (`CONNECT_BACK`) and `0x11`
+  (`CLEAR_BACK_EDGES`); replay reconstructs the back-edge buffer.
+  `CHECKPOINT` survival tested.
+- **Snapshot**: format v3 → v4. v4 appends a back-edge trailer
+  (u32 count + entries) after body. v3 files load with empty
+  back-edge list (forward migration). v4 always writes.
+- **Verification**: 1-bit toggle (6 ticks, register flips
+  0/1/0/1/0/1), 4-bit ripple counter (17 ticks, 0 → 15 → 0 wrap),
+  AC-3 Australia 3-coloring with WA pre-assigned red — converges in
+  2 synchronous ticks, per-tick equality with the pure-Python
+  `examples/ac3_australia/reference_ac3.py`.
+- **Tests**: 120 Swift green (was 104; +16 across the back-edge
+  work).
+- **Out of scope**: transform-LUTs on registers and a GPU latch
+  kernel deferred to v2 of the primitive.
+
+See [`docs/wiki/back-edges.md`](docs/wiki/back-edges.md) for the full
+feature page.
+
+### COMPOSE — bitwise LUT composition at runtime
+
+```
+COMPOSE AND <src1> <src2> INTO <dst>     # dst.LUT = src1.LUT & src2.LUT
+COMPOSE OR  <src1> <src2> INTO <dst>     # dst.LUT = src1.LUT | src2.LUT
+COMPOSE XOR <src1> <src2> INTO <dst>     # dst.LUT = src1.LUT ^ src2.LUT
+COMPOSE NOT <src>         INTO <dst>     # dst.LUT = ~src.LUT
+```
+
+Foundation for graph-simplification passes (collapse a fused subtree
+into one node), policy composition ("fires when all of {a, b, c}
+agree"), and any case where you'd otherwise evaluate a tree of
+intermediate nodes per tick. WAL-logs the equivalent `SET_LUT` if
+enabled. Rejected inside reader sessions. Returns
+`OK COMPOSE op=<OP> src1=<i> src2=<j|—> dst=<k> lut=0x<hex>`.
+
+### Other docs additions
+
+- `docs/wiki/back-edges.md` — new feature page.
+- `docs/wiki/dsl.md` — adds the back-edge verbs, `GET <node> TRUTH`,
+  `SET <node> LUT 0x<hex>`, and the COMPOSE section.
+- `docs/wiki/mcp.md` — `dagdb_compose_lut`, `dagdb_connect_back`,
+  `dagdb_clear_back_edges` (40 tools total).
+- `docs/wiki/data-and-persistence.md` — snapshot format-version
+  table, WAL opcode table.
+- `README.md` Features → Core engine — BACK_EDGE bullet, COMPOSE
+  callout in the LUT6 line.
+- `site/index.html` — comment-slot reserving a future BACK_EDGE
+  detailed slide before the Roadmap section.
+
+---
+
 ## 2026-04-21 (pm) — T1b u64 rank widen + tiled-streaming spec
 
 ### T1b — u32 → u64 rank refactor

@@ -834,6 +834,21 @@
 <!-- SLIDE 23: ROADMAP -->
 <div class="slide" id="s23">
   <h2>Roadmap</h2>
+  <!-- =================================================================
+       SLOT: BACK_EDGE feature — detailed slide reserved
+       =================================================================
+       The BACK_EDGE primitive (typed second edge type, register state
+       across tick boundaries) landed on main 2026-04-29. Verified via
+       1-bit toggle, 4-bit ripple counter, and AC-3 Australia 3-coloring
+       per-tick equality with Python reference. 120 Swift tests green.
+       When the deck is regenerated post-v0.1.2, insert a dedicated slide
+       in this slot covering: register pattern (synchronous-circuit on a
+       graph DB), DSL surface (CONNECT BACK / CLEAR BACK_EDGES), the
+       three reference demos, and what it unlocks (belief propagation,
+       AC-style constraint propagation, Hopfield recall, Boolean
+       networks with feedback). Reference: docs/wiki/back-edges.md.
+       This comment marks the reserved location; no rendered content yet.
+       ================================================================== -->
   <ul class="checklist">
     <li class="done">Phase 0.1: Fork Savanna Engine</li>
     <li class="pending">Phase 0.2: Edge weights + generalized neighbor table</li>

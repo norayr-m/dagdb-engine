@@ -19,7 +19,7 @@ or `ERROR <category>: <detail>`).
 
 ---
 
-## Tools (37)
+## Tools (40)
 
 ### Lifecycle + info
 
@@ -45,9 +45,23 @@ or `ERROR <category>: <detail>`).
 
 - `dagdb_set_truth(node, value)`
 - `dagdb_set_rank(node, rank)`
-- `dagdb_set_lut(node, gate)`
+- `dagdb_set_lut(node, gate)` — `gate` accepts a named preset
+  (`AND`, `OR`, `XOR`, `MAJ`, …) or a 64-bit hex literal in `0x…`
+  form (16 hex digits).
+- `dagdb_compose_lut(op, src1, dst, src2=-1)` — bitwise composition
+  of source LUTs into the destination LUT in one round-trip.
+  `op` is one of `AND`, `OR`, `XOR`, `NOT`. For unary `NOT`, omit
+  `src2`. Foundation for graph-simplification passes (collapse a
+  fused subtree into one node) and policy composition.
 - `dagdb_connect(source, target)`
 - `dagdb_clear_edges(node)`
+- `dagdb_connect_back(source, target)` — register a typed BACK_EDGE
+  that latches `truth[source]` into `truth[target]` at every tick
+  boundary. `target` must have zero combinational fan-in. See
+  [`back-edges.md`](back-edges.md) for the register-pattern
+  semantics.
+- `dagdb_clear_back_edges(node)` — remove every back-edge whose
+  destination is `node`; clears the register flag.
 - `dagdb_set_ranks_bulk()`
 
 ### Persistence

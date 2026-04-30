@@ -44,6 +44,9 @@ If you have twenty minutes, read those three plus:
 - **[mvcc.md](mvcc.md)** — reader sessions, snapshot-on-read.
 - **[invariants.md](invariants.md)** — the four things DagDB
   enforces on every insert + the 9 error categories.
+- **[back-edges.md](back-edges.md)** — typed second edge type for
+  synchronous-circuit recurrence. Latches state across tick
+  boundaries. Unlocks AC-3, Hopfield, Boolean networks with feedback.
 - **[Benchmarks.md](Benchmarks.md)** — reproducible numbers, one
   command per row.
 - **[troubleshooting.md](troubleshooting.md)** — things that go

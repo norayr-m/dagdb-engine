@@ -167,11 +167,18 @@ Authoritative ledger: `dashboard/features.yaml`. At a glance:
 - 6-bounded ranked DAG, 64-bit rank (u8 → u32 on 2026-04-20 T1,
   then u32 → u64 on 2026-04-21 T1b; address space now 1.8 × 10¹⁹).
 - LUT6 per node — any six-input Boolean function is one table lookup
-  per tick.
+  per tick. Bitwise LUT composition (`COMPOSE AND/OR/XOR/NOT`) for
+  collapsing fused subtrees into single nodes at runtime.
 - Ternary state; zero is the free level.
 - Morton Z-curve memory layout + 7-colouring for lock-free intra-rank
   parallelism on the GPU.
 - Metal tick kernel, hex-grid substrate, Apple Silicon UMA.
+- **BACK_EDGE primitive** — typed second edge type for synchronous-
+  circuit recurrence. Latches `truth[src]` into `truth[dst]` at tick
+  boundary, after the combinational pass settles. Unlocks AC-3
+  constraint propagation, Hopfield recall, Boolean networks with
+  feedback. Two-phase CPU latch, snapshot v4 trailer, WAL opcodes
+  `0x10` / `0x11`. See [`docs/wiki/back-edges.md`](docs/wiki/back-edges.md).
 
 ### Persistence
 - **Snapshot v3** (`.dags`) — atomic save via tmp + `F_FULLFSYNC` +

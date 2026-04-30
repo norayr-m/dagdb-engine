@@ -226,6 +226,48 @@ via `*.dags`.
 
 ---
 
+## Snapshot format versions
+
+| Version | Body bytes/node | What changed | Compatibility |
+|---|---|---|---|
+| v1 | 14 | u8 rank field | Load only. Widens to UInt64 in memory. |
+| v2 | 38 | u32 rank | Load only. Widens to UInt64 in memory. |
+| v3 | 42 | u64 rank | Load + save. Save default through v0.1.1. |
+| v4 | 42 + trailer | Adds back-edge trailer after body | Load + save. Save default from BACK_EDGE primitive onward. |
+
+The v4 trailer is a `u32 backEdgeCount` followed by
+`count × (u32 src, u32 dst)`. The trailer is always uncompressed; the
+existing `flags` compressed bit refers only to the body. v3 files load
+on a v4-aware engine with an empty back-edge list (forward migration).
+Graphs with no back-edges are bit-for-bit identical between v3 and v4
+save/load (`count = 0`).
+
+---
+
+## WAL opcodes
+
+Each WAL record is `u8 opcode` + length-prefixed payload, fsynced
+before the in-memory mutation is applied. Replay on daemon start
+reapplies in order; `CHECKPOINT` markers bound replay after a snapshot.
+
+| Opcode | Verb | Payload |
+|---|---|---|
+| `0x01` | `SET_TRUTH` | `u32 node`, `u8 value` |
+| `0x02` | `SET_RANK` | `u32 node`, `u64 rank` (v3 — accepts v1 5 B and v2 8 B on replay) |
+| `0x03` | `SET_LUT` | `u32 node`, `u64 lut` |
+| `0x04` | `CONNECT` | `u32 src`, `u32 dst` |
+| `0x05` | `CLEAR_EDGES` | `u32 node` |
+| `0x06` | `CHECKPOINT` | (none — boundary marker) |
+| `0x10` | `CONNECT_BACK` | `u32 src`, `u32 dst` |
+| `0x11` | `CLEAR_BACK_EDGES` | `u32 dst` |
+
+Opcodes `0x10` and `0x11` arrived with the BACK_EDGE primitive and are
+written only when back-edge mutations occur. Snapshots taken between
+them survive restart via the v4 trailer plus replay of any tail-WAL
+records past the last `CHECKPOINT`.
+
+---
+
 ## Shared memory record layouts
 
 Query results land at `/tmp/dagdb_shm_file` after an 8-byte header
