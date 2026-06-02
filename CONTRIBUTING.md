@@ -74,7 +74,7 @@ Laplacian spectrum of `K_{1,6}` is exactly `{0, 1, 1, 1, 1, 1, 7}` —
 
 ## License
 
-All contributions are accepted under GPL-3.0 (see `LICENSE`). By
+All contributions are accepted under Apache-2.0 (see `LICENSE`). By
 submitting a patch you confirm you have the right to release it under
 that licence.
 

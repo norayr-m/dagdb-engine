@@ -277,7 +277,7 @@ legacy substring matchers still hit.
 ├── ARCHITECTURE.md                 module map, data model, invariants
 ├── CHANGES.md                      session-by-session log
 ├── CONTRIBUTING.md                 short contributor note
-├── LICENSE                         GPL-3.0
+├── LICENSE                         Apache-2.0
 ├── Package.swift                   runtime build (4-cycle engine)
 ├── Sources/DagDBEngine/            4-cycle runtime engine + shader
 ├── Sources/DagDBCLI/               engine CLI
@@ -422,7 +422,7 @@ swift test --filter DagDBSecondaryIndexTests
 
 ## License
 
-GPL-3.0. See `LICENSE`.
+Apache-2.0. See `LICENSE`.
 
 ## Humble disclaimer
 
