@@ -9,6 +9,10 @@
 
 ---
 
+**DagDB** is a GPU-resident graph database where the graph is also the computation. Every node is a 6-input programmable logic unit (LUT6) with a ternary state (−1, 0, +1); edges run strictly down a 64-bit rank, so the whole store is an acyclic dataflow. A small 4-cycle runtime treats that same store as its computation graph. The database and the compute substrate are one object.
+
+---
+
 ## What it is
 
 A graph database where every node has at most six directed inputs, a
