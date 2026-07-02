@@ -56,9 +56,11 @@ If you have twenty minutes, read those four plus:
   enforces on every insert + the 9 error categories.
 - **[back-edges.md](back-edges.md)** — typed second edge type for
   synchronous-circuit recurrence. Latches state across tick
-  boundaries. Demonstrated on a 1-bit register and a 4-bit ripple
-  counter; AC-3 / Hopfield / feedback networks are expressible on the
-  primitive but not yet demonstrated.
+  boundaries. Demonstrated: 1-bit toggle + 4-bit ripple counter
+  (committed XCTests) and AC-3 Australia arc consistency (committed
+  encoding spec + verifier vs a pure-Python reference; run receipt in
+  examples/ac3_australia/). Hopfield / general feedback networks:
+  expressible, not yet demonstrated.
 - **[nested-luts.md](nested-luts.md)** — why one LUT6 is a provable
   ceiling and how multi-rank composition breaks it exactly; the
   verified 40-gate multiplier microcircuit.

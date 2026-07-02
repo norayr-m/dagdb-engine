@@ -102,10 +102,12 @@ A `launchd` agent (`com.dagdb.mcpo`) keeps the bridge running across reboots. Th
 ### Experiment 5 — Test coverage
 
 ```
-34 / 34 tests pass
-  27 core   — LUT6 presets, state, engine, graph, evaluation, delta codec
-   7 SerDe  — round-trip, compressed round-trip, magic-check, grid-mismatch,
-              validator: rank violation / self-loop / duplicate
+192 tests pass (DagDBTests + DagDBDaemonKitTests)
+  core: LUT6 presets, state, engine, graph, evaluation, delta codec
+  SerDe/WAL: snapshot round-trips, validators, crash-tail truncation
+  daemon: full DSL dispatch, guardPath, WAL-failure aborts, COMPOSE
+  invariants: GPU==CPU LUT eval, 7-coloring race-freedom, latch lag
+  microcircuit: nested-LUT mult4 exact on engine (256/256)
 ```
 
 ---
@@ -373,7 +375,7 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ## Test Results
 
 ```
-34/34 tests pass (27 core + 7 SerDe)
+192/192 tests pass (DagDBTests + DagDBDaemonKitTests)
 1K nodes:   0.45 ms/tick
 1M nodes:   0.71 GCUPS
 10M nodes:  18.6 ms/tick
