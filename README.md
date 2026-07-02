@@ -9,10 +9,6 @@
 
 ---
 
-**DagDB** is a GPU-resident graph database where the graph is also the computation. Every node is a 6-input programmable logic unit (LUT6) with a ternary state (−1, 0, +1); edges run strictly down a 64-bit rank, so the whole store is an acyclic dataflow. A small 4-cycle runtime treats that same store as its computation graph. The database and the compute substrate are one object.
-
----
-
 ## What it is
 
 A graph database where every node has at most six directed inputs, a
@@ -24,20 +20,37 @@ Three trees in one repo:
 
 | Layer | Path | Role |
 |---|---|---|
-| **Database** | `dagdb/` | 6-bounded ranked DAG store: library, `dagdb-cli`, `dagdb-daemon`, Python biology and stream-event plug-ins, MCP server, PostgreSQL extension, sample graphs. All active development lives here. |
-| **Runtime** | `Sources/` + `Package.swift` at repo root | 4-cycle optimiser-executor (scaffold). Independent build. Uses a DagDB substrate as its computation graph. |
-| **Site** | `site/` | Slide decks, podcasts, HTML demos; see [`site/README.md`](site/README.md). GitHub Pages publishes this subtree. |
+| **Database** | `dagdb/` | 6-bounded ranked DAG store: library, `dagdb-cli`, `dagdb-daemon`, Python biology and Loom plug-ins, MCP server, PostgreSQL extension, sample graphs. All active development lives here. |
+| **Runtime** | `Sources/` + `Package.swift` at repo root | 4-cycle optimiser-executor (paper 4 scaffold). Independent build. Uses a DagDB substrate as its computation graph. |
+| **Site** | `site/` | Slide decks, podcasts, HTML demos. Folded in from the former `norayr-m/DagDB` repo on 2026-04-22; see [`site/README.md`](site/README.md). GitHub Pages publishes this subtree. |
 
-The database layer carries a rank-widening + MVCC + secondary-index pass — u32→u64 rank, WAL, snapshot-on-read, ancestry and similarity primitives. Engine items in the current head:
+Between 2026-04-19 and 2026-04-21 the database layer was extended
+with a rank-widening + MVCC + secondary-index pass — u32→u64 rank,
+WAL, snapshot-on-read, ancestry and similarity primitives.
 
-- **u32 → u64 rank widening** — address space stretched from 4.3 billion to 1.8 × 10¹⁹. Snapshot format v3 (42 B/node). Backward-compatible load accepts v1 (u8) and v2 (u32) and widens on read.
-- **`rankPolicy` Protocol + three defaults** — sequence-position / chain-band / topological-sort.
-- **`SET_RANKS_BULK`** — shm-fed u32 vector rewrite, bypasses per-edge validation.
-- **MVCC snapshot-on-read** — `OPEN_READER` / `READER id …` sessions memcpy a stable engine copy; writers unblocked.
-- **`bfsDepths` primitive + `BFS_DEPTHS FROM <seed>` DSL** — undirected and backward.
-- **Stream-event adapter** — end-to-end ingest path conforming to the `RankPolicy` Protocol. Dual-write through a producer hook is live; ingest measured around 4.6–5.2 k events/sec on a single M5 Max.
+**Ship-storm 2026-04-21.** Six items landed on the engine in a single
+day, all tests green:
 
-**Tests.** 98 Swift test cases + 16 Python adapter tests green. No skips, no xfails. Counts cited separately on purpose.
+- **u32 rank refactor** (T1, 2026-04-20) — address space 255 → 4.3 billion;
+  snapshot format v2 (38 B/node).
+- **u64 rank refactor** (T1b, 2026-04-21) — address space 4.3 billion →
+  1.8 × 10¹⁹; snapshot format v3 (42 B/node). Backward-compat load
+  accepts v1 (u8) and v2 (u32) and widens on read.
+- **`rankPolicy` Protocol + three defaults** (T2) —
+  sequence-position / chain-band / topological-sort.
+- **`SET_RANKS_BULK`** (T3) — shm-fed u32 vector rewrite, bypasses
+  per-edge validation.
+- **MVCC snapshot-on-read** (T7) — `OPEN_READER` / `READER id …`
+  sessions memcpy a stable engine copy; writers unblocked.
+- **`bfsDepths` primitive + `BFS_DEPTHS FROM <seed>` DSL** —
+  undirected and backward.
+- **Loom Pass 1 complete** — 694 events ingested end-to-end on the
+  004 / u32 daemon, nodes 0–693, ~140 ms aggregate, ~4.6–5.2 k
+  events/sec. Adapter conforms to the Protocol. Dual-write through
+  `capture_latest` is live.
+
+**Tests.** 98 Swift test cases + 16 Python adapter tests green as of
+2026-04-21. No skips, no xfails. Counts cited separately on purpose.
 
 **Persistence policy (standing rule).** All persistent DagDB state on
 this machine lives under `~/dag_databases/`. The daemon enforces this
@@ -128,21 +141,21 @@ ranks = policy.assign_ranks(
 See `dagdb/plugins/biology/rank_policies.py` for all three default
 policies (sequence-position / chain-band / topological-sort).
 
-## Quick start — stream-event ingest
+## Quick start — Loom events
 
-Stream-event adapter in `dagdb/plugins/loom/adapter.py`:
+Stop-hook adapter in `dagdb/plugins/loom/adapter.py`:
 
 ```python
 from dagdb.plugins.loom.adapter import event_to_node, apply_ingest
 
-record = event_to_node(event, ctx)        # pure function
-_submit_insert(record)                    # your socket / MCP call
+record = event_to_node(loom_event, ctx)  # pure function
+_submit_insert(record)                   # your socket / MCP call
 ctx = apply_ingest(record, ctx)
 ```
 
-Ingest context is a small JSON blob you persist between calls — pick
-any path your application controls. See `dagdb/plugins/loom/backfill.py`
-for the one-shot JSONL → DagDB ingester used for historical loads.
+Ingest context lives at `~/jarvis_workspace/dagdb_ingest_ctx.json` by
+convention. See `dagdb/plugins/loom/backfill.py` for the one-shot
+JSONL → DagDB ingester used for historical loads.
 
 ---
 
@@ -151,20 +164,14 @@ for the one-shot JSONL → DagDB ingester used for historical loads.
 Authoritative ledger: `dashboard/features.yaml`. At a glance:
 
 ### Core engine
-- 6-bounded ranked DAG, 64-bit rank — address space 1.8 × 10¹⁹.
+- 6-bounded ranked DAG, 64-bit rank (u8 → u32 on 2026-04-20 T1,
+  then u32 → u64 on 2026-04-21 T1b; address space now 1.8 × 10¹⁹).
 - LUT6 per node — any six-input Boolean function is one table lookup
-  per tick. Bitwise LUT composition (`COMPOSE AND/OR/XOR/NOT`) for
-  collapsing fused subtrees into single nodes at runtime.
+  per tick.
 - Ternary state; zero is the free level.
 - Morton Z-curve memory layout + 7-colouring for lock-free intra-rank
   parallelism on the GPU.
 - Metal tick kernel, hex-grid substrate, Apple Silicon UMA.
-- **BACK_EDGE primitive** — typed second edge type for synchronous-
-  circuit recurrence. Latches `truth[src]` into `truth[dst]` at tick
-  boundary, after the combinational pass settles. Unlocks AC-3
-  constraint propagation, Hopfield recall, Boolean networks with
-  feedback. Two-phase CPU latch, snapshot v4 trailer, WAL opcodes
-  `0x10` / `0x11`. See [`docs/wiki/back-edges.md`](docs/wiki/back-edges.md).
 
 ### Persistence
 - **Snapshot v3** (`.dags`) — atomic save via tmp + `F_FULLFSYNC` +
@@ -228,8 +235,8 @@ Authoritative ledger: `dashboard/features.yaml`. At a glance:
   - `dagdb/plugins/biology/rank_policies.py` — `RankPolicy` Protocol
     + three defaults (sequence-position / chain-band /
     topological-sort).
-  - `dagdb/plugins/loom/` — stream-event adapter (`adapter.py`,
-    `backfill.py`, `test_adapter.py`).
+  - `dagdb/plugins/loom/` — hive-event adapter (`adapter.py`,
+    `backfill.py`, `test_adapter.py`) for Loom-as-DagDB.
 
 ### Error taxonomy
 
@@ -263,7 +270,7 @@ legacy substring matchers still hit.
 ├── ARCHITECTURE.md                 module map, data model, invariants
 ├── CHANGES.md                      session-by-session log
 ├── CONTRIBUTING.md                 short contributor note
-├── LICENSE                         Apache-2.0
+├── LICENSE                         GPL-3.0
 ├── Package.swift                   runtime build (4-cycle engine)
 ├── Sources/DagDBEngine/            4-cycle runtime engine + shader
 ├── Sources/DagDBCLI/               engine CLI
@@ -344,7 +351,7 @@ BACKUP INFO    <dir>
 # Secondary index
 SELECT truth <k> rank <lo>-<hi>
 
-# Traversal queries
+# BFS and hive queries
 BFS_DEPTHS FROM <seed> [BACKWARD]
 ANCESTRY FROM <node> DEPTH <d>
 SIMILAR_DECISIONS TO <node> DEPTH <d> K <k> [AMONG TRUTH <t>]
@@ -408,7 +415,7 @@ swift test --filter DagDBSecondaryIndexTests
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+GPL-3.0. See `LICENSE`.
 
 ## Humble disclaimer
 

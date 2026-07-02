@@ -10,10 +10,12 @@
 ///     Record: length u32 (payload-only) + opcode u8 + payload bytes
 ///
 /// Opcodes and payloads (length = payload byte count, does not include opcode):
-///     0x01 SET_TRUTH    u32 node + u8 value                     → length = 5
-///     0x02 SET_RANK     u32 node + u8 value                     → length = 5
-///     0x03 SET_LUT      u32 node + u64 lut                      → length = 12
-///     0xF0 CHECKPOINT   u64 epoch                               → length = 8
+///     0x01 SET_TRUTH         u32 node + u8 value                → length = 5
+///     0x02 SET_RANK          u32 node + u8 value                → length = 5
+///     0x03 SET_LUT           u32 node + u64 lut                 → length = 12
+///     0x10 CONNECT_BACK      u32 src  + u32 dst                 → length = 8
+///     0x11 CLEAR_BACK_EDGES  u32 dst                            → length = 4
+///     0xF0 CHECKPOINT        u64 epoch                          → length = 8
 ///
 /// A CHECKPOINT marks the boundary at which the engine state was snapshotted
 /// to disk. On replay, records before the LAST checkpoint may be discarded;
@@ -32,10 +34,12 @@ public enum DagDBWAL {
     public static let headerSize: Int = 16
 
     public enum Opcode: UInt8 {
-        case setTruth  = 0x01
-        case setRank   = 0x02
-        case setLUT    = 0x03
-        case checkpoint = 0xF0
+        case setTruth        = 0x01
+        case setRank         = 0x02
+        case setLUT          = 0x03
+        case connectBack     = 0x10
+        case clearBackEdges  = 0x11
+        case checkpoint      = 0xF0
     }
 
     public enum WALError: Error, CustomStringConvertible {
@@ -178,6 +182,21 @@ public enum DagDBWAL {
             appendU64(&d, epoch)
             return try append(opcode: .checkpoint, payload: d)
         }
+
+        @discardableResult
+        public func connectBack(src: UInt32, dst: UInt32) throws -> Int {
+            var d = Data()
+            appendU32(&d, src)
+            appendU32(&d, dst)
+            return try append(opcode: .connectBack, payload: d)
+        }
+
+        @discardableResult
+        public func clearBackEdges(dst: UInt32) throws -> Int {
+            var d = Data()
+            appendU32(&d, dst)
+            return try append(opcode: .clearBackEdges, payload: d)
+        }
     }
 
     // MARK: - Replay
@@ -282,6 +301,27 @@ public enum DagDBWAL {
                         let high = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
                         low[node]  = UInt32(lut & 0xFFFFFFFF)
                         high[node] = UInt32((lut >> 32) & 0xFFFFFFFF)
+                        applied += 1; afterCheckpoint += 1
+                    }
+                case Opcode.connectBack.rawValue:
+                    guard payloadLen == 8 else { off += recordTotal; continue }
+                    let src = readU32(data, off + 5)
+                    let dst = readU32(data, off + 9)
+                    if Int(src) < nodeCount && Int(dst) < nodeCount {
+                        // Replay path bypasses validation — the WAL recorded
+                        // an event that succeeded at write time. Use the
+                        // unchecked form so a transiently combinational
+                        // ordering during replay (combinational edge replayed
+                        // before the back-edge that validated it away) does
+                        // not abort recovery.
+                        engine.addBackEdgeUnchecked(src: src, dst: dst)
+                        applied += 1; afterCheckpoint += 1
+                    }
+                case Opcode.clearBackEdges.rawValue:
+                    guard payloadLen == 4 else { off += recordTotal; continue }
+                    let dst = readU32(data, off + 5)
+                    if Int(dst) < nodeCount {
+                        engine.clearBackEdges(toNode: dst)
                         applied += 1; afterCheckpoint += 1
                     }
                 case Opcode.checkpoint.rawValue:

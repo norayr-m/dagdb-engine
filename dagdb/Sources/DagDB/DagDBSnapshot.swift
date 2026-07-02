@@ -5,7 +5,8 @@
 ///
 /// Format (32-byte header):
 ///     magic       [4]  = "DAGS"
-///     version     u32  (1 = u8 rank, 2 = u32 rank, 3 = u64 rank)
+///     version     u32  (1 = u8 rank, 2 = u32 rank, 3 = u64 rank,
+///                       4 = v3 + back-edge section after the body)
 ///     nodeCount   u32
 ///     gridW       u32
 ///     gridH       u32
@@ -19,8 +20,14 @@
 ///                    lut6Low[N·4] · lut6High[N·4] · neighbors[N·24]
 ///   v2 (38·N bytes): rank[N·4] UInt32 · truth · type · luts · neighbors
 ///   v3 (42·N bytes): rank[N·8] UInt64 · truth · type · luts · neighbors
+///   v4 = v3 body + a back-edge section appended after `bodyBytes`:
+///         u32 backEdgeCount
+///         backEdgeCount × (u32 src + u32 dst) = 8 B per entry
+///        The back-edge section is always uncompressed; the `flags`
+///        compressed bit refers only to the v3 body.
 ///
-/// Save always writes v3. Load accepts v1, v2, v3 and widens rank on read.
+/// Save always writes v4. Load accepts v1, v2, v3 (back-edges → empty
+/// list) and v4. Rank widens on read for v1 and v2.
 ///
 /// N = 10M at v3 → 420 MB raw. With zlib the body typically drops to
 /// 20-30 % because the neighbors table is mostly -1 padding.
@@ -33,13 +40,53 @@ public enum DagDBSnapshot {
 
     public static let magic: [UInt8] = [0x44, 0x41, 0x47, 0x53]  // "DAGS"
     /// v1 = u8 rank (pre-u32-widen). v2 = u32 rank (2026-04-20). v3 = u64
-    /// rank (2026-04-21, for the 10^11 laptop target). Load accepts v1, v2,
-    /// v3; save always writes v3.
+    /// rank (2026-04-21, for the 10^11 laptop target). v4 = v3 body + a
+    /// back-edge section appended after the body (2026-04-29, for the
+    /// BACK_EDGE primitive). Load accepts v1..v4; save always writes v4.
     public static let versionV1: UInt32 = 1
     public static let versionV2: UInt32 = 2
     public static let versionV3: UInt32 = 3
-    public static let version: UInt32 = versionV3
+    public static let versionV4: UInt32 = 4
+    /// v5 = v4 body + back-edge section + env-origin trailer at end of file.
+    /// Trailer = magic "ENVS" (4 bytes) + env code u8. Phase 3 of dev/test/prod
+    /// env-split, 2026-05-02. LOAD verifies the env code matches the daemon's
+    /// env if both are set; cross-env loads rejected with envMismatch.
+    public static let versionV5: UInt32 = 5
+    public static let version: UInt32 = versionV5
     public static let headerSize: Int = 32
+
+    /// "ENVS" magic for the v5 env-origin trailer.
+    public static let envTrailerMagic: [UInt8] = [0x45, 0x4e, 0x56, 0x53]
+
+    /// Env-origin stamp embedded in v5 snapshots. `unspecified` means the
+    /// daemon writing/reading didn't have DAGDB_ENV set (legacy / unguarded).
+    public enum SnapshotEnv: UInt8, Sendable {
+        case unspecified = 0
+        case dev = 1
+        case test = 2
+        case prod = 3
+
+        public var label: String {
+            switch self {
+            case .unspecified: return "unspecified"
+            case .dev: return "dev"
+            case .test: return "test"
+            case .prod: return "prod"
+            }
+        }
+
+        /// Map a DAGDB_ENV string to a SnapshotEnv code. Returns
+        /// `unspecified` for nil / empty / unrecognised values.
+        public static func from(envString: String?) -> SnapshotEnv {
+            guard let s = envString?.lowercased() else { return .unspecified }
+            switch s {
+            case "dev": return .dev
+            case "test": return .test
+            case "prod": return .prod
+            default: return .unspecified
+            }
+        }
+    }
 
     public struct Flags: OptionSet {
         public let rawValue: UInt32
@@ -52,6 +99,7 @@ public enum DagDBSnapshot {
         case unsupportedVersion(UInt32)
         case nodeCountMismatch(file: Int, engine: Int)
         case gridMismatch(fileW: Int, fileH: Int, engineW: Int, engineH: Int)
+        case envMismatch(file: SnapshotEnv, daemon: SnapshotEnv)
         case ioFailure(String)
         case validationFailed(String)
 
@@ -61,6 +109,7 @@ public enum DagDBSnapshot {
             case .unsupportedVersion(let v): return "unsupported version: \(v)"
             case .nodeCountMismatch(let f, let e): return "nodeCount mismatch: file=\(f) engine=\(e)"
             case .gridMismatch(let fw, let fh, let ew, let eh): return "grid mismatch: file=\(fw)x\(fh) engine=\(ew)x\(eh)"
+            case .envMismatch(let f, let d): return "env mismatch: file env=\(f.label) but daemon env=\(d.label) — cross-env loads rejected"
             case .ioFailure(let s): return "io: \(s)"
             case .validationFailed(let s): return "validation: \(s)"
             }
@@ -122,7 +171,8 @@ public enum DagDBSnapshot {
         gridH: Int,
         tickCount: UInt32,
         path: String,
-        compressed: Bool = false
+        compressed: Bool = false,
+        daemonEnv: SnapshotEnv = .unspecified
     ) throws -> (bytesWritten: Int, uncompressedBodyBytes: Int, elapsedMs: Double) {
         let t0 = Date()
 
@@ -190,6 +240,24 @@ public enum DagDBSnapshot {
             handle.write(Data(bytesNoCopy: nbBytes,    count: nodeCount * 6 * 4,  deallocator: .none))
         }
 
+        // v4 back-edge section — appended after the body, always
+        // uncompressed (the count is small relative to the body).
+        var beSection = Data()
+        let beCount = UInt32(engine.backEdgeCount)
+        appendU32(&beSection, beCount)
+        for i in 0..<engine.backEdgeCount {
+            appendU32(&beSection, engine.backEdgeSrcs[i])
+            appendU32(&beSection, engine.backEdgeDsts[i])
+        }
+        handle.write(beSection)
+
+        // v5 env-origin trailer — 5 bytes appended at end of file:
+        // magic "ENVS" (4) + env code u8 (1).
+        var envTrailer = Data()
+        envTrailer.append(contentsOf: envTrailerMagic)
+        envTrailer.append(daemonEnv.rawValue)
+        handle.write(envTrailer)
+
         // F_FULLFSYNC: macOS-specific, forces the drive to flush its own cache.
         // Plain fsync only flushes OS buffers, which is insufficient for durability
         // on Apple SSDs (see Apple TN3154 / fcntl(2)).
@@ -228,7 +296,7 @@ public enum DagDBSnapshot {
             close(dirFd)
         }
 
-        let total = headerSize + bodyBytes
+        let total = headerSize + bodyBytes + beSection.count + envTrailer.count
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return (total, uncompressedBodySize, elapsed)
     }
@@ -259,7 +327,8 @@ public enum DagDBSnapshot {
         gridW: Int,
         gridH: Int,
         path: String,
-        validate: Bool = true
+        validate: Bool = true,
+        daemonEnv: SnapshotEnv = .unspecified
     ) throws -> LoadResult {
         let t0 = Date()
 
@@ -275,7 +344,8 @@ public enum DagDBSnapshot {
         let m = [UInt8](data[0..<4])
         guard m == magic else { throw SnapError.invalidMagic }
         let ver = readU32(data, 4)
-        guard ver == versionV1 || ver == versionV2 || ver == versionV3 else {
+        guard ver == versionV1 || ver == versionV2 || ver == versionV3
+                || ver == versionV4 || ver == versionV5 else {
             throw SnapError.unsupportedVersion(ver)
         }
         let fileNC    = Int(readU32(data, 8))
@@ -292,12 +362,14 @@ public enum DagDBSnapshot {
             throw SnapError.gridMismatch(fileW: fileGW, fileH: fileGH, engineW: gridW, engineH: gridH)
         }
 
-        // Rank width per version: v1 = 1 byte (u8), v2 = 4 (u32), v3 = 8 (u64).
+        // Rank width per version: v1 = 1 byte (u8), v2 = 4 (u32),
+        // v3/v4/v5 = 8 (u64). v4 added a back-edge trailer; v5 added
+        // an env-origin trailer on top of v4.
         let rankBytesPerNode: Int
         switch ver {
         case versionV1: rankBytesPerNode = 1
         case versionV2: rankBytesPerNode = 4
-        case versionV3: rankBytesPerNode = 8
+        case versionV3, versionV4, versionV5: rankBytesPerNode = 8
         default:        rankBytesPerNode = 1  // unreachable (guarded above)
         }
         // body = rank + truth(1) + type(1) + lut_low(4) + lut_high(4) + neighbors(24)
@@ -306,7 +378,14 @@ public enum DagDBSnapshot {
         // Resolve the body bytes — either the raw slice or the zlib-decoded buffer.
         let bodyData: Data
         if flags.contains(.compressed) {
-            // bodyBytes is the compressed size on disk. Slice and decompress.
+            // bodyBytes is the compressed size on disk. Guard the slice against
+            // a physically truncated file: the header can declare a body the
+            // file doesn't actually contain (the crash-during-write artifact).
+            // subdata on an out-of-range slice would trap and kill the daemon —
+            // throw instead.
+            guard data.count >= headerSize + bodyBytes else {
+                throw SnapError.ioFailure("file truncated: header declares \(bodyBytes) compressed body bytes, file has \(data.count - headerSize) after header")
+            }
             let compressedSlice = data.subdata(in: headerSize..<(headerSize + bodyBytes))
             bodyData = zlibDecompress(compressedSlice, expectedSize: uncompressedBodySize)
             guard bodyData.count == uncompressedBodySize else {
@@ -319,6 +398,11 @@ public enum DagDBSnapshot {
             let effectiveBody = bodyBytes == 0 ? uncompressedBodySize : bodyBytes
             guard effectiveBody == uncompressedBodySize else {
                 throw SnapError.ioFailure("body size \(effectiveBody) != expected \(uncompressedBodySize)")
+            }
+            // Same truncation guard as the compressed path: don't trap on a
+            // short file whose header claims a full body.
+            guard data.count >= headerSize + effectiveBody else {
+                throw SnapError.ioFailure("file truncated: expected \(effectiveBody) body bytes, file has \(data.count - headerSize) after header")
             }
             bodyData = data.subdata(in: headerSize..<(headerSize + effectiveBody))
         }
@@ -347,7 +431,7 @@ public enum DagDBSnapshot {
                 let srcU32 = base.advanced(by: off).assumingMemoryBound(to: UInt32.self)
                 for i in 0..<nodeCount { dstU64[i] = UInt64(srcU32[i]) }
                 off += nodeCount * 4
-            default:  // v3
+            default:  // v3 / v4 / v5
                 memcpy(engine.rankBuf.contents(), base.advanced(by: off), nodeCount * 8)
                 off += nodeCount * 8
             }
@@ -358,7 +442,70 @@ public enum DagDBSnapshot {
             memcpy(engine.neighborsBuf.contents(),  base.advanced(by: off), nodeCount * 6 * 4)
         }
 
-        let totalRead = headerSize + (flags.contains(.compressed) ? bodyBytes : uncompressedBodySize)
+        // v4 back-edge section — read after the body. v1/v2/v3 files have
+        // no section; load resets the back-edge list to empty.
+        engine.backEdgeSrcs.removeAll(keepingCapacity: false)
+        engine.backEdgeDsts.removeAll(keepingCapacity: false)
+        let regPtr = engine.isRegisterBuf.contents()
+            .bindMemory(to: UInt8.self, capacity: nodeCount)
+        for i in 0..<nodeCount { regPtr[i] = 0 }
+
+        var totalRead = headerSize + (flags.contains(.compressed) ? bodyBytes : uncompressedBodySize)
+        if ver == versionV4 || ver == versionV5 {
+            let beSectionStart = totalRead
+            guard data.count >= beSectionStart + 4 else {
+                throw SnapError.ioFailure("v\(ver) file is missing the back-edge count")
+            }
+            let beCount = Int(readU32(data, beSectionStart))
+            let beSectionSize = 4 + beCount * 8
+            guard data.count >= beSectionStart + beSectionSize else {
+                throw SnapError.ioFailure("v\(ver) file truncated mid-back-edge-section: " +
+                                          "need \(beSectionSize) bytes, have \(data.count - beSectionStart)")
+            }
+            for i in 0..<beCount {
+                let entryOff = beSectionStart + 4 + i * 8
+                let src = readU32(data, entryOff)
+                let dst = readU32(data, entryOff + 4)
+                // Range-check before the unchecked add: a corrupt/crafted file
+                // with src or dst >= nodeCount would write past isRegisterBuf
+                // (heap corruption). The WAL replay path bounds-checks the same
+                // op; the snapshot path must too. Reset any partial state first
+                // so a thrown error leaves no half-loaded back-edge list.
+                guard Int(src) < nodeCount && Int(dst) < nodeCount else {
+                    engine.backEdgeSrcs.removeAll(keepingCapacity: false)
+                    engine.backEdgeDsts.removeAll(keepingCapacity: false)
+                    let rp = engine.isRegisterBuf.contents()
+                        .bindMemory(to: UInt8.self, capacity: nodeCount)
+                    for j in 0..<nodeCount { rp[j] = 0 }
+                    throw SnapError.ioFailure("back-edge entry \(i) out of range: src=\(src) dst=\(dst) nodeCount=\(nodeCount)")
+                }
+                engine.addBackEdgeUnchecked(src: src, dst: dst)
+            }
+            totalRead += beSectionSize
+        }
+
+        // v5 env-origin trailer — 5 bytes at end of file: magic "ENVS" + env code u8.
+        // Only present in v5 files. Cross-env loads rejected.
+        if ver == versionV5 {
+            let trailerStart = totalRead
+            guard data.count >= trailerStart + 5 else {
+                throw SnapError.ioFailure("v5 file is missing the env-origin trailer (need 5 bytes, have \(data.count - trailerStart))")
+            }
+            let trailerMagic = [UInt8](data[trailerStart..<trailerStart + 4])
+            guard trailerMagic == envTrailerMagic else {
+                throw SnapError.ioFailure("v5 env-trailer magic mismatch: got 0x\(trailerMagic.map { String(format: "%02x", $0) }.joined()), expected 'ENVS' (0x454e5653)")
+            }
+            let envCode = data[trailerStart + 4]
+            let fileEnv = SnapshotEnv(rawValue: envCode) ?? .unspecified
+            // Cross-env load rejection: if both daemon and file have a real
+            // env (not unspecified) and they differ, reject. unspecified-on-
+            // either-side passes through (legacy / unguarded daemons keep working).
+            if daemonEnv != .unspecified && fileEnv != .unspecified && daemonEnv != fileEnv {
+                throw SnapError.envMismatch(file: fileEnv, daemon: daemonEnv)
+            }
+            totalRead += 5
+        }
+
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return LoadResult(bytesRead: totalRead, fileNodeCount: fileNC, fileTicks: fileTicks, elapsedMs: elapsed)
     }

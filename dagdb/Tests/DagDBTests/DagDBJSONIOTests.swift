@@ -3,6 +3,20 @@ import XCTest
 
 final class DagDBJSONIOTests: XCTestCase {
 
+    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
+    /// when princes run swift test concurrently in the shared dagdb dir).
+    private var tmpDir: String!
+
+    override func setUpWithError() throws {
+        tmpDir = NSTemporaryDirectory() + "dagdb-jsonio-\(UUID().uuidString)/"
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let d = tmpDir { try? FileManager.default.removeItem(atPath: d) }
+    }
+
     private func makeEngine(side: Int) throws -> (DagDBEngine, Int, Int) {
         let grid = HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
@@ -29,6 +43,10 @@ final class DagDBJSONIOTests: XCTestCase {
             low[i]  = UInt32(lut & 0xFFFFFFFF)
             high[i] = UInt32((lut >> 32) & 0xFFFFFFFF)
         }
+        // Isolated upper-half node with a u64 rank above the u32 ceiling, so
+        // the round-trip comparison actually exercises the upper half and a
+        // value a u32 truncation would corrupt. No edges → no rank violation.
+        rank[n - 1] = 5_000_000_000
         rank[7] = 1
         let maj = LUT6Preset.majority6
         low[7]  = UInt32(maj & 0xFFFFFFFF)
@@ -47,7 +65,7 @@ final class DagDBJSONIOTests: XCTestCase {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
 
-        let path = NSTemporaryDirectory() + "dagdb_rt.json"
+        let path = tmpDir! + "dagdb_rt.json"
         _ = try? FileManager.default.removeItem(atPath: path)
 
         let saved = try DagDBJSONIO.saveJSON(
@@ -64,7 +82,7 @@ final class DagDBJSONIOTests: XCTestCase {
         XCTAssertEqual(loaded.fileNodeCount, eng1.nodeCount)
         XCTAssertEqual(loaded.fileTicks, 42)
 
-        XCTAssertTrue(buffersEqual(eng1.rankBuf,       eng2.rankBuf,       eng1.nodeCount * 4), "rank")
+        XCTAssertTrue(buffersEqual(eng1.rankBuf,       eng2.rankBuf,       eng1.nodeCount * 8), "rank")  // u64
         XCTAssertTrue(buffersEqual(eng1.truthStateBuf, eng2.truthStateBuf, eng1.nodeCount),     "truth")
         XCTAssertTrue(buffersEqual(eng1.lut6LowBuf,    eng2.lut6LowBuf,    eng1.nodeCount * 4), "low")
         XCTAssertTrue(buffersEqual(eng1.lut6HighBuf,   eng2.lut6HighBuf,   eng1.nodeCount * 4), "high")
@@ -75,7 +93,7 @@ final class DagDBJSONIOTests: XCTestCase {
         let (eng, gw, gh) = try makeEngine(side: 8)
         seed(eng)
 
-        let path = NSTemporaryDirectory() + "dagdb_grid.json"
+        let path = tmpDir! + "dagdb_grid.json"
         _ = try? FileManager.default.removeItem(atPath: path)
         _ = try DagDBJSONIO.saveJSON(
             engine: eng, nodeCount: eng.nodeCount,
@@ -96,7 +114,7 @@ final class DagDBJSONIOTests: XCTestCase {
         let (eng, gw, gh) = try makeEngine(side: 8)
         seed(eng)
 
-        let path = NSTemporaryDirectory() + "dagdb_badrank.json"
+        let path = tmpDir! + "dagdb_badrank.json"
         _ = try DagDBJSONIO.saveJSON(
             engine: eng, nodeCount: eng.nodeCount,
             gridW: gw, gridH: gh, tickCount: 0, path: path
@@ -129,7 +147,7 @@ final class DagDBJSONIOTests: XCTestCase {
         let (eng1, _, _) = try makeEngine(side: 8)
         seed(eng1)
 
-        let dir = NSTemporaryDirectory() + "dagdb_csv_rt"
+        let dir = tmpDir! + "dagdb_csv_rt"
         _ = try? FileManager.default.removeItem(atPath: dir)
 
         let saved = try DagDBJSONIO.saveCSV(
@@ -156,7 +174,7 @@ final class DagDBJSONIOTests: XCTestCase {
         let (eng, _, _) = try makeEngine(side: 8)
         seed(eng)
 
-        let dir = NSTemporaryDirectory() + "dagdb_csv_edges"
+        let dir = tmpDir! + "dagdb_csv_edges"
         _ = try? FileManager.default.removeItem(atPath: dir)
 
         _ = try DagDBJSONIO.saveCSV(

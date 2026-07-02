@@ -3,6 +3,20 @@ import XCTest
 
 final class DagDBBackupTests: XCTestCase {
 
+    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
+    /// when princes run swift test concurrently in the shared dagdb dir).
+    private var tmpDir: String!
+
+    override func setUpWithError() throws {
+        tmpDir = NSTemporaryDirectory() + "dagdb-backup-\(UUID().uuidString)/"
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let d = tmpDir { try? FileManager.default.removeItem(atPath: d) }
+    }
+
     private func makeEngine(side: Int) throws -> (DagDBEngine, Int, Int) {
         let grid = HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
@@ -51,7 +65,7 @@ final class DagDBBackupTests: XCTestCase {
 
     private func buffersEqual(_ a: DagDBEngine, _ b: DagDBEngine) -> Bool {
         let n = a.nodeCount
-        return buffersEqual(a.rankBuf,       b.rankBuf,       n * 4)
+        return buffersEqual(a.rankBuf,       b.rankBuf,       n * 8)  // rank is u64
             && buffersEqual(a.truthStateBuf, b.truthStateBuf, n)
             && buffersEqual(a.nodeTypeBuf,   b.nodeTypeBuf,   n)
             && buffersEqual(a.lut6LowBuf,    b.lut6LowBuf,    n * 4)
@@ -66,7 +80,7 @@ final class DagDBBackupTests: XCTestCase {
     // MARK: - Chain lifecycle
 
     func testInitializeThenRestoreRecoversBaseState() throws {
-        let dir = NSTemporaryDirectory() + "dagdb_backup_init"
+        let dir = tmpDir! + "dagdb_backup_init"
         wipeDir(dir)
 
         let (eng1, gw, gh) = try makeEngine(side: 8)
@@ -88,7 +102,7 @@ final class DagDBBackupTests: XCTestCase {
     }
 
     func testSingleDiffRoundTrip() throws {
-        let dir = NSTemporaryDirectory() + "dagdb_backup_one"
+        let dir = tmpDir! + "dagdb_backup_one"
         wipeDir(dir)
 
         let (eng1, gw, gh) = try makeEngine(side: 8)
@@ -121,7 +135,7 @@ final class DagDBBackupTests: XCTestCase {
     }
 
     func testManyDiffsRoundTrip() throws {
-        let dir = NSTemporaryDirectory() + "dagdb_backup_many"
+        let dir = tmpDir! + "dagdb_backup_many"
         wipeDir(dir)
 
         let (eng1, gw, gh) = try makeEngine(side: 8)
@@ -157,7 +171,7 @@ final class DagDBBackupTests: XCTestCase {
         // the raw (uncompressed) engine state size, not the already-compressed
         // base — both compress well on sparse data, so the ratio of diff to
         // compressed base isn't meaningful.
-        let dir = NSTemporaryDirectory() + "dagdb_backup_size"
+        let dir = tmpDir! + "dagdb_backup_size"
         wipeDir(dir)
 
         let (eng, gw, gh) = try makeEngine(side: 16)  // 256-node grid
@@ -181,7 +195,7 @@ final class DagDBBackupTests: XCTestCase {
     }
 
     func testCompactCollapsesChain() throws {
-        let dir = NSTemporaryDirectory() + "dagdb_backup_compact"
+        let dir = tmpDir! + "dagdb_backup_compact"
         wipeDir(dir)
 
         let (eng1, gw, gh) = try makeEngine(side: 8)
@@ -221,7 +235,7 @@ final class DagDBBackupTests: XCTestCase {
     }
 
     func testAppendWithoutBaseFails() throws {
-        let dir = NSTemporaryDirectory() + "dagdb_backup_nobase"
+        let dir = tmpDir! + "dagdb_backup_nobase"
         wipeDir(dir)
         try FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true)

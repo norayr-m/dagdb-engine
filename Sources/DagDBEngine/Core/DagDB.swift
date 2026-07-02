@@ -58,8 +58,10 @@ public struct DagNode: Equatable {
 /// The mirror node at index `i + nodeCount` is paired with node `i`.
 /// Rank monotonicity `rank(src) < rank(dst)` is a runtime invariant,
 /// enforced on insertion. Breaking it is a fatal error: it breaks Morton
-/// locality, breaks the wave scheduler, and collapses the 14 GCUPS
-/// regime (see thesis §5 cascade analysis).
+/// locality, breaks the wave scheduler, and collapses the SpMV throughput
+/// regime (see thesis §5 cascade analysis; DagDB's measured 1M-node
+/// figure is 0.71 GCUPS — the ~14 GCUPS number belongs to the Savanna
+/// sibling CA engine, not this one).
 public final class DagDB {
     public let nodeCount: Int
     public let maxRank: UInt32

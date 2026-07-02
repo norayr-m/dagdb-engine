@@ -31,6 +31,14 @@ public final class DagDBGraph {
     public private(set) var nodes: [Node] = []
     private var labelIndex: [String: Int] = [:]
 
+    /// BACK_EDGEs registered on this graph. Each entry is `(src, dst)`
+    /// where `src`'s truth value is latched into `dst` at every tick
+    /// boundary. Exempt from rank monotonicity. The destination must have
+    /// zero combinational fan-in — `connect()` rejects new combinational
+    /// edges into a back-edge dst, and `connectBack()` rejects targets
+    /// that already have any combinational input.
+    public private(set) var backEdges: [(src: Int, dst: Int)] = []
+
     public var nodeCount: Int { nodes.count }
 
     /// Maximum rank across all nodes
@@ -92,9 +100,16 @@ public final class DagDBGraph {
 
     /// Connect source → target (target reads from source).
     /// Source must have higher rank (closer to leaves) than target.
+    /// Rejects targets that are already BACK_EDGE destinations — registers
+    /// must keep zero combinational fan-in.
     public func connect(from source: Int, to target: Int) throws {
         guard source < nodes.count && target < nodes.count else {
             throw GraphError.nodeNotFound
+        }
+        if isBackEdgeDst(target) {
+            throw GraphError.backEdgeViolation(
+                "Cannot add combinational edge into node \(target) (\(nodes[target].label)): node is a BACK_EDGE destination (register)"
+            )
         }
         guard nodes[source].rank > nodes[target].rank else {
             throw GraphError.rankViolation(
@@ -110,6 +125,37 @@ public final class DagDBGraph {
             return // already connected
         }
         nodes[target].edges.append(source)
+    }
+
+    /// Register a BACK_EDGE: `truth[src]` is latched into `truth[dst]` at
+    /// every tick boundary. Exempt from rank monotonicity, but the
+    /// destination must currently have zero combinational fan-in.
+    public func connectBack(from source: Int, to target: Int) throws {
+        guard source < nodes.count && target < nodes.count else {
+            throw GraphError.nodeNotFound
+        }
+        if !nodes[target].edges.isEmpty {
+            throw GraphError.backEdgeViolation(
+                "Cannot add BACK_EDGE into node \(target) (\(nodes[target].label)): node already has \(nodes[target].edges.count) combinational input(s); registers must have zero combinational fan-in"
+            )
+        }
+        // Allow duplicate idempotently — caller can re-add without effect.
+        if backEdges.contains(where: { $0.src == source && $0.dst == target }) {
+            return
+        }
+        backEdges.append((src: source, dst: target))
+    }
+
+    /// Remove every BACK_EDGE whose destination is `dst`. The node returns
+    /// to ordinary combinational semantics — subsequent `connect()` calls
+    /// into it are accepted again.
+    public func clearBackEdges(toNode dst: Int) {
+        backEdges.removeAll { $0.dst == dst }
+    }
+
+    /// Whether `node` is currently a BACK_EDGE destination.
+    public func isBackEdgeDst(_ node: Int) -> Bool {
+        backEdges.contains { $0.dst == node }
     }
 
     /// Connect by label.
@@ -248,6 +294,12 @@ public final class DagDBGraph {
             }
         }
 
+        // Copy BACK_EDGEs into the state. The engine convenience init
+        // picks these up and seeds its register flags + latch list.
+        for be in backEdges {
+            state.addBackEdge(src: UInt32(be.src), dst: UInt32(be.dst))
+        }
+
         return state
     }
 
@@ -277,7 +329,9 @@ public final class DagDBGraph {
 
     // MARK: - Validation
 
-    /// Validate graph structure: all edges respect rank ordering, no node exceeds 6 edges.
+    /// Validate graph structure: all edges respect rank ordering, no node
+    /// exceeds 6 edges, BACK_EDGE destinations have zero combinational
+    /// fan-in.
     public func validate() -> [String] {
         var errors: [String] = []
         for node in nodes {
@@ -290,6 +344,19 @@ public final class DagDBGraph {
                 } else if nodes[src].rank <= node.rank {
                     errors.append("Edge \(src) → \(node.id): source rank \(nodes[src].rank) must be > target rank \(node.rank)")
                 }
+            }
+        }
+        // BACK_EDGE invariants.
+        for be in backEdges {
+            if be.src >= nodes.count {
+                errors.append("BACK_EDGE references non-existent source \(be.src)")
+            }
+            if be.dst >= nodes.count {
+                errors.append("BACK_EDGE references non-existent destination \(be.dst)")
+                continue
+            }
+            if !nodes[be.dst].edges.isEmpty {
+                errors.append("BACK_EDGE destination \(be.dst) (\(nodes[be.dst].label)) has \(nodes[be.dst].edges.count) combinational input(s); registers must have zero combinational fan-in")
             }
         }
         return errors
@@ -315,6 +382,7 @@ public final class DagDBGraph {
         case rankViolation(String)
         case degreeOverflow(String)
         case gridTooSmall(String)
+        case backEdgeViolation(String)
 
         public var description: String {
             switch self {
@@ -322,6 +390,7 @@ public final class DagDBGraph {
             case .rankViolation(let msg): return "Rank violation: \(msg)"
             case .degreeOverflow(let msg): return "Degree overflow: \(msg)"
             case .gridTooSmall(let msg): return "Grid too small: \(msg)"
+            case .backEdgeViolation(let msg): return "BACK_EDGE violation: \(msg)"
             }
         }
     }

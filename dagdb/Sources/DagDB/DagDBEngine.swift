@@ -41,6 +41,13 @@ public final class DagDBEngine {
     public let nodeCount: Int
     public let maxRank: Int  // Number of ranks in the DAG
 
+    // BACK_EDGE primitive: typed return-edges latched at tick boundary.
+    // The rank kernel skips nodes flagged as registers; those values come
+    // from `latchBackEdges()` instead.
+    public internal(set) var backEdgeSrcs: [UInt32] = []
+    public internal(set) var backEdgeDsts: [UInt32] = []
+    public let isRegisterBuf: MTLBuffer        // UInt8 per node, 1 = register
+
     public init(grid: HexGrid, state: DagDBState, maxRank: Int = 16) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw EngineError.noGPU
@@ -72,6 +79,15 @@ public final class DagDBEngine {
         self.activationBuf = b5
         self.edgeWeightsBuf = b6
         self.nodeTypeBuf = b7
+
+        // Allocate is_register flag buffer (one byte per node, default 0).
+        // Populated by addBackEdge / clearBackEdges; reused across ticks.
+        guard let regBuf = device.makeBuffer(length: nodeCount, options: shared) else {
+            throw EngineError.bufferAllocationFailed
+        }
+        self.isRegisterBuf = regBuf
+        let regPtr = regBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        for i in 0..<nodeCount { regPtr[i] = 0 }
 
         // Neighbors from HexGrid (already Morton-ordered)
         guard let nb = device.makeBuffer(bytes: grid.neighbors, length: grid.neighbors.count * 4, options: shared) else {
@@ -146,6 +162,7 @@ public final class DagDBEngine {
                 enc.setBytes(&groupSize, length: 4, index: 6)
                 var currentRank = UInt64(rankLevel)
                 enc.setBytes(&currentRank, length: 8, index: 7)
+                enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
 
                 let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
                 enc.dispatchThreadgroups(
@@ -157,6 +174,12 @@ public final class DagDBEngine {
 
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
+
+        // Latch phase: copy each BACK_EDGE source's truth into its destination.
+        // Two-phase semantics handled inside latchBackEdges. Runs after the
+        // combinational pass so the latched values reflect this tick's
+        // computed sources.
+        latchBackEdges()
     }
 
     /// Read current truth states back to CPU
@@ -174,6 +197,124 @@ public final class DagDBEngine {
             roots.append((i, truth[i]))
         }
         return roots
+    }
+
+    // MARK: - BACK_EDGE primitive
+
+    /// Errors raised by BACK_EDGE mutations that would violate the
+    /// register-pattern invariant.
+    public enum BackEdgeError: Error, CustomStringConvertible {
+        /// Adding a BACK_EDGE whose destination has any combinational input.
+        case destinationHasCombinationalInDegree(dst: UInt32, slot: Int, src: Int32)
+        /// Source or destination is out of range for this engine's node table.
+        case nodeIndexOutOfRange(node: UInt32, nodeCount: Int)
+
+        public var description: String {
+            switch self {
+            case let .destinationHasCombinationalInDegree(dst, slot, src):
+                return "BACK_EDGE dst node \(dst) has a combinational input at slot \(slot) (source node \(src)); registers must have zero combinational fan-in"
+            case let .nodeIndexOutOfRange(node, nodeCount):
+                return "node index \(node) is out of range for engine with nodeCount=\(nodeCount)"
+            }
+        }
+    }
+
+    /// Number of registered BACK_EDGEs.
+    public var backEdgeCount: Int { backEdgeSrcs.count }
+
+    /// Number of combinational input slots currently in use on `node` —
+    /// i.e. how many entries of `neighbors[node*6+0..5]` are not `-1`.
+    public func combinationalFanIn(node: UInt32) -> Int {
+        let n = Int(node)
+        precondition(n < nodeCount, "node index \(n) >= nodeCount \(nodeCount)")
+        let ptr = neighborsBuf.contents().bindMemory(to: Int32.self,
+                                                     capacity: nodeCount * 6)
+        var count = 0
+        for k in 0..<6 where ptr[n * 6 + k] >= 0 { count += 1 }
+        return count
+    }
+
+    /// Register a BACK_EDGE: at every tick boundary, `truth[src]` is latched
+    /// into `truth[dst]`. The destination is flagged as a register so the
+    /// rank kernel skips it during combinational evaluation.
+    ///
+    /// Validates the register invariant: `dst` must have zero combinational
+    /// fan-in. Throws `BackEdgeError.destinationHasCombinationalInDegree`
+    /// if the rule is violated. Use `clearEdges(node:)` (combinational)
+    /// before turning a node into a register.
+    public func addBackEdge(src: UInt32, dst: UInt32) throws {
+        guard Int(src) < nodeCount else {
+            throw BackEdgeError.nodeIndexOutOfRange(node: src, nodeCount: nodeCount)
+        }
+        guard Int(dst) < nodeCount else {
+            throw BackEdgeError.nodeIndexOutOfRange(node: dst, nodeCount: nodeCount)
+        }
+        let neighborsPtr = neighborsBuf.contents().bindMemory(to: Int32.self,
+                                                              capacity: nodeCount * 6)
+        for k in 0..<6 {
+            let nb = neighborsPtr[Int(dst) * 6 + k]
+            if nb >= 0 {
+                throw BackEdgeError.destinationHasCombinationalInDegree(
+                    dst: dst, slot: k, src: nb)
+            }
+        }
+        backEdgeSrcs.append(src)
+        backEdgeDsts.append(dst)
+        let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        ptr[Int(dst)] = 1
+    }
+
+    /// Internal: append a BACK_EDGE without validating combinational
+    /// fan-in. Used by WAL replay where the original write was already
+    /// validated; replay must succeed even if intermediate combinational
+    /// state would temporarily violate the rule.
+    func addBackEdgeUnchecked(src: UInt32, dst: UInt32) {
+        backEdgeSrcs.append(src)
+        backEdgeDsts.append(dst)
+        let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        ptr[Int(dst)] = 1
+    }
+
+    /// Remove every BACK_EDGE whose destination is `dst`. The node also
+    /// loses its register flag, so the next tick's combinational pass will
+    /// evaluate it like an ordinary node again.
+    public func clearBackEdges(toNode dst: UInt32) {
+        var keepSrcs: [UInt32] = []
+        var keepDsts: [UInt32] = []
+        keepSrcs.reserveCapacity(backEdgeSrcs.count)
+        keepDsts.reserveCapacity(backEdgeDsts.count)
+        for i in 0..<backEdgeSrcs.count where backEdgeDsts[i] != dst {
+            keepSrcs.append(backEdgeSrcs[i])
+            keepDsts.append(backEdgeDsts[i])
+        }
+        backEdgeSrcs = keepSrcs
+        backEdgeDsts = keepDsts
+        let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        ptr[Int(dst)] = 0
+    }
+
+    /// Whether `node` is currently a back-edge destination (register).
+    public func isRegister(node: UInt32) -> Bool {
+        let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        return ptr[Int(node)] != 0
+    }
+
+    /// Latch phase: snapshot every src truth, then write every dst.
+    /// Two-phase write-back handles chained back-edges (one entry's dst is
+    /// another entry's src) by latching from pre-tick state. Runs on the
+    /// CPU; back-edge counts are small relative to combinational graphs and
+    /// the truth buffer is unified-memory shared.
+    public func latchBackEdges() {
+        let n = backEdgeSrcs.count
+        if n == 0 { return }
+        let ptr = truthStateBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        var snapshot = [UInt8](repeating: 0, count: n)
+        for i in 0..<n {
+            snapshot[i] = ptr[Int(backEdgeSrcs[i])]
+        }
+        for i in 0..<n {
+            ptr[Int(backEdgeDsts[i])] = snapshot[i]
+        }
     }
 
     enum EngineError: Error {
@@ -211,11 +352,13 @@ public final class DagDBEngine {
         device const uint32_t*  group        [[ buffer(5) ]],
         constant uint32_t&      group_size   [[ buffer(6) ]],
         constant uint64_t&      current_rank [[ buffer(7) ]],
+        device const uint8_t*   is_register  [[ buffer(8) ]],
         uint                    gid          [[ thread_position_in_grid ]]
     ) {
         if (gid >= group_size) return;
         uint node = group[gid];
         if (rank[node] != current_rank) return;
+        if (is_register[node] != 0) return;
 
         uint8_t input_bits = 0;
         for (int d = 0; d < 6; d++) {
@@ -251,11 +394,13 @@ public final class DagDBEngine {
         constant uint32_t&      group_size   [[ buffer(5) ]],
         constant uint64_t&      current_rank [[ buffer(6) ]],
         constant float&         threshold    [[ buffer(7) ]],
+        device const uint8_t*   is_register  [[ buffer(8) ]],
         uint                    gid          [[ thread_position_in_grid ]]
     ) {
         if (gid >= group_size) return;
         uint node = group[gid];
         if (rank[node] != current_rank) return;
+        if (is_register[node] != 0) return;
         float sum = 0.0;
         for (int d = 0; d < 6; d++) {
             int32_t nb = neighbors[node * 6 + d];

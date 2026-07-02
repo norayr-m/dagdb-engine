@@ -61,6 +61,7 @@ kernel void dagdb_tick_rank(
     device const uint32_t*  group        [[ buffer(5) ]],
     constant uint32_t&      group_size   [[ buffer(6) ]],
     constant uint64_t&      current_rank [[ buffer(7) ]],
+    device const uint8_t*   is_register  [[ buffer(8) ]],
     uint                    gid          [[ thread_position_in_grid ]]
 ) {
     if (gid >= group_size) return;
@@ -68,6 +69,11 @@ kernel void dagdb_tick_rank(
 
     // Only process nodes at the current rank being evaluated
     if (rank[node] != current_rank) return;
+
+    // Skip BACK_EDGE destinations: their truth comes from the latch phase,
+    // not from the combinational pass. Treating them as registers keeps
+    // their state intact across rank evaluation.
+    if (is_register[node] != 0) return;
 
     // Gather 6 input bits from neighbors
     uint8_t input_bits = 0;
@@ -97,11 +103,13 @@ kernel void dagdb_tick_weighted(
     constant uint32_t&      group_size   [[ buffer(5) ]],
     constant uint64_t&      current_rank [[ buffer(6) ]],
     constant float&         threshold    [[ buffer(7) ]],
+    device const uint8_t*   is_register  [[ buffer(8) ]],
     uint                    gid          [[ thread_position_in_grid ]]
 ) {
     if (gid >= group_size) return;
     uint node = group[gid];
     if (rank[node] != current_rank) return;
+    if (is_register[node] != 0) return;
 
     float activation = weighted_activation(truth_state, edge_weights, neighbors, node);
 

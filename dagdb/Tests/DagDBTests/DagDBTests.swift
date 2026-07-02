@@ -3,6 +3,20 @@ import XCTest
 
 final class DagDBTests: XCTestCase {
 
+    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
+    /// when princes run swift test concurrently in the shared dagdb dir).
+    private var tmpDir: String!
+
+    override func setUpWithError() throws {
+        tmpDir = NSTemporaryDirectory() + "dagdb-core-\(UUID().uuidString)/"
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let d = tmpDir { try? FileManager.default.removeItem(atPath: d) }
+    }
+
     // MARK: - LUT6 Preset Tests
 
     func testLUT6_AND6() {
@@ -306,7 +320,7 @@ final class DagDBTests: XCTestCase {
         let state = try g.exportState(grid: grid)
 
         // Encode
-        let path = NSTemporaryDirectory() + "test_dagdb_delta.dagdb"
+        let path = tmpDir! + "test_dagdb_delta.dagdb"
         let encoder = try DagDBDelta.Encoder(
             path: path, nodeCount: grid.nodeCount, maxRank: 2,
             staticState: state, keyframeInterval: 10
@@ -426,7 +440,7 @@ final class DagDBTests: XCTestCase {
         for i in 0..<neighbors.count { nbPtr[i] = neighbors[i] }
 
         // Record 10 ticks with Carlos Delta
-        let path = NSTemporaryDirectory() + "test_timetravel.dagdb"
+        let path = tmpDir! + "test_timetravel.dagdb"
         let encoder = try DagDBDelta.Encoder(
             path: path, nodeCount: grid.nodeCount, maxRank: 2,
             staticState: state, keyframeInterval: 5
@@ -609,5 +623,401 @@ final class DagDBTests: XCTestCase {
         XCTAssertNotNil(g.node(labeled: "MyNode"))
         XCTAssertNil(g.node(labeled: "NonExistent"))
         XCTAssertEqual(g.nodeId(labeled: "MyNode"), 0)
+    }
+
+    // MARK: - BACK_EDGE primitive (Phase 1: CPU storage + CPU latch)
+
+    func testBackEdgeAddAndCount() {
+        var state = DagDBState(width: 4, height: 4)
+        XCTAssertEqual(state.backEdgeCount, 0)
+        state.addBackEdge(src: 5, dst: 2)
+        XCTAssertEqual(state.backEdgeCount, 1)
+        state.addBackEdge(src: 7, dst: 9)
+        XCTAssertEqual(state.backEdgeCount, 2)
+        XCTAssertEqual(state.backEdgeSrcs, [5, 7])
+        XCTAssertEqual(state.backEdgeDsts, [2, 9])
+    }
+
+    func testBackEdgeSinglePairLatch() {
+        var state = DagDBState(width: 4, height: 4)
+        state.addBackEdge(src: 5, dst: 2)
+        state.truthState[5] = 1
+        state.truthState[2] = 0
+        state.latchBackEdges()
+        XCTAssertEqual(state.truthState[2], 1, "register latches src truth")
+    }
+
+    func testBackEdgeClearByDst() {
+        var state = DagDBState(width: 4, height: 4)
+        state.addBackEdge(src: 5, dst: 2)
+        state.addBackEdge(src: 7, dst: 9)
+        state.addBackEdge(src: 8, dst: 2)  // second back-edge into node 2
+        XCTAssertEqual(state.backEdgeCount, 3)
+
+        state.clearBackEdges(toNode: 2)
+        XCTAssertEqual(state.backEdgeCount, 1, "both back-edges into 2 cleared")
+        XCTAssertEqual(state.backEdgeSrcs, [7])
+        XCTAssertEqual(state.backEdgeDsts, [9])
+
+        // Latching after clear should not touch node 2 anymore.
+        state.truthState[2] = 0
+        state.truthState[5] = 1
+        state.truthState[8] = 1
+        state.latchBackEdges()
+        XCTAssertEqual(state.truthState[2], 0, "cleared back-edges into 2 do not latch")
+    }
+
+    func testBackEdgeTwoPhaseAliasing() {
+        // Chain in the buffer: BE_a = (1 → 2), BE_b = (2 → 3).
+        // Naive single-pass: dst 2 := src 1 (=1), then dst 3 := the JUST-WRITTEN
+        // src 2 (=1). Wrong. Two-phase: snapshot {2:=src1=1, 3:=src2=0}, then
+        // commit. Right.
+        var state = DagDBState(width: 4, height: 4)
+        state.truthState[1] = 1
+        state.truthState[2] = 0
+        state.truthState[3] = 0
+        state.addBackEdge(src: 1, dst: 2)
+        state.addBackEdge(src: 2, dst: 3)
+        state.latchBackEdges()
+        XCTAssertEqual(state.truthState[2], 1, "node 2 latches node 1's value")
+        XCTAssertEqual(state.truthState[3], 0,
+                       "node 3 latches node 2's PRE-tick value, not the freshly latched one")
+    }
+
+    func testBackEdge1BitToggle() {
+        // Synchronous toggle: combinational eval (mocked) computes NOT(register).
+        // BACK_EDGE latches that into the register on every tick. State flips.
+        var state = DagDBState(width: 4, height: 4)
+        let regIdx = 0  // register
+        let combIdx = 1 // combinational NOT(register)
+        state.truthState[regIdx] = 0
+        state.addBackEdge(src: UInt32(combIdx), dst: UInt32(regIdx))
+
+        for tick in 0..<6 {
+            // Mocked combinational pass: comb := NOT(register).
+            state.truthState[combIdx] = state.truthState[regIdx] == 0 ? 1 : 0
+            // Latch.
+            state.latchBackEdges()
+            let expected: UInt8 = (tick % 2 == 0) ? 1 : 0
+            XCTAssertEqual(state.truthState[regIdx], expected,
+                           "tick \(tick): register should be \(expected)")
+        }
+    }
+
+    // MARK: - BACK_EDGE primitive (Phase 2: full GPU engine integration)
+
+    func testEngineBackEdge1BitToggle() throws {
+        // Same toggle as above, but driven through the full DagDBEngine
+        // (rank kernel + latch). Register is at rank 1; combinational NOT
+        // sits at rank 0. The back-edge latches comb's truth back into the
+        // register at every tick boundary; the register flips 0/1 forever.
+
+        let g = DagDBGraph()
+        // Register: rank 1, truth seeded false. The leaf-init LUT is const0,
+        // but the rank kernel will skip the register (is_register flag set
+        // by addBackEdge below), so the LUT never fires. Truth comes only
+        // from the latch.
+        let reg = g.addLeaf(label: "reg", rank: 1, truth: false)
+
+        // Combinational: rank 0, NOT(input0). LUT bit k = 1 iff (k & 1) == 0
+        // → 0x5555_5555_5555_5555.
+        let notLUT: UInt64 = 0x5555_5555_5555_5555
+        let comb = g.addGate(label: "comb", rank: 0, lut6: notLUT)
+
+        try g.connect(from: reg, to: comb)
+
+        let engine = try DagDBEngine(graph: g)
+        try engine.addBackEdge(src: UInt32(comb), dst: UInt32(reg))
+        XCTAssertEqual(engine.backEdgeCount, 1)
+
+        // Confirm initial state seeded by the leaf init.
+        var states = engine.readTruthStates()
+        XCTAssertEqual(states[reg], 0, "register starts at 0")
+        XCTAssertEqual(states[comb], 0, "combinational starts at 0 (uninit)")
+
+        // Tick 0:  comb := NOT(reg=0) = 1; latch reg := comb = 1.
+        engine.tick(tickNumber: 0)
+        states = engine.readTruthStates()
+        XCTAssertEqual(states[comb], 1, "tick 0 comb should be NOT(0) = 1")
+        XCTAssertEqual(states[reg], 1, "tick 0 register should latch to 1")
+
+        // Tick 1:  comb := NOT(reg=1) = 0; latch reg := comb = 0.
+        engine.tick(tickNumber: 1)
+        states = engine.readTruthStates()
+        XCTAssertEqual(states[comb], 0, "tick 1 comb should be NOT(1) = 0")
+        XCTAssertEqual(states[reg], 0, "tick 1 register should latch to 0")
+
+        // Run a few more ticks to confirm the toggle is stable.
+        for tick in 2..<6 {
+            engine.tick(tickNumber: UInt32(tick))
+            let s = engine.readTruthStates()
+            let expected: UInt8 = (tick % 2 == 0) ? 1 : 0
+            XCTAssertEqual(s[reg], expected,
+                           "tick \(tick): register should be \(expected)")
+        }
+    }
+
+    func testEngineBackEdgeRegisterUnaffectedByCombinationalPass() throws {
+        // A register node at rank 1 with NO back-edge should have its leaf
+        // truth re-evaluated by the rank kernel as before. With a back-edge
+        // added, the rank kernel must skip it — the register holds its
+        // value across ticks until the latch overwrites.
+
+        let g = DagDBGraph()
+        // Leaf with truth=true → initialized via const1 LUT. Without a
+        // back-edge, the rank kernel re-evaluates and writes 1 (no change).
+        // We then add a back-edge from a node that's permanently 0; if the
+        // rank-skip works, the latch fires and the register goes to 0.
+        let reg = g.addLeaf(label: "reg", rank: 1, truth: true)
+        let zero = g.addLeaf(label: "zero", rank: 1, truth: false)
+
+        // A passive sink at rank 0 just to give the engine a non-empty
+        // rank-0 layer; not used for the register check.
+        _ = g.addGate(label: "sink", rank: 0, lut6: LUT6Preset.const0)
+
+        let engine = try DagDBEngine(graph: g)
+
+        // Tick once with no back-edges: register stays 1.
+        engine.tick(tickNumber: 0)
+        XCTAssertEqual(engine.readTruthStates()[reg], 1,
+                       "no back-edge: register stays at its leaf truth")
+
+        // Now register reg as a back-edge dst, latching from `zero` (truth=0).
+        try engine.addBackEdge(src: UInt32(zero), dst: UInt32(reg))
+
+        // After one tick, the rank kernel must skip `reg` (so leaf-LUT
+        // doesn't write 1 over it), then the latch copies zero (=0) into reg.
+        engine.tick(tickNumber: 1)
+        XCTAssertEqual(engine.readTruthStates()[reg], 0,
+                       "tick after addBackEdge: latch wrote 0 into register")
+    }
+
+    func testEngineAddBackEdgeRejectsNodeWithCombinationalFanIn() throws {
+        // VALIDATE rule: BACK_EDGE dst must have zero combinational in-degree.
+        // Try to add a back-edge to a gate that already reads an input —
+        // engine.addBackEdge must throw.
+        let g = DagDBGraph()
+        let leaf = g.addLeaf(label: "L", rank: 1, truth: true)
+        let gate = g.addGate(label: "G", rank: 0, lut6: LUT6Preset.identity)
+        try g.connect(from: leaf, to: gate)
+
+        let engine = try DagDBEngine(graph: g)
+        XCTAssertEqual(engine.combinationalFanIn(node: UInt32(gate)), 1,
+                       "gate has one incoming combinational edge")
+
+        XCTAssertThrowsError(try engine.addBackEdge(src: UInt32(leaf),
+                                                    dst: UInt32(gate))) { err in
+            switch err {
+            case DagDBEngine.BackEdgeError.destinationHasCombinationalInDegree:
+                break  // expected
+            default:
+                XCTFail("expected destinationHasCombinationalInDegree, got \(err)")
+            }
+        }
+        XCTAssertEqual(engine.backEdgeCount, 0, "no back-edge should have been registered")
+        XCTAssertFalse(engine.isRegister(node: UInt32(gate)),
+                       "register flag must NOT be set after a rejected addBackEdge")
+    }
+
+    // MARK: - BACK_EDGE primitive (Phase 3: graph-level VALIDATE)
+
+    func testGraphConnectBack() throws {
+        let g = DagDBGraph()
+        let comb = g.addGate(label: "comb", rank: 0, lut6: LUT6Preset.const1)
+        let reg  = g.addLeaf(label: "reg",  rank: 1, truth: false)
+        try g.connectBack(from: comb, to: reg)
+        XCTAssertEqual(g.backEdges.count, 1)
+        XCTAssertTrue(g.isBackEdgeDst(reg))
+        XCTAssertFalse(g.isBackEdgeDst(comb))
+        XCTAssertTrue(g.validate().isEmpty)
+    }
+
+    func testGraphConnectBackIsIdempotent() throws {
+        let g = DagDBGraph()
+        let a = g.addGate(label: "a", rank: 0, lut6: LUT6Preset.const1)
+        let b = g.addLeaf(label: "b", rank: 1, truth: false)
+        try g.connectBack(from: a, to: b)
+        try g.connectBack(from: a, to: b)  // duplicate — should be ignored
+        XCTAssertEqual(g.backEdges.count, 1)
+    }
+
+    func testGraphConnectBackRejectsTargetWithCombinationalFanIn() throws {
+        let g = DagDBGraph()
+        let leaf = g.addLeaf(label: "L", rank: 1, truth: true)
+        let gate = g.addGate(label: "G", rank: 0, lut6: LUT6Preset.identity)
+        try g.connect(from: leaf, to: gate)
+        // gate now has combinational fan-in 1 → connectBack must reject.
+        XCTAssertThrowsError(try g.connectBack(from: leaf, to: gate)) { err in
+            switch err {
+            case DagDBGraph.GraphError.backEdgeViolation:
+                break  // expected
+            default:
+                XCTFail("expected backEdgeViolation, got \(err)")
+            }
+        }
+        XCTAssertEqual(g.backEdges.count, 0)
+    }
+
+    func testGraphConnectRejectsCombinationalIntoBackEdgeDst() throws {
+        let g = DagDBGraph()
+        let comb = g.addGate(label: "comb", rank: 0, lut6: LUT6Preset.const1)
+        let reg  = g.addLeaf(label: "reg",  rank: 1, truth: false)
+        try g.connectBack(from: comb, to: reg)
+        // reg is a register now → connecting another combinational edge into
+        // it must throw.
+        let extra = g.addLeaf(label: "extra", rank: 2, truth: true)
+        XCTAssertThrowsError(try g.connect(from: extra, to: reg)) { err in
+            switch err {
+            case DagDBGraph.GraphError.backEdgeViolation:
+                break  // expected
+            default:
+                XCTFail("expected backEdgeViolation, got \(err)")
+            }
+        }
+    }
+
+    func testGraphClearBackEdgesAllowsCombinationalAgain() throws {
+        let g = DagDBGraph()
+        let comb = g.addGate(label: "comb", rank: 0, lut6: LUT6Preset.const1)
+        let reg  = g.addLeaf(label: "reg",  rank: 1, truth: false)
+        try g.connectBack(from: comb, to: reg)
+        g.clearBackEdges(toNode: reg)
+        XCTAssertEqual(g.backEdges.count, 0)
+        XCTAssertFalse(g.isBackEdgeDst(reg))
+        // Now an ordinary CONNECT should succeed.
+        let extra = g.addLeaf(label: "extra", rank: 2, truth: true)
+        XCTAssertNoThrow(try g.connect(from: extra, to: reg))
+    }
+
+    // MARK: - BACK_EDGE primitive (Phase 8: 4-bit ripple counter integration)
+
+    /// Compute a 64-bit LUT6 truth table from a Boolean function of an input
+    /// vector encoded as the low bits of `i` (bit 0 = slot 0, bit 1 = slot 1, …).
+    private static func computeLUT6(_ f: (UInt64) -> Bool) -> UInt64 {
+        var lut: UInt64 = 0
+        for i: UInt64 in 0..<64 where f(i) { lut |= (UInt64(1) << i) }
+        return lut
+    }
+
+    func testEngine4BitRippleCounter() throws {
+        // 4 register bits Q0..Q3 (rank 1, init 0) and 4 combinational
+        // next-state computations (rank 0):
+        //   next_Q0 = NOT Q0                       (toggle every tick)
+        //   next_Q1 = Q1 XOR Q0                    (toggle when Q0 = 1)
+        //   next_Q2 = Q2 XOR (Q1 AND Q0)
+        //   next_Q3 = Q3 XOR (Q2 AND Q1 AND Q0)
+        // BACK_EDGE next_Q_i → Q_i.  Counter increments by 1 every tick;
+        // wraps from 1111 (15) back to 0000 (0) at tick 16.
+
+        let g = DagDBGraph()
+        let q0 = g.addLeaf(label: "Q0", rank: 1, truth: false)
+        let q1 = g.addLeaf(label: "Q1", rank: 1, truth: false)
+        let q2 = g.addLeaf(label: "Q2", rank: 1, truth: false)
+        let q3 = g.addLeaf(label: "Q3", rank: 1, truth: false)
+
+        let nextQ0 = g.addGate(label: "next_Q0", rank: 0,
+                               lut6: Self.computeLUT6 { i in (i & 1) == 0 })
+        let nextQ1 = g.addGate(label: "next_Q1", rank: 0,
+                               lut6: Self.computeLUT6 { i in
+                                   let b0 = i & 1, b1 = (i >> 1) & 1
+                                   return (b0 ^ b1) == 1
+                               })
+        let nextQ2 = g.addGate(label: "next_Q2", rank: 0,
+                               lut6: Self.computeLUT6 { i in
+                                   let b0 = i & 1, b1 = (i >> 1) & 1, b2 = (i >> 2) & 1
+                                   return (b2 ^ (b1 & b0)) == 1
+                               })
+        let nextQ3 = g.addGate(label: "next_Q3", rank: 0,
+                               lut6: Self.computeLUT6 { i in
+                                   let b0 = i & 1, b1 = (i >> 1) & 1
+                                   let b2 = (i >> 2) & 1, b3 = (i >> 3) & 1
+                                   return (b3 ^ (b2 & b1 & b0)) == 1
+                               })
+
+        // Wire combinational inputs in slot order — slot 0 == LUT bit 0.
+        try g.connect(from: q0, to: nextQ0)
+        try g.connect(from: q0, to: nextQ1); try g.connect(from: q1, to: nextQ1)
+        try g.connect(from: q0, to: nextQ2); try g.connect(from: q1, to: nextQ2)
+        try g.connect(from: q2, to: nextQ2)
+        try g.connect(from: q0, to: nextQ3); try g.connect(from: q1, to: nextQ3)
+        try g.connect(from: q2, to: nextQ3); try g.connect(from: q3, to: nextQ3)
+
+        // Register-pattern feedback: latch each next_Q into its Q.
+        try g.connectBack(from: nextQ0, to: q0)
+        try g.connectBack(from: nextQ1, to: q1)
+        try g.connectBack(from: nextQ2, to: q2)
+        try g.connectBack(from: nextQ3, to: q3)
+
+        XCTAssertTrue(g.validate().isEmpty, "graph should validate clean")
+
+        let engine = try DagDBEngine(graph: g)
+        XCTAssertEqual(engine.backEdgeCount, 4)
+
+        func readCounter() -> Int {
+            let s = engine.readTruthStates()
+            let b0 = Int(s[q0]), b1 = Int(s[q1]), b2 = Int(s[q2]), b3 = Int(s[q3])
+            return b0 | (b1 << 1) | (b2 << 2) | (b3 << 3)
+        }
+
+        // Initial state: 0000.
+        XCTAssertEqual(readCounter(), 0, "counter starts at 0")
+
+        // Run 17 ticks; counter should count 1, 2, …, 15, 0, 1.
+        for tick in 1...17 {
+            engine.tick(tickNumber: UInt32(tick))
+            XCTAssertEqual(readCounter(), tick % 16,
+                           "tick \(tick): counter should read \(tick % 16)")
+        }
+    }
+
+    func testEngineSeedsBackEdgesFromGraph() throws {
+        // Convenience init `DagDBEngine(graph:)` must pick up the back-edges
+        // from the graph and seed the engine's runtime back-edge list +
+        // register flags.
+        let g = DagDBGraph()
+        let notLUT: UInt64 = 0x5555_5555_5555_5555
+        let reg = g.addLeaf(label: "reg", rank: 1, truth: false)
+        let comb = g.addGate(label: "comb", rank: 0, lut6: notLUT)
+        try g.connect(from: reg, to: comb)
+        try g.connectBack(from: comb, to: reg)
+
+        let engine = try DagDBEngine(graph: g)
+        XCTAssertEqual(engine.backEdgeCount, 1, "engine seeded with 1 back-edge")
+        XCTAssertTrue(engine.isRegister(node: UInt32(reg)))
+        XCTAssertFalse(engine.isRegister(node: UInt32(comb)))
+
+        // Tick once: register flips to 1.
+        engine.tick(tickNumber: 0)
+        XCTAssertEqual(engine.readTruthStates()[reg], 1,
+                       "register latched to NOT(0) = 1 via graph-declared back-edge")
+    }
+
+    func testEngineBackEdgeClearRestoresCombinationalEvaluation() throws {
+        // Add a back-edge, tick (latch fires), then clear the back-edge.
+        // After clear, the register flag must drop and the rank kernel
+        // re-evaluates the node by its LUT again.
+
+        let g = DagDBGraph()
+        // Leaf with truth=true → const1 LUT.
+        let reg = g.addLeaf(label: "reg", rank: 1, truth: true)
+        let zero = g.addLeaf(label: "zero", rank: 1, truth: false)
+        _ = g.addGate(label: "sink", rank: 0, lut6: LUT6Preset.const0)
+
+        let engine = try DagDBEngine(graph: g)
+        try engine.addBackEdge(src: UInt32(zero), dst: UInt32(reg))
+
+        // After one tick: latch wrote 0 into reg.
+        engine.tick(tickNumber: 0)
+        XCTAssertEqual(engine.readTruthStates()[reg], 0)
+
+        // Clear the back-edge into reg.
+        engine.clearBackEdges(toNode: UInt32(reg))
+        XCTAssertEqual(engine.backEdgeCount, 0)
+
+        // Next tick: kernel should re-evaluate reg's leaf-LUT (const1 → 1),
+        // because the register flag was cleared.
+        engine.tick(tickNumber: 1)
+        XCTAssertEqual(engine.readTruthStates()[reg], 1,
+                       "after clearBackEdges, rank kernel re-evaluates the node's LUT")
     }
 }

@@ -387,9 +387,9 @@
 
 <!-- SLIDE 9: SAVANNA ENGINE -->
 <div class="slide" id="s9">
-  <h2>The Engine: Savanna</h2>
+  <h2>Sibling Engine: Savanna (the throughput motivation)</h2>
   <div class="stat-row">
-    <div class="stat-box"><div class="val">14</div><div class="lbl">GCUPS</div></div>
+    <div class="stat-box"><div class="val">14.4</div><div class="lbl">GCUPS &mdash; Savanna CA engine, not DagDB</div></div>
     <div class="stat-box"><div class="val">128</div><div class="lbl">GB Unified Memory</div></div>
     <div class="stat-box"><div class="val">M5</div><div class="lbl">Apple Silicon</div></div>
   </div>
@@ -693,7 +693,7 @@
         <text x="40" y="110">128GB Unified</text>
         <text x="40" y="128">Sparse graph traversal</text>
         <text x="40" y="146">SpMV + Carlos Delta</text>
-        <text x="40" y="164">14 GCUPS</text>
+        <text x="40" y="164">0.71 GCUPS (DagDB, 1M nodes)</text>
         <text x="40" y="182">Zero-copy GPU+CPU</text>
       </g>
       <!-- 4090 Box -->
@@ -834,21 +834,6 @@
 <!-- SLIDE 23: ROADMAP -->
 <div class="slide" id="s23">
   <h2>Roadmap</h2>
-  <!-- =================================================================
-       SLOT: BACK_EDGE feature — detailed slide reserved
-       =================================================================
-       The BACK_EDGE primitive (typed second edge type, register state
-       across tick boundaries) landed on main 2026-04-29. Verified via
-       1-bit toggle, 4-bit ripple counter, and AC-3 Australia 3-coloring
-       per-tick equality with Python reference. 120 Swift tests green.
-       When the deck is regenerated post-v0.1.2, insert a dedicated slide
-       in this slot covering: register pattern (synchronous-circuit on a
-       graph DB), DSL surface (CONNECT BACK / CLEAR BACK_EDGES), the
-       three reference demos, and what it unlocks (belief propagation,
-       AC-style constraint propagation, Hopfield recall, Boolean
-       networks with feedback). Reference: docs/wiki/back-edges.md.
-       This comment marks the reserved location; no rendered content yet.
-       ================================================================== -->
   <ul class="checklist">
     <li class="done">Phase 0.1: Fork Savanna Engine</li>
     <li class="pending">Phase 0.2: Edge weights + generalized neighbor table</li>
@@ -883,7 +868,7 @@
   <h1>DagDB</h1>
   <div class="subtitle">Constraints do not limit a system. They make it viable.</div>
   <div style="margin: 30px 0; text-align: center; color: #5a4a2a; font: 14px 'SF Mono', monospace;">
-    6 edges &middot; 64-bit LUT &middot; Morton Z-curve &middot; 14 GCUPS<br>
+    6 edges &middot; 64-bit LUT &middot; Morton Z-curve &middot; 0.71 GCUPS @ 1M nodes<br>
     Carlos Delta &middot; PostgreSQL &middot; Apple M5 Max
   </div>
   <div style="margin-top: 30px; padding: 16px; border: 1px solid rgba(138,122,90,0.15); border-radius: 8px; text-align: center; color: #5a4a2a; font: 12px 'SF Mono', monospace;">

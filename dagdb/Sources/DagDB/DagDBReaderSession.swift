@@ -105,7 +105,11 @@ public final class DagDBReaderSessionManager {
         let nbLen = n * 6 * 4
         _ = nbDst  // silence unused on zero path
         // memcpy the six buffers from primary → snapshot. UMA memory, fast.
-        memcpy(snap.rankBuf.contents(),       primary.rankBuf.contents(),       n * 4)
+        // rank is u64 → n * 8 bytes. (Was n * 4 pre-2026-05-18, which
+        // truncated the copy to the lower half of nodes — every reader saw
+        // garbage ranks for nodes >= n/2. Regression guard:
+        // testRankBufferCopiedForUpperHalfNodes.)
+        memcpy(snap.rankBuf.contents(),       primary.rankBuf.contents(),       n * 8)
         memcpy(snap.truthStateBuf.contents(), primary.truthStateBuf.contents(), n)
         memcpy(snap.nodeTypeBuf.contents(),   primary.nodeTypeBuf.contents(),   n)
         memcpy(snap.lut6LowBuf.contents(),    primary.lut6LowBuf.contents(),    n * 4)

@@ -3,6 +3,20 @@ import XCTest
 
 final class DagDBSnapshotTests: XCTestCase {
 
+    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
+    /// when princes run swift test concurrently in the shared dagdb dir).
+    private var tmpDir: String!
+
+    override func setUpWithError() throws {
+        tmpDir = NSTemporaryDirectory() + "dagdb-snap-\(UUID().uuidString)/"
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let d = tmpDir { try? FileManager.default.removeItem(atPath: d) }
+    }
+
     /// Build a tiny engine and return it along with its grid dims.
     private func makeEngine(side: Int) throws -> (DagDBEngine, Int, Int) {
         let grid = HexGrid(width: side, height: side)
@@ -55,14 +69,16 @@ final class DagDBSnapshotTests: XCTestCase {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
 
-        let path = NSTemporaryDirectory() + "dagdb_serde_test.dags"
+        let path = tmpDir! + "dagdb_serde_test.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
 
         let saved = try DagDBSnapshot.save(
             engine: eng1, nodeCount: eng1.nodeCount,
             gridW: gw, gridH: gh, tickCount: 42, path: path
         )
-        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42)
+        // v4 back-edge trailer: 4 B count (0 here) + 8 B per back-edge.
+        // v5 env trailer: 4 B "ENVS" magic + 1 B env code = 5 B.
+        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 5)
         XCTAssertEqual(saved.uncompressedBodyBytes, eng1.nodeCount * 42)
 
         // Fresh engine — all zeros initially
@@ -102,7 +118,7 @@ final class DagDBSnapshotTests: XCTestCase {
         rank[0] = 300
         rank[1] = 4_294_967_300  // one past UInt32.max
 
-        let path = NSTemporaryDirectory() + "dagdb_u64_rank.dags"
+        let path = tmpDir! + "dagdb_u64_rank.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
 
         _ = try DagDBSnapshot.save(
@@ -125,7 +141,7 @@ final class DagDBSnapshotTests: XCTestCase {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
 
-        let path = NSTemporaryDirectory() + "dagdb_compressed.dags"
+        let path = tmpDir! + "dagdb_compressed.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
 
         let saved = try DagDBSnapshot.save(
@@ -153,7 +169,7 @@ final class DagDBSnapshotTests: XCTestCase {
 
     func testSnapshotRejectsWrongMagic() throws {
         let (eng, gw, gh) = try makeEngine(side: 8)
-        let path = NSTemporaryDirectory() + "dagdb_badmagic.dags"
+        let path = tmpDir! + "dagdb_badmagic.dags"
 
         try Data(repeating: 0xAA, count: 4096).write(to: URL(fileURLWithPath: path))
 
@@ -171,7 +187,7 @@ final class DagDBSnapshotTests: XCTestCase {
         let (eng1, _, _) = try makeEngine(side: 8)
         seed(eng1)
 
-        let path = NSTemporaryDirectory() + "dagdb_gridmismatch.dags"
+        let path = tmpDir! + "dagdb_gridmismatch.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
         _ = try DagDBSnapshot.save(
             engine: eng1, nodeCount: eng1.nodeCount,
@@ -238,7 +254,7 @@ final class DagDBSnapshotTests: XCTestCase {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
 
-        let path = NSTemporaryDirectory() + "dagdb_atomic.dags"
+        let path = tmpDir! + "dagdb_atomic.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
         _ = try? FileManager.default.removeItem(atPath: path + ".tmp")
 
@@ -257,7 +273,7 @@ final class DagDBSnapshotTests: XCTestCase {
             gridW: gw, gridH: gh, path: path
         )
         XCTAssertEqual(loaded.fileTicks, 1)
-        XCTAssertTrue(buffersEqual(eng1.rankBuf, eng2.rankBuf, eng1.nodeCount))
+        XCTAssertTrue(buffersEqual(eng1.rankBuf, eng2.rankBuf, eng1.nodeCount * 8))  // rank is u64
     }
 
     /// After a successful save, no .tmp residue should remain — the rename
@@ -266,7 +282,7 @@ final class DagDBSnapshotTests: XCTestCase {
         let (eng, gw, gh) = try makeEngine(side: 8)
         seed(eng)
 
-        let path = NSTemporaryDirectory() + "dagdb_notmp.dags"
+        let path = tmpDir! + "dagdb_notmp.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
         _ = try? FileManager.default.removeItem(atPath: path + ".tmp")
 
@@ -286,7 +302,7 @@ final class DagDBSnapshotTests: XCTestCase {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
 
-        let path = NSTemporaryDirectory() + "dagdb_overwrite.dags"
+        let path = tmpDir! + "dagdb_overwrite.dags"
         _ = try? FileManager.default.removeItem(atPath: path)
         _ = try? FileManager.default.removeItem(atPath: path + ".tmp")
 
@@ -320,5 +336,260 @@ final class DagDBSnapshotTests: XCTestCase {
 
     private func buffersEqual(_ a: MTLBuffer, _ b: MTLBuffer, _ bytes: Int) -> Bool {
         return memcmp(a.contents(), b.contents(), bytes) == 0
+    }
+
+    // MARK: - v4 BACK_EDGE round trip
+
+    func testSnapshotRoundTripWithBackEdges() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        // Register two BACK_EDGEs into nodes that have no combinational
+        // fan-in.  In `seed`, only certain nodes are connected; nodes 50
+        // and 60 are unused, so they are valid register dsts.
+        try eng1.addBackEdge(src: 11, dst: 50)
+        try eng1.addBackEdge(src: 13, dst: 60)
+        XCTAssertEqual(eng1.backEdgeCount, 2)
+
+        let path = tmpDir! + "dagdb_serde_back_edge.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+
+        let saved = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 7, path: path
+        )
+        // Header (32) + body (42N) + back-edge count (4) + 2 entries (16) + v5 env trailer (5).
+        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 16 + 5)
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertEqual(eng2.backEdgeCount, 0)
+        _ = try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path
+        )
+        XCTAssertEqual(eng2.backEdgeCount, 2, "back-edges round-trip via v4")
+        XCTAssertEqual(eng2.backEdgeSrcs, [11, 13])
+        XCTAssertEqual(eng2.backEdgeDsts, [50, 60])
+        XCTAssertTrue(eng2.isRegister(node: 50))
+        XCTAssertTrue(eng2.isRegister(node: 60))
+        XCTAssertFalse(eng2.isRegister(node: 11))
+    }
+
+    func testSnapshotLoadV4OverwritesPriorBackEdges() throws {
+        // Loading a v4 snapshot must reset the back-edge list to whatever
+        // the file specifies — even if the live engine had different
+        // back-edges before. Specifically, an empty v4 trailer must clear
+        // any in-memory back-edges.
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+
+        let path = tmpDir! + "dagdb_serde_back_edge_clear.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+
+        // Save with NO back-edges.
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 0, path: path
+        )
+
+        // Now build a fresh engine, register some back-edges, then load.
+        // `seed` clears neighbors so nodes 50 and 60 have no combinational
+        // fan-in, satisfying the back-edge precondition.
+        let (eng2, _, _) = try makeEngine(side: 8)
+        seed(eng2)
+        try eng2.addBackEdge(src: 5, dst: 50)
+        try eng2.addBackEdge(src: 6, dst: 60)
+        XCTAssertEqual(eng2.backEdgeCount, 2)
+
+        _ = try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path
+        )
+        XCTAssertEqual(eng2.backEdgeCount, 0, "v4 load with empty trailer clears live list")
+        XCTAssertFalse(eng2.isRegister(node: 50))
+        XCTAssertFalse(eng2.isRegister(node: 60))
+    }
+
+    // MARK: - Malformed snapshot hardening (Fable review H1/H2)
+
+    /// A v4/v5 back-edge trailer whose dst is out of range must be rejected,
+    /// not written past the isRegisterBuf. Crafted/corrupt .dags files must
+    /// not corrupt heap memory. Regression guard for finding H1.
+    func testCorruptBackEdgeDstIsRejected() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        try eng1.addBackEdge(src: 11, dst: 50)  // one valid back-edge
+
+        let dir = tmpDir! + "dagdb-h1-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = dir + "/be.dags"
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 0, path: path
+        )
+
+        // Corrupt entry 0's dst to nodeCount + 5. Section layout:
+        // header(32) + body(42N) + count(4) + entry0[src(4) dst(4)] + ...
+        let n = eng1.nodeCount
+        let dstOffset = 32 + n * 42 + 4 + 4
+        var data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let badDst = UInt32(n + 5)
+        data[dstOffset]     = UInt8(badDst & 0xFF)
+        data[dstOffset + 1] = UInt8((badDst >> 8) & 0xFF)
+        data[dstOffset + 2] = UInt8((badDst >> 16) & 0xFF)
+        data[dstOffset + 3] = UInt8((badDst >> 24) & 0xFF)
+        try data.write(to: URL(fileURLWithPath: path))
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertThrowsError(
+            try DagDBSnapshot.load(
+                engine: eng2, nodeCount: eng2.nodeCount,
+                gridW: gw, gridH: gh, path: path
+            ),
+            "loading a back-edge trailer with an out-of-range dst must throw"
+        ) { err in
+            guard case DagDBSnapshot.SnapError.ioFailure = err else {
+                XCTFail("expected ioFailure, got \(err)"); return
+            }
+        }
+        // No partial state: the bad back-edge must not have registered.
+        XCTAssertEqual(eng2.backEdgeCount, 0)
+    }
+
+    /// A snapshot whose header is valid but whose body is physically
+    /// truncated must throw, not trap on an out-of-range subdata slice.
+    /// Dying on a half-written file is the wrong failure mode for a
+    /// crash-recovery database. Regression guard for finding H2.
+    func testTruncatedBodyThrowsNotCrash() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+
+        let dir = tmpDir! + "dagdb-h2-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = dir + "/trunc.dags"
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 0, path: path
+        )
+
+        // Chop the file to header + half the body. Header still declares the
+        // full body size, so the size guard passes but the bytes are absent.
+        let n = eng1.nodeCount
+        let fullBody = n * 42
+        let truncatedLength = 32 + fullBody / 2
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        try data.prefix(truncatedLength).write(to: URL(fileURLWithPath: path))
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertThrowsError(
+            try DagDBSnapshot.load(
+                engine: eng2, nodeCount: eng2.nodeCount,
+                gridW: gw, gridH: gh, path: path
+            ),
+            "loading a truncated body must throw, not trap"
+        ) { err in
+            guard case DagDBSnapshot.SnapError.ioFailure = err else {
+                XCTFail("expected ioFailure, got \(err)"); return
+            }
+        }
+    }
+
+    // MARK: - v5 env-origin trailer (Phase 3 of dev/test/prod env split)
+
+    func testV5EnvStampRoundTripUnspecified() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "dagdb_v5_unspec.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+        // Save with default (unspecified) env.
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 1, path: path
+        )
+        // Load with default (unspecified) env — passes (legacy compat).
+        let (eng2, _, _) = try makeEngine(side: 8)
+        _ = try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path
+        )
+        XCTAssertTrue(buffersEqual(eng1.rankBuf, eng2.rankBuf, eng1.nodeCount * 8))
+    }
+
+    func testV5EnvStampRoundTripProd() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "dagdb_v5_prod.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 1, path: path,
+            daemonEnv: .prod
+        )
+        // Load with same env — passes.
+        let (eng2, _, _) = try makeEngine(side: 8)
+        _ = try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path,
+            daemonEnv: .prod
+        )
+        XCTAssertTrue(buffersEqual(eng1.truthStateBuf, eng2.truthStateBuf, eng1.nodeCount))
+    }
+
+    func testV5CrossEnvLoadRejected() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "dagdb_v5_cross.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 1, path: path,
+            daemonEnv: .prod
+        )
+        // Load with a different env — must throw envMismatch.
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertThrowsError(try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path,
+            daemonEnv: .test
+        )) { err in
+            guard case DagDBSnapshot.SnapError.envMismatch(let f, let d) = err else {
+                XCTFail("expected envMismatch, got \(err)")
+                return
+            }
+            XCTAssertEqual(f, .prod)
+            XCTAssertEqual(d, .test)
+        }
+    }
+
+    func testV5UnspecifiedEnvBypassesCheck() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "dagdb_v5_bypass.dags"
+        _ = try? FileManager.default.removeItem(atPath: path)
+        // Save with prod env.
+        _ = try DagDBSnapshot.save(
+            engine: eng1, nodeCount: eng1.nodeCount,
+            gridW: gw, gridH: gh, tickCount: 1, path: path,
+            daemonEnv: .prod
+        )
+        // Load with unspecified env — must pass (legacy daemon compat).
+        let (eng2, _, _) = try makeEngine(side: 8)
+        _ = try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount,
+            gridW: gw, gridH: gh, path: path,
+            daemonEnv: .unspecified
+        )
+        XCTAssertTrue(buffersEqual(eng1.rankBuf, eng2.rankBuf, eng1.nodeCount * 8))
+    }
+
+    func testSnapshotEnvFromString() {
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: "dev"), .dev)
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: "test"), .test)
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: "prod"), .prod)
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: "PROD"), .prod)  // case-insensitive
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: nil), .unspecified)
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: ""), .unspecified)
+        XCTAssertEqual(DagDBSnapshot.SnapshotEnv.from(envString: "garbage"), .unspecified)
     }
 }

@@ -161,6 +161,36 @@ final class DagDBReaderSessionTests: XCTestCase {
         XCTAssertEqual(sr[2], 12345)
     }
 
+    /// Reader-session rank snapshot must copy the WHOLE rank buffer, not
+    /// just the lower half. The rank buffer is u64 (n*8 bytes); a memcpy
+    /// of n*4 bytes leaves nodes >= n/2 with garbage. This test writes a
+    /// u64 rank above the u32 ceiling on the LAST node — in the upper
+    /// half — and on a mid node, and asserts both survive the snapshot.
+    /// Regression guard for the 2026-05-18 reader-session rank bug.
+    func testRankBufferCopiedForUpperHalfNodes() throws {
+        let (primary, grid, state, _) = try makePrimary(side: 8)
+        let n = primary.nodeCount
+        let r = primary.rankBuf.contents().bindMemory(
+            to: UInt64.self, capacity: n)
+
+        let lastNode = n - 1
+        let midNode = n / 2 + 3
+        let bigRank: UInt64 = 4_294_967_300  // 2^32 + 4, u32-impossible
+        r[lastNode] = bigRank
+        r[midNode] = 9_876_543_210
+
+        let mgr = DagDBReaderSessionManager()
+        let session = try mgr.open(primary: primary, grid: grid, stateTemplate: state,
+                                    maxRank: 8, tickCount: 0)
+        let sr = session.snapshotEngine.rankBuf.contents().bindMemory(
+            to: UInt64.self, capacity: session.nodeCount)
+
+        XCTAssertEqual(sr[lastNode], bigRank,
+            "rank of the last node must survive the reader-session snapshot")
+        XCTAssertEqual(sr[midNode], 9_876_543_210,
+            "rank of an upper-half node must survive the reader-session snapshot")
+    }
+
     func testNeighborsBufferCopiedCorrectly() throws {
         let (primary, grid, state, _) = try makePrimary(side: 8)
         let nb = primary.neighborsBuf.contents().bindMemory(

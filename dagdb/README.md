@@ -150,7 +150,7 @@ DagDB/
 │   ├── Cargo.toml
 │   └── src/lib.rs                (dagdb_exec SQL function)
 │
-└── Tests/DagDBTests/             (98 tests, all pass)
+└── Tests/DagDBTests/             (192 tests, all pass)
 ```
 
 ## Quick Start

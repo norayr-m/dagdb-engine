@@ -16,6 +16,13 @@ let package = Package(
             path: "Sources/DagDB",
             resources: [.process("Shaders")]
         ),
+        // DSL parser + command handler, extracted from the daemon executable
+        // so they're testable against a real engine without a socket or shm.
+        .target(
+            name: "DagDBDaemonKit",
+            dependencies: ["DagDB"],
+            path: "Sources/DagDBDaemonKit"
+        ),
         .executableTarget(
             name: "DagDBCLI",
             dependencies: ["DagDB"],
@@ -23,13 +30,18 @@ let package = Package(
         ),
         .executableTarget(
             name: "DagDBDaemon",
-            dependencies: ["DagDB"],
+            dependencies: ["DagDB", "DagDBDaemonKit"],
             path: "Sources/DagDBDaemon"
         ),
         .testTarget(
             name: "DagDBTests",
             dependencies: ["DagDB"],
             path: "Tests/DagDBTests"
+        ),
+        .testTarget(
+            name: "DagDBDaemonKitTests",
+            dependencies: ["DagDB", "DagDBDaemonKit"],
+            path: "Tests/DagDBDaemonKitTests"
         ),
     ]
 )

@@ -18,8 +18,8 @@ plist; rebuilds of the source don't automatically restart.
 ```
 cd dagdb
 swift build -c release
-launchctl unload ~/Library/LaunchAgents/com.hari.dagdb.plist
-launchctl load   ~/Library/LaunchAgents/com.hari.dagdb.plist
+launchctl unload ~/Library/LaunchAgents/com.dagdb.daemon.plist
+launchctl load   ~/Library/LaunchAgents/com.dagdb.daemon.plist
 echo "STATUS" | nc -U /tmp/dagdb.sock
 ```
 
@@ -203,17 +203,17 @@ verbs return `unknown_command`.
 **Fix.** Check the plist:
 
 ```
-cat ~/Library/LaunchAgents/com.hari.dagdb.plist | grep -E "Program|Grid"
+cat ~/Library/LaunchAgents/com.dagdb.daemon.plist | grep -E "Program|Grid"
 ```
 
 Path should be
-`/Users/<you>/000_AI_Work/0_Projects/004_Active_Doing_DagDB/dagdb/.build/release/dagdb-daemon`
+`<repo-root>/dagdb/.build/release/dagdb-daemon`
 and grid 1024. If not, update and reload:
 
 ```
-launchctl unload ~/Library/LaunchAgents/com.hari.dagdb.plist
+launchctl unload ~/Library/LaunchAgents/com.dagdb.daemon.plist
 # edit the plist
-launchctl load   ~/Library/LaunchAgents/com.hari.dagdb.plist
+launchctl load   ~/Library/LaunchAgents/com.dagdb.daemon.plist
 ```
 
 ---

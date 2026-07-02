@@ -39,6 +39,17 @@ public struct DagDBState {
     /// Node type marker: 0=real, 1=virtual (hub split), 2=ghost (skip-connection padding)
     public var nodeType: [UInt8]
 
+    /// BACK_EDGE source list. Each entry is the index of a node whose truth
+    /// value is copied into `backEdgeDsts[i]` at the tick boundary (latch
+    /// phase). BACK_EDGEs are exempt from rank monotonicity — `src` and `dst`
+    /// can sit at any ranks. They participate only in the latch phase, never
+    /// in combinational evaluation. The destination ("register") must have
+    /// zero combinational fan-in; VALIDATE enforces this at the graph layer.
+    public var backEdgeSrcs: [UInt32]
+
+    /// BACK_EDGE destination list, parallel to `backEdgeSrcs`.
+    public var backEdgeDsts: [UInt32]
+
     public init(width: Int, height: Int) {
         self.width = width
         self.height = height
@@ -52,6 +63,8 @@ public struct DagDBState {
         self.activation = [Int16](repeating: 0, count: n)
         self.edgeWeights = [Float](repeating: 1.0, count: n * 6)
         self.nodeType = [UInt8](repeating: 0, count: n)
+        self.backEdgeSrcs = []
+        self.backEdgeDsts = []
     }
 
     /// Set a node's LUT6 from a 64-bit value
@@ -70,6 +83,51 @@ public struct DagDBState {
         let lut = getLUT6(at: nodeIndex)
         let idx = UInt64(inputs & 0x3F)  // 6 bits max
         return UInt8((lut >> idx) & 1)
+    }
+
+    // MARK: - BACK_EDGE primitive
+
+    /// Number of BACK_EDGEs currently registered.
+    public var backEdgeCount: Int { backEdgeSrcs.count }
+
+    /// Register a BACK_EDGE: at each tick boundary, `truthState[src]` is
+    /// latched into `truthState[dst]`. No rank check — back-edges are
+    /// exempt from rank monotonicity. No structural validation here either;
+    /// graph-level VALIDATE enforces "dst has zero combinational fan-in".
+    public mutating func addBackEdge(src: UInt32, dst: UInt32) {
+        backEdgeSrcs.append(src)
+        backEdgeDsts.append(dst)
+    }
+
+    /// Remove every BACK_EDGE whose destination is `dst`. Mirror of
+    /// `CLEAR <node> EDGES`: clears incoming back-edges into the node.
+    public mutating func clearBackEdges(toNode dst: UInt32) {
+        var keepSrcs: [UInt32] = []
+        var keepDsts: [UInt32] = []
+        keepSrcs.reserveCapacity(backEdgeSrcs.count)
+        keepDsts.reserveCapacity(backEdgeDsts.count)
+        for i in 0..<backEdgeSrcs.count where backEdgeDsts[i] != dst {
+            keepSrcs.append(backEdgeSrcs[i])
+            keepDsts.append(backEdgeDsts[i])
+        }
+        backEdgeSrcs = keepSrcs
+        backEdgeDsts = keepDsts
+    }
+
+    /// Latch phase. Snapshot every source truth first, then write every
+    /// destination — two-phase semantics so chained back-edges (src of one
+    /// is dst of another) latch from pre-tick state, not from values
+    /// already overwritten in this same latch pass.
+    public mutating func latchBackEdges() {
+        let n = backEdgeSrcs.count
+        if n == 0 { return }
+        var snapshot = [UInt8](repeating: 0, count: n)
+        for i in 0..<n {
+            snapshot[i] = truthState[Int(backEdgeSrcs[i])]
+        }
+        for i in 0..<n {
+            truthState[Int(backEdgeDsts[i])] = snapshot[i]
+        }
     }
 }
 

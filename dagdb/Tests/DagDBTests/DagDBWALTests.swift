@@ -3,6 +3,20 @@ import XCTest
 
 final class DagDBWALTests: XCTestCase {
 
+    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
+    /// when princes run swift test concurrently in the shared dagdb dir).
+    private var tmpDir: String!
+
+    override func setUpWithError() throws {
+        tmpDir = NSTemporaryDirectory() + "dagdb-wal-\(UUID().uuidString)/"
+        try FileManager.default.createDirectory(
+            atPath: tmpDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let d = tmpDir { try? FileManager.default.removeItem(atPath: d) }
+    }
+
     private func makeEngine(side: Int) throws -> DagDBEngine {
         let grid = HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
@@ -14,7 +28,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testAppendCreatesFileWithValidHeader() throws {
-        let path = NSTemporaryDirectory() + "wal_create.log"
+        let path = tmpDir! + "wal_create.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -31,7 +45,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testReplayAppliesSetTruth() throws {
-        let path = NSTemporaryDirectory() + "wal_truth.log"
+        let path = tmpDir! + "wal_truth.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -53,7 +67,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testReplayAppliesSetRankAndSetLUT() throws {
-        let path = NSTemporaryDirectory() + "wal_mixed.log"
+        let path = tmpDir! + "wal_mixed.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -78,7 +92,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testCheckpointDropsPriorRecords() throws {
-        let path = NSTemporaryDirectory() + "wal_checkpoint.log"
+        let path = tmpDir! + "wal_checkpoint.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -109,7 +123,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testTruncatedTailRecordIsDropped() throws {
-        let path = NSTemporaryDirectory() + "wal_trunc.log"
+        let path = tmpDir! + "wal_trunc.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -137,7 +151,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testAppendingToExistingLogWorks() throws {
-        let path = NSTemporaryDirectory() + "wal_reopen.log"
+        let path = tmpDir! + "wal_reopen.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -157,7 +171,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testTruncateResetsToHeaderOnly() throws {
-        let path = NSTemporaryDirectory() + "wal_reset.log"
+        let path = tmpDir! + "wal_reset.log"
         wipe(path)
 
         let eng = try makeEngine(side: 8)
@@ -180,7 +194,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     func testNodeCountMismatchFails() throws {
-        let path = NSTemporaryDirectory() + "wal_mismatch.log"
+        let path = tmpDir! + "wal_mismatch.log"
         wipe(path)
 
         let eng8 = try makeEngine(side: 8)  // 64 nodes
@@ -196,5 +210,69 @@ final class DagDBWALTests: XCTestCase {
         XCTAssertThrowsError(
             try DagDBWAL.replay(engine: eng8, nodeCount: 999, path: path)
         )
+    }
+
+    // MARK: - BACK_EDGE WAL records
+
+    func testReplayAppliesConnectBack() throws {
+        let path = tmpDir! + "wal_connect_back.log"
+        wipe(path)
+
+        let eng = try makeEngine(side: 8)
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        _ = try appender.connectBack(src: 5, dst: 2)
+        _ = try appender.connectBack(src: 7, dst: 9)
+
+        let engRestart = try makeEngine(side: 8)
+        let r = try DagDBWAL.replay(engine: engRestart,
+                                    nodeCount: engRestart.nodeCount, path: path)
+        XCTAssertEqual(r.recordsApplied, 2)
+        XCTAssertEqual(engRestart.backEdgeCount, 2)
+        XCTAssertTrue(engRestart.isRegister(node: 2))
+        XCTAssertTrue(engRestart.isRegister(node: 9))
+        XCTAssertFalse(engRestart.isRegister(node: 5))
+    }
+
+    func testReplayAppliesClearBackEdges() throws {
+        let path = tmpDir! + "wal_clear_back.log"
+        wipe(path)
+
+        let eng = try makeEngine(side: 8)
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        _ = try appender.connectBack(src: 5, dst: 2)
+        _ = try appender.connectBack(src: 7, dst: 9)
+        _ = try appender.clearBackEdges(dst: 2)
+
+        let engRestart = try makeEngine(side: 8)
+        let r = try DagDBWAL.replay(engine: engRestart,
+                                    nodeCount: engRestart.nodeCount, path: path)
+        XCTAssertEqual(r.recordsApplied, 3, "two creates + one clear all replayed")
+        XCTAssertEqual(engRestart.backEdgeCount, 1, "clear removed one back-edge")
+        XCTAssertFalse(engRestart.isRegister(node: 2),
+                       "register flag dropped after clear")
+        XCTAssertTrue(engRestart.isRegister(node: 9),
+                      "the other back-edge survived the targeted clear")
+    }
+
+    func testReplayBackEdgeSurvivesCheckpointBoundary() throws {
+        // CONNECT_BACK before a CHECKPOINT must NOT replay (it's already in
+        // the snapshot). CONNECT_BACK after a CHECKPOINT must replay.
+        let path = tmpDir! + "wal_back_checkpoint.log"
+        wipe(path)
+
+        let eng = try makeEngine(side: 8)
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        _ = try appender.connectBack(src: 1, dst: 4)  // pre-checkpoint
+        _ = try appender.checkpoint(epoch: 7)
+        _ = try appender.connectBack(src: 2, dst: 5)  // post-checkpoint
+
+        let engRestart = try makeEngine(side: 8)
+        let r = try DagDBWAL.replay(engine: engRestart,
+                                    nodeCount: engRestart.nodeCount, path: path)
+        // Only the post-checkpoint connectBack should replay (one record).
+        XCTAssertEqual(r.recordsAfterCheckpoint, 1)
+        XCTAssertEqual(engRestart.backEdgeCount, 1)
+        XCTAssertTrue(engRestart.isRegister(node: 5))
+        XCTAssertFalse(engRestart.isRegister(node: 4))
     }
 }

@@ -30,6 +30,17 @@ extension DagDBEngine {
         for i in 0..<min(logicalNeighbors.count, grid.nodeCount * 6) {
             ptr[i] = logicalNeighbors[i]
         }
+
+        // Seed BACK_EDGEs from the exported state. Bypass the throwing
+        // validator on this path: the graph already validated each entry
+        // when it was added via `connectBack`.
+        let regPtr = isRegisterBuf.contents().bindMemory(to: UInt8.self,
+                                                         capacity: grid.nodeCount)
+        for i in 0..<state.backEdgeSrcs.count {
+            backEdgeSrcs.append(state.backEdgeSrcs[i])
+            backEdgeDsts.append(state.backEdgeDsts[i])
+            regPtr[Int(state.backEdgeDsts[i])] = 1
+        }
     }
 
     /// Execute one tick with micro-time resonance within each rank.
@@ -73,6 +84,7 @@ extension DagDBEngine {
                     enc.setBytes(&groupSize, length: 4, index: 6)
                     var currentRank = UInt64(rankLevel)
                     enc.setBytes(&currentRank, length: 8, index: 7)
+                    enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
 
                     let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
                     enc.dispatchThreadgroups(
@@ -116,6 +128,9 @@ extension DagDBEngine {
             microTicksPerRank.append(microTick)
             convergedPerRank.append(rankConverged)
         }
+
+        // Latch BACK_EDGEs after the full leaves-up pass completes.
+        latchBackEdges()
 
         return (microTicksPerRank, convergedPerRank)
     }

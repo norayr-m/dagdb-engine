@@ -10,8 +10,9 @@
 ///   GRAPH INFO                          → graph statistics
 
 import Foundation
+import DagDB
 
-enum DSLCommand {
+public enum DSLCommand {
     case status
     case tick(count: Int)
     case eval(predicate: Predicate?, rankFrom: Int?, rankTo: Int?)
@@ -22,6 +23,17 @@ enum DSLCommand {
     case setLUT(node: Int, preset: String)
     case connect(from: Int, to: Int)
     case clearEdges(node: Int)
+    /// CONNECT BACK FROM <src> TO <dst> — register a typed BACK_EDGE that
+    /// latches `truth[src]` into `truth[dst]` at every tick boundary.
+    /// Destination must have zero combinational fan-in.
+    case connectBack(from: Int, to: Int)
+    /// CLEAR <node> BACK_EDGES — remove every BACK_EDGE whose destination
+    /// is `node`. Mirror of CLEAR <node> EDGES (which clears combinational).
+    case clearBackEdges(node: Int)
+    /// GET <node> TRUTH — return a single node's current truth value as
+    /// plain text. Cheap socket-only readback for clients that don't
+    /// have access to the shared-memory result rows.
+    case getTruth(node: Int)
     case graphInfo
     case save(path: String, compressed: Bool)
     case load(path: String)
@@ -40,6 +52,16 @@ enum DSLCommand {
     case distance(metric: String, loA: UInt64, hiA: UInt64, loB: UInt64, hiB: UInt64)
     case bfsDepths(seed: Int, undirected: Bool)
     case setRanksBulk
+    /// SET_LUTS_BULK — caller writes a `u64[nodeCount]` LUT vector to shm
+    /// offset 8. Daemon splits each u64 into low/high u32 and commits to
+    /// lut6Low/lut6High in one memcpy. Bypasses per-node WAL; pair with
+    /// SAVE if durability matters.
+    case setLutsBulk
+    /// SET_NEIGHBORS_BULK — caller writes an `Int32[nodeCount * 6]`
+    /// neighbour vector to shm offset 8. Daemon memcpys to neighborsBuf.
+    /// Bypasses rank-monotonicity validation (matches SET_RANKS_BULK);
+    /// run VALIDATE after if paranoid.
+    case setNeighborsBulk
     case openReader
     case closeReader(id: String)
     case listReaders
@@ -54,10 +76,17 @@ enum DSLCommand {
     /// snapshot engine instead of the primary. Only read-only commands are
     /// valid inside this envelope — writes on a session are rejected.
     indirect case reader(id: String, inner: DSLCommand)
+    /// COMPOSE <op> <src1> <src2> INTO <dst> — bitwise composition of the
+    /// LUTs at src1 and src2 (or src1 alone for unary NOT) into dst.
+    /// Op is one of: AND, OR, XOR, NOT.  For binary ops, src2 is required.
+    /// Caller is responsible for the assumption that src1, src2, dst share
+    /// a common input vector — the engine just performs the bitwise op
+    /// on the 64-bit LUT integers.  Result composes the truth tables.
+    case composeLUT(op: String, src1: Int, src2: Int?, dst: Int)
     case unknown(String)
 }
 
-struct Predicate {
+public struct Predicate {
     let field: String    // "truth", "rank", "type"
     let op: Op           // =, !=, <, >, <=, >=
     let value: Int
@@ -71,7 +100,7 @@ struct Predicate {
         case gte = ">="
     }
 
-    func evaluate(truth: UInt8, rank: UInt64, nodeType: UInt8) -> Bool {
+    public func evaluate(truth: UInt8, rank: UInt64, nodeType: UInt8) -> Bool {
         let fieldValue: Int
         switch field {
         case "truth", "state": fieldValue = Int(truth)
@@ -90,9 +119,9 @@ struct Predicate {
     }
 }
 
-struct DSLParser {
+public enum DSLParser {
 
-    static func parse(_ input: String) -> DSLCommand {
+    public static func parse(_ input: String) -> DSLCommand {
         // Preserve original casing for path arguments; uppercase only for verb matching.
         let rawTokens = input
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -229,9 +258,17 @@ struct DSLParser {
             return .selectByTruthRank(truth: truthVal, rankLo: lo, rankHi: hi)
 
         case "SET_RANKS_BULK":
-            // SET_RANKS_BULK  — caller has already written u32 rank vector
+            // SET_RANKS_BULK  — caller has already written u64 rank vector
             // of length nodeCount to shm offset 8. Daemon reads and commits.
             return .setRanksBulk
+
+        case "SET_LUTS_BULK":
+            // SET_LUTS_BULK — u64[nodeCount] LUT vector at shm offset 8.
+            return .setLutsBulk
+
+        case "SET_NEIGHBORS_BULK":
+            // SET_NEIGHBORS_BULK — Int32[nodeCount*6] vector at shm offset 8.
+            return .setNeighborsBulk
 
         case "BFS_DEPTHS":
             // BFS_DEPTHS FROM <seed>                  — undirected (default)
@@ -243,6 +280,33 @@ struct DSLParser {
             }
             let undirected = !tokens.contains("BACKWARD")
             return .bfsDepths(seed: seed, undirected: undirected)
+
+        case "COMPOSE":
+            // COMPOSE NOT <src> INTO <dst>
+            // COMPOSE <AND|OR|XOR> <src1> <src2> INTO <dst>
+            // Bitwise composition of LUTs at the source(s) into the destination.
+            guard rawTokens.count >= 2 else { return .unknown(input) }
+            let op = tokens[1]
+            guard let intoIdx = tokens.firstIndex(of: "INTO"),
+                  intoIdx + 1 < tokens.count,
+                  let dst = Int(tokens[intoIdx + 1]) else {
+                return .unknown(input)
+            }
+            switch op {
+            case "NOT":
+                // COMPOSE NOT <src> INTO <dst>
+                guard tokens.count >= 5,
+                      let src1 = Int(tokens[2]) else { return .unknown(input) }
+                return .composeLUT(op: "NOT", src1: src1, src2: nil, dst: dst)
+            case "AND", "OR", "XOR":
+                // COMPOSE <op> <src1> <src2> INTO <dst>
+                guard tokens.count >= 6,
+                      let src1 = Int(tokens[2]),
+                      let src2 = Int(tokens[3]) else { return .unknown(input) }
+                return .composeLUT(op: op, src1: src1, src2: src2, dst: dst)
+            default:
+                return .unknown(input)
+            }
 
         case "EXPORT":
             // EXPORT MORTON <dir>
@@ -325,14 +389,21 @@ struct DSLParser {
             }
 
         case "CLEAR":
-            // CLEAR <node> EDGES
-            guard tokens.count >= 3, let node = Int(tokens[1]), tokens[2] == "EDGES" else {
+            // CLEAR <node> EDGES        — clear combinational edges into node
+            // CLEAR <node> BACK_EDGES   — clear BACK_EDGEs into node
+            guard tokens.count >= 3, let node = Int(tokens[1]) else {
                 return .unknown(input)
             }
-            return .clearEdges(node: node)
+            switch tokens[2] {
+            case "EDGES":      return .clearEdges(node: node)
+            case "BACK_EDGES": return .clearBackEdges(node: node)
+            default:           return .unknown(input)
+            }
 
         case "CONNECT":
-            // CONNECT FROM <src> TO <dst>
+            // CONNECT FROM <src> TO <dst>            — combinational edge
+            // CONNECT BACK FROM <src> TO <dst>       — typed BACK_EDGE
+            let isBack = tokens.count >= 2 && tokens[1] == "BACK"
             guard let fromIdx = tokens.firstIndex(of: "FROM"),
                   fromIdx + 1 < tokens.count,
                   let src = Int(tokens[fromIdx + 1]),
@@ -341,13 +412,22 @@ struct DSLParser {
                   let dst = Int(tokens[toIdx + 1]) else {
                 return .unknown(input)
             }
-            return .connect(from: src, to: dst)
+            return isBack ? .connectBack(from: src, to: dst)
+                          : .connect(from: src, to: dst)
 
         case "GRAPH":
             if tokens.count > 1 && tokens[1] == "INFO" {
                 return .graphInfo
             }
             return .unknown(input)
+
+        case "GET":
+            // GET <node> TRUTH
+            guard tokens.count >= 3, let node = Int(tokens[1]),
+                  tokens[2] == "TRUTH" else {
+                return .unknown(input)
+            }
+            return .getTruth(node: node)
 
         default:
             return .unknown(input)
