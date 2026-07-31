@@ -90,6 +90,29 @@ let walPath: String? = {
     }
     return nil
 }()
+// fsync policy (G73). DAGDB_WAL_FSYNC=grouped:N:MS opts into group-commit
+// (fsync deferred to the earlier of N unsynced records / MS ms / a barrier);
+// absent or unparseable = .everyRecord (byte-identical pre-G73 durability).
+// prod ALWAYS ignores the var and stays per-record + F_FULLFSYNC — the
+// durability guarantee for the prod env is not tunable. Asserted below.
+let walFsyncPolicy: DagDBWAL.FsyncPolicy = {
+    let isProd = ProcessInfo.processInfo.environment["DAGDB_ENV"] == "prod"
+    guard !isProd else { return .everyRecord }
+    guard let raw = ProcessInfo.processInfo.environment["DAGDB_WAL_FSYNC"],
+          !raw.isEmpty else { return .everyRecord }
+    let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
+    if parts.count == 3, parts[0] == "grouped",
+       let n = Int(parts[1]), let ms = Int(parts[2]), n > 0, ms > 0 {
+        return .grouped(n: n, ms: ms)
+    }
+    print("  WAL: unrecognized DAGDB_WAL_FSYNC='\(raw)' — using everyRecord")
+    return .everyRecord
+}()
+// Invariant: prod is never grouped, regardless of the env var.
+assert(ProcessInfo.processInfo.environment["DAGDB_ENV"] != "prod"
+       || walFsyncPolicy == .everyRecord,
+       "prod WAL fsync policy must be everyRecord")
+
 var walAppender: DagDBWAL.Appender? = nil
 if let p = walPath {
     do {
@@ -101,8 +124,14 @@ if let p = walPath {
                 print("  WAL: dropped truncated tail at offset \(off)")
             }
         }
-        walAppender = try DagDBWAL.Appender(path: p, nodeCount: nodeCount)
-        print("  WAL: appending to \(p)")
+        walAppender = try DagDBWAL.Appender(path: p, nodeCount: nodeCount,
+                                            policy: walFsyncPolicy)
+        switch walFsyncPolicy {
+        case .everyRecord:
+            print("  WAL: appending to \(p) (fsync: everyRecord)")
+        case .grouped(let n, let ms):
+            print("  WAL: appending to \(p) (fsync: grouped n=\(n) ms=\(ms))")
+        }
     } catch {
         print("  WAL: init failed: \(error) — continuing without WAL")
     }
@@ -271,6 +300,9 @@ let autoSnapshotPath: String? = {
 
 @Sendable func gracefulShutdown() {
     print("\n  Shutting down...")
+    // G73 forced barrier: flush any deferred WAL tail before we exit so a
+    // grouped-commit daemon loses nothing on a graceful shutdown.
+    handler.walAppender?.barrier()
     if let path = autoSnapshotPath {
         do {
             let r = try DagDBSnapshot.save(

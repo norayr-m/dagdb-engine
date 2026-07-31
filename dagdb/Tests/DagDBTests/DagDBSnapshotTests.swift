@@ -100,6 +100,75 @@ final class DagDBSnapshotTests: XCTestCase {
         XCTAssertTrue(buffersEqual(eng1.neighborsBuf,    eng2.neighborsBuf,    eng1.nodeCount * 24),"neighbors")
     }
 
+    // MARK: - G73 SHA-256 manifest
+
+    /// save() writes a side-by-side `<path>.sha256` matching the file bytes,
+    /// and load() verifies it and accepts a good snapshot.
+    func testManifestWrittenAndGoodLoadPasses() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "manifest_good.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 1, path: path)
+
+        let manifestPath = DagDBSnapshot.manifestPathFor(path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestPath),
+                      "manifest written beside snapshot")
+        let fileBytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let expected = DagDBSnapshot.sha256Hex(fileBytes)
+        let onDisk = try String(contentsOf: URL(fileURLWithPath: manifestPath), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(onDisk, expected, "manifest matches file digest")
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertNoThrow(try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount, gridW: gw, gridH: gh, path: path))
+    }
+
+    /// A single flipped byte in the snapshot makes load() refuse with the
+    /// named manifestMismatch error — and no buffer is touched.
+    func testCorruptedByteRefusesLoad() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "manifest_corrupt.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 1, path: path)
+
+        // Flip one body byte (well past the header) but leave the manifest.
+        var bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let idx = bytes.count / 2
+        bytes[idx] ^= 0xFF
+        try bytes.write(to: URL(fileURLWithPath: path))
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertThrowsError(try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount, gridW: gw, gridH: gh, path: path)) { err in
+            guard case DagDBSnapshot.SnapError.manifestMismatch = err else {
+                return XCTFail("expected manifestMismatch, got \(err)")
+            }
+        }
+        // The fresh engine must be untouched (rank buffer still all-zero).
+        let rank = eng2.rankBuf.contents().bindMemory(to: UInt64.self, capacity: eng2.nodeCount)
+        for i in 0..<eng2.nodeCount { XCTAssertEqual(rank[i], 0, "no buffer touched on refusal") }
+    }
+
+    /// A snapshot with no manifest (legacy) still loads — warn + accept.
+    func testMissingManifestWarnsAndAccepts() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        seed(eng1)
+        let path = tmpDir! + "manifest_missing.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 1, path: path)
+        // Remove the manifest to simulate a pre-G73 snapshot.
+        try FileManager.default.removeItem(atPath: DagDBSnapshot.manifestPathFor(path))
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        XCTAssertNoThrow(try DagDBSnapshot.load(
+            engine: eng2, nodeCount: eng2.nodeCount, gridW: gw, gridH: gh, path: path))
+        XCTAssertTrue(buffersEqual(eng1.rankBuf, eng2.rankBuf, eng1.nodeCount * 8),
+                      "legacy snapshot loaded correctly")
+    }
+
     /// Acceptance test for u64 rank widening (T1b, 2026-04-21).
     /// Queen's criterion: rank values impossible on u8 (300) and u32
     /// (4 294 967 300) must both survive a SAVE/LOAD round-trip.
@@ -441,10 +510,12 @@ final class DagDBSnapshotTests: XCTestCase {
         try data.write(to: URL(fileURLWithPath: path))
 
         let (eng2, _, _) = try makeEngine(side: 8)
+        // verifyManifest:false — this test targets the back-edge range guard,
+        // not the G73 manifest (which would otherwise catch the tampering first).
         XCTAssertThrowsError(
             try DagDBSnapshot.load(
                 engine: eng2, nodeCount: eng2.nodeCount,
-                gridW: gw, gridH: gh, path: path
+                gridW: gw, gridH: gh, path: path, verifyManifest: false
             ),
             "loading a back-edge trailer with an out-of-range dst must throw"
         ) { err in
@@ -482,10 +553,12 @@ final class DagDBSnapshotTests: XCTestCase {
         try data.prefix(truncatedLength).write(to: URL(fileURLWithPath: path))
 
         let (eng2, _, _) = try makeEngine(side: 8)
+        // verifyManifest:false — this test targets the body-truncation size
+        // guard, not the G73 manifest (which would catch the chop first).
         XCTAssertThrowsError(
             try DagDBSnapshot.load(
                 engine: eng2, nodeCount: eng2.nodeCount,
-                gridW: gw, gridH: gh, path: path
+                gridW: gw, gridH: gh, path: path, verifyManifest: false
             ),
             "loading a truncated body must throw, not trap"
         ) { err in

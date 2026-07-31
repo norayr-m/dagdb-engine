@@ -68,17 +68,56 @@ public enum DagDBWAL {
 
     // MARK: - Appender
 
-    /// Append-only log writer. Re-opens (or creates) the log. Each append
-    /// fsyncs the file with F_FULLFSYNC so the record is durable before the
-    /// caller applies the mutation.
+    /// fsync policy for the appender (G73).
+    /// - `.everyRecord` (default): fsync with F_FULLFSYNC after every record —
+    ///   byte-identical, durability-identical to the pre-G73 behavior. A crash
+    ///   loses nothing that `append` returned from.
+    /// - `.grouped(n, ms)`: the record's bytes are `write()`-ed to the OS file
+    ///   immediately (visible to a reader / to replay) but the durable fsync is
+    ///   deferred to the earlier of: n unsynced records accumulated, `ms`
+    ///   milliseconds elapsed since the first unsynced record, or an explicit
+    ///   `barrier()`. A crash loses at most the unsynced tail — bounded by n
+    ///   records (and by the timer). `n <= 0` or `ms <= 0` degrade to
+    ///   `.everyRecord` (no unbounded loss).
+    public enum FsyncPolicy: Equatable, Sendable {
+        case everyRecord
+        case grouped(n: Int, ms: Int)
+    }
+
+    /// Append-only log writer. Re-opens (or creates) the log.
+    ///
+    /// A single serial queue owns both appends and the deferred-fsync timer, so
+    /// the timer thread and the caller never race on the file descriptor or the
+    /// unsynced-record counter (failure surface (a) in the G73 arch plan).
     public final class Appender {
         public let path: String
         public let nodeCount: UInt32
+        public let policy: FsyncPolicy
         private var fd: Int32 = -1
 
-        public init(path: String, nodeCount: Int) throws {
+        /// Serial queue owning all fd writes, fsyncs, and the timer.
+        private let queue = DispatchQueue(label: "dagdb.wal.appender")
+        /// Deferred-fsync timer, armed on the first unsynced record in a group.
+        private var timer: DispatchSourceTimer?
+        /// Records written to the OS file but not yet F_FULLFSYNC'd. Only
+        /// mutated on `queue`. Exposed for the group-commit bound test: after
+        /// every append this is guaranteed `<= n` in `.grouped(n, _)`.
+        private var _unsyncedCount: Int = 0
+        /// Thread-safe snapshot of the unsynced-record counter.
+        public var unsyncedCount: Int { queue.sync { _unsyncedCount } }
+
+        public init(path: String, nodeCount: Int,
+                    policy: FsyncPolicy = .everyRecord) throws {
             self.path = path
             self.nodeCount = UInt32(nodeCount)
+            // Degrade a nonsensical group config to per-record rather than
+            // leaving durability unbounded.
+            switch policy {
+            case .grouped(let n, let ms) where n <= 0 || ms <= 0:
+                self.policy = .everyRecord
+            default:
+                self.policy = policy
+            }
 
             let fm = FileManager.default
             let exists = fm.fileExists(atPath: path)
@@ -124,30 +163,82 @@ public enum DagDBWAL {
         }
 
         deinit {
-            if fd >= 0 { close(fd) }
+            // Flush any deferred tail so a normal appender teardown is durable,
+            // then tear the timer down and close the fd. Runs on `queue` to
+            // keep the fd/timer invariant.
+            queue.sync {
+                syncNowLocked()
+                timer?.cancel()
+                timer = nil
+                if fd >= 0 { close(fd); fd = -1 }
+            }
         }
 
-        /// Append a record, fsync it, return the number of bytes written
-        /// (including the length prefix + opcode byte).
+        /// Force a durable fsync of everything written so far and reset the
+        /// group counter. Called at forced barrier points: snapshot start,
+        /// daemon shutdown, env switch. Cheap no-op when nothing is unsynced.
+        public func barrier() {
+            queue.sync { syncNowLocked() }
+        }
+
+        /// Append a record, return the number of bytes written (length prefix +
+        /// opcode byte + payload). In `.everyRecord` the record is durable on
+        /// return; in `.grouped` it is written to the OS file but its fsync may
+        /// be deferred (see `FsyncPolicy`).
         @discardableResult
         public func append(opcode: Opcode, payload: Data) throws -> Int {
-            // length u32 (payload-only, not counting length field itself or opcode)
-            // …but we also need the opcode on-disk; easiest to bundle them:
-            // length = payload.count, then write opcode + payload.
             var rec = Data()
             appendU32(&rec, UInt32(payload.count))
             rec.append(opcode.rawValue)
             rec.append(payload)
-
             let total = rec.count
-            try rec.withUnsafeBytes { buf in
-                let w = write(fd, buf.baseAddress, total)
-                if w != total {
-                    throw WALError.ioFailure("write record: \(w)/\(total)")
+
+            return try queue.sync {
+                try rec.withUnsafeBytes { buf in
+                    let w = write(fd, buf.baseAddress, total)
+                    if w != total {
+                        throw WALError.ioFailure("write record: \(w)/\(total)")
+                    }
                 }
+                switch policy {
+                case .everyRecord:
+                    _ = fcntl(fd, F_FULLFSYNC)
+                    _unsyncedCount = 0
+                case .grouped(let n, let ms):
+                    _unsyncedCount += 1
+                    if _unsyncedCount >= n {
+                        syncNowLocked()
+                    } else {
+                        armTimerLocked(ms: ms)
+                    }
+                }
+                return total
             }
-            _ = fcntl(fd, F_FULLFSYNC)
-            return total
+        }
+
+        // MARK: fsync helpers — all callers hold `queue`.
+
+        /// fsync now, reset the counter, disarm the timer. `queue`-confined.
+        private func syncNowLocked() {
+            if fd >= 0 { _ = fcntl(fd, F_FULLFSYNC) }
+            _unsyncedCount = 0
+            timer?.cancel()
+            timer = nil
+        }
+
+        /// Arm the deferred-fsync timer for `ms` if not already armed. The
+        /// handler runs on `queue`, so it shares the serial context with
+        /// appends — no fd/counter race. `queue`-confined.
+        private func armTimerLocked(ms: Int) {
+            guard timer == nil else { return }
+            let t = DispatchSource.makeTimerSource(queue: queue)
+            t.schedule(deadline: .now() + .milliseconds(ms))
+            t.setEventHandler { [weak self] in
+                guard let self = self else { return }
+                self.syncNowLocked()
+            }
+            timer = t
+            t.resume()
         }
 
         // Convenience one-liners that build the payload.

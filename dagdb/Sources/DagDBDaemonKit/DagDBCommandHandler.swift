@@ -19,7 +19,7 @@ public final class DagDBCommandHandler {
     let height: Int
     let maxRank: Int
     public var tickCount: UInt32
-    var walAppender: DagDBWAL.Appender?
+    public var walAppender: DagDBWAL.Appender?
     let sessionManager: DagDBReaderSessionManager
     let truthRankIndex: TruthRankIndex
     let shmBase: UnsafeMutableRawPointer
@@ -312,6 +312,10 @@ public final class DagDBCommandHandler {
 
         case .save(let path, let compressed):
             if let err = guardPath(path) { return err }
+            // G73 forced barrier: flush any deferred WAL tail so the snapshot
+            // is taken over a fully-durable log (a crash mid-snapshot then
+            // recovers via WAL replay with no group-commit loss window).
+            walAppender?.barrier()
             do {
                 let r = try DagDBSnapshot.save(
                     engine: engine,

@@ -35,6 +35,7 @@
 import Foundation
 import Metal
 import Compression
+import CryptoKit
 
 public enum DagDBSnapshot {
 
@@ -102,6 +103,7 @@ public enum DagDBSnapshot {
         case envMismatch(file: SnapshotEnv, daemon: SnapshotEnv)
         case ioFailure(String)
         case validationFailed(String)
+        case manifestMismatch(expected: String, actual: String)
 
         public var description: String {
             switch self {
@@ -112,6 +114,7 @@ public enum DagDBSnapshot {
             case .envMismatch(let f, let d): return "env mismatch: file env=\(f.label) but daemon env=\(d.label) — cross-env loads rejected"
             case .ioFailure(let s): return "io: \(s)"
             case .validationFailed(let s): return "validation: \(s)"
+            case .manifestMismatch(let e, let a): return "manifest mismatch: sha256 file=\(e) computed=\(a) — snapshot corrupt, refusing load"
             }
         }
     }
@@ -296,6 +299,24 @@ public enum DagDBSnapshot {
             close(dirFd)
         }
 
+        // G73: SHA-256 manifest, written side-by-side AFTER the snapshot rename
+        // (frozen ARCH decision). A crash between the rename and this write
+        // leaves a manifest-less snapshot, which the loader treats as legacy
+        // (warn + accept) — never a refusal of otherwise-good data. Hashing the
+        // final on-disk bytes (not the in-memory buffers) makes the manifest a
+        // true check of what landed on the platter.
+        if let finalBytes = try? Data(contentsOf: URL(fileURLWithPath: path),
+                                      options: [.mappedIfSafe]) {
+            let hex = sha256Hex(finalBytes)
+            let manifestPath = manifestPathFor(path)
+            try? Data((hex + "\n").utf8).write(
+                to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+            let mfd = open(manifestPath, O_RDONLY)
+            if mfd >= 0 { _ = fcntl(mfd, F_FULLFSYNC); close(mfd) }
+            let dfd = open(dirPath, O_RDONLY)
+            if dfd >= 0 { _ = fcntl(dfd, F_FULLFSYNC); close(dfd) }
+        }
+
         let total = headerSize + bodyBytes + beSection.count + envTrailer.count
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return (total, uncompressedBodySize, elapsed)
@@ -328,7 +349,8 @@ public enum DagDBSnapshot {
         gridH: Int,
         path: String,
         validate: Bool = true,
-        daemonEnv: SnapshotEnv = .unspecified
+        daemonEnv: SnapshotEnv = .unspecified,
+        verifyManifest: Bool = true
     ) throws -> LoadResult {
         let t0 = Date()
 
@@ -338,6 +360,25 @@ public enum DagDBSnapshot {
         let data = try Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe])
         guard data.count >= headerSize else {
             throw SnapError.ioFailure("file too short: \(data.count) bytes")
+        }
+
+        // G73: verify the SHA-256 manifest BEFORE any buffer is touched, so a
+        // corrupt snapshot is refused loudly and never half-loaded. Missing
+        // manifest = legacy snapshot: warn and accept. Bad manifest = refuse.
+        if verifyManifest {
+            let manifestPath = manifestPathFor(path)
+            if let mData = try? Data(contentsOf: URL(fileURLWithPath: manifestPath)),
+               let expected = String(data: mData, encoding: .utf8)?
+                   .trimmingCharacters(in: .whitespacesAndNewlines),
+               !expected.isEmpty {
+                let actual = sha256Hex(data)
+                guard actual == expected else {
+                    throw SnapError.manifestMismatch(expected: expected, actual: actual)
+                }
+            } else {
+                FileHandle.standardError.write(Data(
+                    "WARN: snapshot \(path) has no .sha256 manifest — loading unverified (legacy)\n".utf8))
+            }
         }
 
         // Header
@@ -698,6 +739,16 @@ public enum DagDBSnapshot {
             )
         }
         return Data(output[0..<sz])
+    }
+
+    // MARK: - Manifest (G73)
+
+    /// Side-by-side SHA-256 manifest path for a snapshot: `<path>.sha256`.
+    public static func manifestPathFor(_ path: String) -> String { path + ".sha256" }
+
+    /// Lowercase hex SHA-256 of the given bytes.
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Helpers

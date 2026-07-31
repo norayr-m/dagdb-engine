@@ -150,6 +150,47 @@ final class DagDBWALTests: XCTestCase {
         XCTAssertEqual(t[2], 0, "truncated record does NOT apply")
     }
 
+    /// G73 step-1 acceptance test — deterministic torn-tail fixture.
+    /// Pins the CURRENT replay truth: a partially-written last record must be
+    /// dropped, prior records replay exactly, and the truncation is surfaced at
+    /// the byte offset where the torn record begins. No kill, no timing.
+    ///
+    /// Layout for setTruth records: header 16 B, each record = len(4)+op(1)+
+    /// payload(5) = 10 B. So records begin at offsets 16, 26, 36.
+    func testTornTailFixtureDeterministic() throws {
+        let path = tmpDir! + "wal_torn_fixture.log"
+        wipe(path)
+
+        let eng = try makeEngine(side: 8)
+        do {
+            let a = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+            XCTAssertEqual(try a.setTruth(node: 1, value: 1), 10)  // rec @16
+            XCTAssertEqual(try a.setTruth(node: 2, value: 1), 10)  // rec @26
+            XCTAssertEqual(try a.setTruth(node: 3, value: 1), 10)  // rec @36
+        }
+        let fullSize = try FileManager.default.attributesOfItem(atPath: path)[.size] as? Int ?? 0
+        XCTAssertEqual(fullSize, 46)
+
+        // Case A: torn payload — keep 4 of the 3rd record's 10 bytes (file → 40).
+        // Case B: torn length prefix — keep 2 bytes of the 3rd record (file → 38).
+        for truncTo in [40, 38] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            try data.subdata(in: 0..<truncTo).write(to: URL(fileURLWithPath: path + ".t"))
+
+            let engR = try makeEngine(side: 8)
+            let r = try DagDBWAL.replay(
+                engine: engR, nodeCount: engR.nodeCount, path: path + ".t")
+            XCTAssertEqual(r.recordsApplied, 2, "truncTo=\(truncTo): two whole records replay")
+            XCTAssertEqual(r.truncatedAtOffset, 36,
+                           "truncTo=\(truncTo): truncation surfaced at torn record start")
+            let t = engR.truthStateBuf.contents()
+                .bindMemory(to: UInt8.self, capacity: engR.nodeCount)
+            XCTAssertEqual(t[1], 1)
+            XCTAssertEqual(t[2], 1)
+            XCTAssertEqual(t[3], 0, "torn record does NOT apply")
+        }
+    }
+
     func testAppendingToExistingLogWorks() throws {
         let path = tmpDir! + "wal_reopen.log"
         wipe(path)
@@ -210,6 +251,97 @@ final class DagDBWALTests: XCTestCase {
         XCTAssertThrowsError(
             try DagDBWAL.replay(engine: eng8, nodeCount: 999, path: path)
         )
+    }
+
+    // MARK: - G73 group-commit fsync policy
+
+    /// Default policy is `.everyRecord` and the on-disk bytes are identical to
+    /// the pre-G73 per-record path: every record is durable on return
+    /// (unsyncedCount stays 0), and replay reproduces state exactly.
+    func testEveryRecordDefaultUnchanged() throws {
+        let path = tmpDir! + "wal_default.log"
+        wipe(path)
+        let eng = try makeEngine(side: 8)
+        let a = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        XCTAssertEqual(a.policy, .everyRecord)
+        for n in 0..<5 {
+            _ = try a.setTruth(node: UInt32(n), value: 1)
+            XCTAssertEqual(a.unsyncedCount, 0, "everyRecord leaves nothing unsynced")
+        }
+        let engR = try makeEngine(side: 8)
+        let r = try DagDBWAL.replay(engine: engR, nodeCount: engR.nodeCount, path: path)
+        XCTAssertEqual(r.recordsApplied, 5)
+    }
+
+    /// Group bound: in `.grouped(n, ms)` the count of records written but not
+    /// yet fsync'd never exceeds n — it fsyncs and resets exactly on reaching n.
+    func testGroupedBoundHonored() throws {
+        let path = tmpDir! + "wal_grouped_bound.log"
+        wipe(path)
+        let eng = try makeEngine(side: 8)
+        // Large ms so the timer never fires during the test — only the count
+        // bound drives fsync here.
+        let a = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount,
+                                      policy: .grouped(n: 4, ms: 100_000))
+        var maxSeen = 0
+        for n in 0..<20 {
+            _ = try a.setTruth(node: UInt32(n % 60), value: 1)
+            let u = a.unsyncedCount
+            maxSeen = max(maxSeen, u)
+            XCTAssertLessThanOrEqual(u, 4, "unsynced must never exceed n=4")
+        }
+        // After 20 appends at n=4 the counter lands back on 0 (20 % 4 == 0).
+        XCTAssertEqual(a.unsyncedCount, 0)
+        XCTAssertGreaterThan(maxSeen, 0, "grouped mode actually deferred some fsyncs")
+        // Records are write()-en immediately, so replay sees all 20 regardless.
+        let engR = try makeEngine(side: 8)
+        let r = try DagDBWAL.replay(engine: engR, nodeCount: engR.nodeCount, path: path)
+        XCTAssertEqual(r.recordsApplied, 20)
+    }
+
+    /// A forced barrier flushes the deferred tail and resets the counter.
+    func testBarrierFlushesDeferredTail() throws {
+        let path = tmpDir! + "wal_barrier.log"
+        wipe(path)
+        let eng = try makeEngine(side: 8)
+        let a = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount,
+                                      policy: .grouped(n: 100, ms: 100_000))
+        _ = try a.setTruth(node: 1, value: 1)
+        _ = try a.setTruth(node: 2, value: 1)
+        XCTAssertEqual(a.unsyncedCount, 2)
+        a.barrier()
+        XCTAssertEqual(a.unsyncedCount, 0, "barrier flushed the group")
+    }
+
+    /// The deferred-fsync timer fires on its own and flushes the group even
+    /// when neither the count bound nor a barrier is hit.
+    func testGroupedTimerFlushes() throws {
+        let path = tmpDir! + "wal_timer.log"
+        wipe(path)
+        let eng = try makeEngine(side: 8)
+        let a = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount,
+                                      policy: .grouped(n: 100, ms: 30))
+        _ = try a.setTruth(node: 1, value: 1)
+        XCTAssertEqual(a.unsyncedCount, 1)
+        // Wait past the timer deadline; poll so the test isn't wall-clock brittle.
+        let deadline = Date().addingTimeInterval(2.0)
+        while a.unsyncedCount != 0 && Date() < deadline {
+            usleep(5_000)
+        }
+        XCTAssertEqual(a.unsyncedCount, 0, "deferred timer should have flushed")
+    }
+
+    /// A nonsensical group config (n<=0 or ms<=0) degrades to everyRecord so
+    /// durability is never left unbounded.
+    func testGroupedDegradesOnBadConfig() throws {
+        let path = tmpDir! + "wal_badcfg.log"
+        wipe(path)
+        let eng = try makeEngine(side: 8)
+        let a = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount,
+                                      policy: .grouped(n: 0, ms: 0))
+        XCTAssertEqual(a.policy, .everyRecord)
+        _ = try a.setTruth(node: 1, value: 1)
+        XCTAssertEqual(a.unsyncedCount, 0)
     }
 
     // MARK: - BACK_EDGE WAL records
