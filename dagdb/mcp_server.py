@@ -4,16 +4,19 @@
 Any LLM connected via MCP can query, evaluate, and manipulate the graph.
 
 Tools:
-  dagdb_status    — daemon status
-  dagdb_tick      — run N ticks
-  dagdb_query     — send any DSL command
-  dagdb_nodes     — list nodes at a rank
-  dagdb_traverse  — walk the graph from a node
-  dagdb_set       — set truth/rank/LUT on a node
-  dagdb_connect   — wire an edge
-  dagdb_graph     — graph info
-  dagdb_hex       — ASCII hex table view
-  dagdb_show      — full ASCII visualization
+  dagdb_status            — daemon status
+  dagdb_tick              — run N ticks
+  dagdb_query             — send any DSL command
+  dagdb_nodes             — list nodes at a rank
+  dagdb_traverse          — walk the graph from a node
+  dagdb_set               — set truth/rank/LUT on a node
+  dagdb_connect           — wire a combinational edge
+  dagdb_clear_edges       — clear combinational edges into a node
+  dagdb_connect_back      — register a typed BACK_EDGE (synchronous-circuit register)
+  dagdb_clear_back_edges  — remove BACK_EDGEs into a node
+  dagdb_graph             — graph info
+  dagdb_hex               — ASCII hex table view
+  dagdb_show              — full ASCII visualization
 
 Usage: python3 mcp_server.py
 Requires: pip install mcp
@@ -25,19 +28,29 @@ import json
 import sys
 import os
 
-# Check for mcp package
+# Check for mcp package. Do NOT auto-install — installing packages as an
+# import side effect (especially with --break-system-packages) is a
+# supply-chain footgun and mutates system Python. Print instructions and exit.
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    print("Installing mcp package...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", "mcp[cli]"])
-    from mcp.server.fastmcp import FastMCP
+    sys.stderr.write(
+        "DagDB MCP server requires the 'mcp' package.\n"
+        "Install it yourself in the environment you run this from:\n"
+        "    pip install 'mcp[cli]'\n"
+    )
+    sys.exit(1)
 
 DAEMON_SOCK = os.environ.get("DAGDB_SOCK", "/tmp/dagdb.sock")
 
 def query_daemon(cmd: str) -> str:
     """Send a command to the daemon and return the response."""
+    # Reject control characters (Fable review S3, defense-in-depth). The
+    # daemon contract is one command per connection; an embedded newline in a
+    # path argument could smuggle a second command line. Legitimate commands
+    # and paths never contain control chars.
+    if any(ord(c) < 0x20 and c not in "\t" for c in cmd.strip()):
+        return "ERROR: command contains control characters"
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
@@ -76,7 +89,28 @@ def dagdb_tick(count: int = 1) -> str:
 
 @mcp.tool()
 def dagdb_query(command: str) -> str:
-    """Send any DSL command to the daemon. Commands: STATUS, TICK N, GRAPH INFO, NODES AT RANK N, NODES AT RANK N WHERE truth=1, TRAVERSE FROM node DEPTH n, SET node TRUTH 0|1, SET node RANK n, SET node LUT AND|OR|MAJ|XOR|ID|CONST0|CONST1, CLEAR node EDGES, CONNECT FROM src TO dst, EVAL."""
+    """Send any DSL command to the daemon. Full verb surface:
+
+    Lifecycle/inspect: STATUS | TICK <n> | GRAPH INFO | VALIDATE
+    Read: NODES [AT RANK <n>] [WHERE <field><op><val>] | GET <node> TRUTH |
+          EVAL [WHERE ...] [RANK <lo> TO <hi>] | TRAVERSE FROM <n> DEPTH <d> |
+          BFS_DEPTHS FROM <seed> [BACKWARD] | ANCESTRY FROM <n> DEPTH <d> |
+          SIMILAR_DECISIONS TO <n> DEPTH <d> K <k> [AMONG TRUTH <t>] |
+          SELECT truth <k> rank <lo>-<hi> | DISTANCE <metric> <loA>-<hiA> <loB>-<hiB>
+    Mutate: SET <n> TRUTH <0|1|2> | SET <n> RANK <u64> | SET <n> LUT <PRESET> |
+            CONNECT FROM <src> TO <dst> | CONNECT BACK FROM <src> TO <dst> |
+            CLEAR <n> EDGES | CLEAR <n> BACK_EDGES |
+            COMPOSE <NOT|AND|OR|XOR> <src1> [<src2>] INTO <dst>
+    Bulk install (vector at shm offset 8): SET_RANKS_BULK (u64[N]) |
+            SET_LUTS_BULK (u64[N]) | SET_NEIGHBORS_BULK (int32[N*6])
+    Persistence: SAVE <path> [COMPRESSED] | LOAD <path> |
+            SAVE JSON <path> | LOAD JSON <path> | SAVE CSV <dir> | LOAD CSV <dir> |
+            EXPORT MORTON <dir> | IMPORT MORTON <dir> |
+            BACKUP INIT|APPEND|RESTORE|COMPACT|INFO <dir>
+    MVCC: OPEN_READER | READER <id> <inner read-only cmd> | CLOSE_READER <id> | LIST_READERS
+
+    LUT presets: AND OR XOR MAJ IDENTITY CONST0 CONST1 VETO NOR NAND AND3 OR3 MAJ3.
+    Distance metrics: jaccardNodes jaccardEdges rankL1 rankL2 typeL1 boundedGED wlL1 spectralL2."""
     return query_daemon(command)
 
 @mcp.tool()
@@ -105,6 +139,24 @@ def dagdb_set_lut(node: int, gate: str) -> str:
     return query_daemon(f"SET {node} LUT {gate.upper()}")
 
 @mcp.tool()
+def dagdb_compose_lut(op: str, src1: int, dst: int, src2: int = -1) -> str:
+    """Bitwise compose the LUT(s) at src1 (and src2 for binary ops) into dst's LUT.
+
+    Op is one of: AND, OR, XOR (binary — require src2 ≥ 0), NOT (unary — src2 ignored).
+    Caller is responsible for the assumption that src1, src2, dst share a common
+    input vector — the engine just performs the bitwise op on the 64-bit LUT integers.
+
+    Useful for: graph-simplification at insert time (collapse a fused subtree's
+    function into a single node's LUT before tick), offline composition of policies
+    (e.g. veto = the node fires only when all of {a, b, c} agree), and any case
+    where you'd otherwise have to evaluate a tree of intermediate nodes per tick.
+    """
+    op_u = op.upper()
+    if op_u == "NOT":
+        return query_daemon(f"COMPOSE NOT {src1} INTO {dst}")
+    return query_daemon(f"COMPOSE {op_u} {src1} {src2} INTO {dst}")
+
+@mcp.tool()
 def dagdb_connect(source: int, target: int) -> str:
     """Wire an edge from source to target. Target reads from source. Max 6 edges per node. Clear edges first if needed."""
     return query_daemon(f"CONNECT FROM {source} TO {target}")
@@ -113,6 +165,23 @@ def dagdb_connect(source: int, target: int) -> str:
 def dagdb_clear_edges(node: int) -> str:
     """Clear all 6 edge slots on a node. Use before CONNECT to rewire."""
     return query_daemon(f"CLEAR {node} EDGES")
+
+@mcp.tool()
+def dagdb_connect_back(source: int, target: int) -> str:
+    """Register a typed BACK_EDGE from source to target. The source's truth value is
+    latched into the target at every tick boundary (after the combinational pass).
+    Target must have zero combinational fan-in — it becomes a register node, skipped
+    by the rank kernel and updated only by the latch. Used for synchronous-circuit
+    patterns: AC-3 arc consistency, Hopfield recall, Boolean cellular automata,
+    iterative SAT, anything that needs feedback across ticks."""
+    return query_daemon(f"CONNECT BACK FROM {source} TO {target}")
+
+@mcp.tool()
+def dagdb_clear_back_edges(node: int) -> str:
+    """Remove every BACK_EDGE whose destination is `node`. The node loses its
+    register flag and combinational logic on it resumes evaluating its LUT6
+    on the next tick. Mirror of `dagdb_clear_edges` but for back-edges."""
+    return query_daemon(f"CLEAR {node} BACK_EDGES")
 
 @mcp.tool()
 def dagdb_graph_info() -> str:
@@ -281,7 +350,9 @@ def dagdb_hive_query(
     if truth < 0:
         return "ERROR hive_query: truth must be given (0-255); use dagdb_nodes for unfiltered listing"
     lo = max(0, rank_lo)
-    hi = rank_hi if rank_hi >= 0 else 4294967295
+    # Rank is u64 engine-wide. The "unbounded" sentinel must be 2^64-1, not
+    # the u32 max — a u32 cap silently excludes any node with rank > 2^32-1.
+    hi = rank_hi if rank_hi >= 0 else (2**64 - 1)
     return query_daemon(f"SELECT truth {truth} rank {lo}-{hi}")
 
 @mcp.tool()
@@ -344,12 +415,16 @@ def dagdb_reader_query(session_id: str, command: str) -> str:
 
 @mcp.tool()
 def dagdb_set_ranks_bulk() -> str:
-    """Commit a precomputed u32 rank vector from shared memory into the
+    """Commit a precomputed u64 rank vector from shared memory into the
     engine's rank buffer in one round-trip.
+
+    Rank is u64 engine-wide (since 2026-04-21). The shm vector MUST be
+    numpy uint64 — a uint32 array is half the width the daemon reads and
+    corrupts the ranks.
 
     Caller workflow (Python):
         1. Compute ranks via a rankPolicy (see dagdb/plugins/biology/).
-        2. Write the resulting numpy uint32 array (length nodeCount) to
+        2. Write the resulting numpy uint64 array (length nodeCount) to
            /tmp/dagdb_shm_file starting at byte offset 8.
         3. Call this tool. Daemon reads the vector and memcpys into
            rankBuf. No per-insert validation — run dagdb_validate
@@ -358,6 +433,39 @@ def dagdb_set_ranks_bulk() -> str:
     Much faster than per-node SET <id> RANK <r> for bulk ingestion:
     one DSL round-trip instead of N."""
     return query_daemon("SET_RANKS_BULK")
+
+@mcp.tool()
+def dagdb_set_luts_bulk() -> str:
+    """Commit a precomputed u64 LUT vector from shared memory into the
+    engine's lut6Low/lut6High buffers in one round-trip.
+
+    Caller workflow (Python):
+        1. Build a numpy uint64 array (length nodeCount) of 64-bit LUT
+           truth tables — one per node's Boolean function.
+        2. Write it to /tmp/dagdb_shm_file starting at byte offset 8.
+        3. Call this tool. The daemon splits each u64 into low/high u32
+           and commits. No WAL — pair with dagdb_save for durability.
+
+    The fast path for compiling microcircuits (see the
+    microcircuit-compilation wiki page): three bulk verbs
+    (ranks + luts + neighbors) install a million-node graph in three
+    shm writes instead of millions of single SET/CONNECT calls."""
+    return query_daemon("SET_LUTS_BULK")
+
+@mcp.tool()
+def dagdb_set_neighbors_bulk() -> str:
+    """Commit a precomputed neighbour table from shared memory into the
+    engine's neighbors buffer in one round-trip.
+
+    Caller workflow (Python):
+        1. Build a numpy int32 array of length nodeCount * 6 — six input
+           slots per node, row-major. -1 marks an empty slot.
+        2. Write it to /tmp/dagdb_shm_file starting at byte offset 8.
+        3. Call this tool. The daemon memcpys into neighborsBuf.
+
+    Bypasses rank-monotonicity validation (matches SET_RANKS_BULK) —
+    run dagdb_validate afterwards if you don't fully trust the table."""
+    return query_daemon("SET_NEIGHBORS_BULK")
 
 @mcp.tool()
 def dagdb_bfs_depths(seed: int, backward: bool = False) -> str:

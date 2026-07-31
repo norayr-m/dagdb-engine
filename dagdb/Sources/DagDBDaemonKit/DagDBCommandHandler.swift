@@ -92,6 +92,15 @@ public final class DagDBCommandHandler {
             let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
             return "OK TICK \(count) elapsed=\(String(format: "%.2f", elapsed))ms total=\(tickCount)"
 
+        case .tickSync(let count):
+            let t0 = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<count {
+                engine.tickSync(tickNumber: tickCount)
+                tickCount += 1
+            }
+            let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            return "OK TICK_SYNC \(count) elapsed=\(String(format: "%.2f", elapsed))ms total=\(tickCount)"
+
         case .eval(let predicate, _, _):
             engine.tick(tickNumber: tickCount)
             tickCount += 1
@@ -153,6 +162,7 @@ public final class DagDBCommandHandler {
             engine.truthStateBuf.contents()
                 .bindMemory(to: UInt8.self, capacity: nodeCount)[node] = value
             truthRankIndex.markDirty()
+            engine.markRankTopologyDirty()
             return "OK SET node=\(node) truth=\(value)"
 
         case .setRank(let node, let value):
@@ -164,6 +174,7 @@ public final class DagDBCommandHandler {
             engine.rankBuf.contents()
                 .bindMemory(to: UInt64.self, capacity: nodeCount)[node] = value
             truthRankIndex.markDirty()
+            engine.markRankTopologyDirty()
             return "OK SET node=\(node) rank=\(value)"
 
         case .setLUT(let node, let preset):
@@ -338,6 +349,7 @@ public final class DagDBCommandHandler {
                 )
                 tickCount = r.fileTicks
                 truthRankIndex.markDirty()
+                engine.markRankTopologyDirty()
                 return "OK LOAD bytes=\(r.bytesRead) nodes=\(r.fileNodeCount) ticks=\(r.fileTicks) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
             } catch {
                 return "ERROR io: load: \(error)"
@@ -365,6 +377,7 @@ public final class DagDBCommandHandler {
                     dir: dir
                 )
                 truthRankIndex.markDirty()
+                engine.markRankTopologyDirty()
                 return "OK IMPORT bytes=\(r.bytesRead) elapsed=\(String(format: "%.1f", r.elapsedMs))ms dir=\(dir)"
             } catch {
                 return "ERROR io: import: \(error)"
@@ -399,6 +412,7 @@ public final class DagDBCommandHandler {
                 )
                 tickCount = r.fileTicks
                 truthRankIndex.markDirty()
+                engine.markRankTopologyDirty()
                 return "OK LOAD_JSON bytes=\(r.bytesRead) nodes=\(r.fileNodeCount) ticks=\(r.fileTicks) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
             } catch {
                 return "ERROR io: load_json: \(error)"
@@ -422,6 +436,7 @@ public final class DagDBCommandHandler {
                     engine: engine, nodeCount: nodeCount, dir: dir
                 )
                 truthRankIndex.markDirty()
+                engine.markRankTopologyDirty()
                 return "OK LOAD_CSV nodes=\(r.nodesParsed) edges=\(r.edgesParsed) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
             } catch {
                 return "ERROR io: load_csv: \(error)"
@@ -460,6 +475,7 @@ public final class DagDBCommandHandler {
                     gridW: width, gridH: height, dir: dir
                 )
                 truthRankIndex.markDirty()
+                engine.markRankTopologyDirty()
                 return "OK BACKUP_RESTORE diffs_replayed=\(r.diffsReplayed) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
             } catch {
                 return "ERROR io: backup_restore: \(error)"
@@ -497,6 +513,7 @@ public final class DagDBCommandHandler {
             let dst = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: nodeCount)
             for i in 0..<nodeCount { dst[i] = src[i] }
             truthRankIndex.markDirty()
+            engine.markRankTopologyDirty()
             return "OK SET_RANKS_BULK nodes=\(nodeCount)"
 
         case .setLutsBulk:
@@ -922,7 +939,7 @@ public final class DagDBCommandHandler {
             }
 
         // All writes and nested sessions rejected.
-        case .tick, .save, .load, .setTruth, .setRank, .setLUT,
+        case .tick, .tickSync, .save, .load, .setTruth, .setRank, .setLUT,
              .clearEdges, .connect, .connectBack, .clearBackEdges,
              .exportMorton, .importMorton,
              .saveJSON, .loadJSON, .saveCSV, .loadCSV,

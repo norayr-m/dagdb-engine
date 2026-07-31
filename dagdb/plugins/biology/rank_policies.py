@@ -17,10 +17,10 @@ Three defaults cover the regimes we know about today:
                                 BFS-depth from a chosen root; rank
                                 = max - depth.
 
-All three return a numpy uint32 array of length `node_count`. Even
-while DagDB core runs on u8 rank (pre-T1), the Python plugin
-computes in u32 — it will truncate to u8 on the wire until Tuesday,
-and widen automatically once T1 lands and SET_RANKS_BULK (T3) ships.
+All three return a numpy uint64 array of length `node_count`. Rank is
+u64 engine-wide (since 2026-04-21). SET_RANKS_BULK reads a u64 vector
+from shared memory, so these arrays go on the wire as-is — a uint32
+array would be half the width the daemon reads and corrupt the ranks.
 
 Amateur engineering project. Errors likely. No competitive claims.
 """
@@ -43,7 +43,7 @@ import numpy as np
 class RankPolicy(Protocol):
     """A rank-assignment policy for biology-style DagDB ingestion.
 
-    Returns a numpy uint32 array of length `node_count`. Value at
+    Returns a numpy uint64 array of length `node_count`. Value at
     index i is the rank for DagDB node i. Caller is responsible for
     choosing an edge set compatible with the assignment so the
     rank-monotonicity invariant holds on insert.
@@ -95,7 +95,7 @@ class SequencePositionPolicy:
             )
         if seq.min() < 0:
             raise ValueError(f"seq_indices has negative values")
-        return (np.uint32(max_rank) - seq.astype(np.uint32))
+        return (np.uint64(max_rank) - seq.astype(np.uint64))
 
 
 # -----------------------------------------------------------------------------
@@ -148,7 +148,7 @@ class ChainBandPolicy:
             )
 
         bases = (cid + 1) * band_width - 1
-        ranks = (bases - pic).astype(np.uint32)
+        ranks = (bases - pic).astype(np.uint64)
         return ranks
 
 
@@ -222,7 +222,7 @@ class TopologicalSortPolicy:
                 f"max_rank {max_rank}."
             )
 
-        return (np.uint32(max_rank) - depth.astype(np.uint32))
+        return (np.uint64(max_rank) - depth.astype(np.uint64))
 
 
 # -----------------------------------------------------------------------------
@@ -240,7 +240,7 @@ def _selftest() -> None:
         seq_indices=np.array([0, 1, 2, 3, 4]),
     )
     assert list(ranks) == [10, 9, 8, 7, 6], f"SeqPos: {ranks}"
-    assert ranks.dtype == np.uint32
+    assert ranks.dtype == np.uint64
 
     # Rank monotonicity: for any edge (p, q) with p < q, rank(p) > rank(q)
     for p in range(5):

@@ -21,7 +21,9 @@ public final class DagDBEngine {
     public let grid: HexGrid
 
     // State buffers
-    public let truthStateBuf: MTLBuffer     // UInt8 per node
+    public private(set) var truthStateBuf: MTLBuffer   // UInt8 per node
+    private var truthStateBackBuf: MTLBuffer!           // TICK_SYNC ping-pong
+    public let syncPipeline: MTLComputePipelineState    // dagdb_tick_sync
     public let rankBuf: MTLBuffer           // UInt64 per node (u8 → u32 T1; u32 → u64 T1b)
     public let lut6LowBuf: MTLBuffer        // UInt32 per node
     public let lut6HighBuf: MTLBuffer       // UInt32 per node
@@ -47,6 +49,52 @@ public final class DagDBEngine {
     public internal(set) var backEdgeSrcs: [UInt32] = []
     public internal(set) var backEdgeDsts: [UInt32] = []
     public let isRegisterBuf: MTLBuffer        // UInt8 per node, 1 = register
+
+    // ── Per-(rank,color) compacted dispatch (perf recovery, 2026-07-07) ──
+    // Flat buffer of node ids laid out as concatenated (rank,color)
+    // segments + a CPU offset table. Kills the early-out thread waste of
+    // launching whole color groups (at 16 ranks ~15/16 of threads were
+    // rank-mismatch exits). Rebuilt lazily when rank topology changes.
+    private var compactedListBuf: MTLBuffer!
+    private var segmentTable: [(offset: Int, count: Int)] = []
+    public private(set) var rankTopologyDirty = true
+
+    /// Call after any write to rankBuf (SET RANK, bulk install, LOAD).
+    /// The next tick rebuilds the compacted dispatch lists.
+    public func markRankTopologyDirty() { rankTopologyDirty = true }
+
+    private func rebuildCompaction() {
+        let rankPtr = rankBuf.contents().bindMemory(to: UInt64.self,
+                                                    capacity: nodeCount)
+        // bucket[color][rank] = node ids (single O(N) pass)
+        var buckets = Array(repeating: Array(repeating: [UInt32](),
+                                             count: maxRank),
+                            count: HexGrid.colorCount)
+        for (color, group) in grid.colorGroups.enumerated() {
+            for node in group {
+                let r = rankPtr[Int(node)]
+                if r < UInt64(maxRank) {
+                    buckets[color][Int(r)].append(UInt32(node))
+                }
+            }
+        }
+        var flat = [UInt32](); flat.reserveCapacity(nodeCount)
+        segmentTable = Array(repeating: (0, 0),
+                             count: maxRank * HexGrid.colorCount)
+        for rank in 0..<maxRank {
+            for color in 0..<HexGrid.colorCount {
+                let ids = buckets[color][rank]
+                segmentTable[rank * HexGrid.colorCount + color] =
+                    (flat.count, ids.count)
+                flat.append(contentsOf: ids)
+            }
+        }
+        if !flat.isEmpty {
+            compactedListBuf.contents().copyMemory(
+                from: flat, byteCount: flat.count * 4)
+        }
+        rankTopologyDirty = false
+    }
 
     public init(grid: HexGrid, state: DagDBState, maxRank: Int = 16) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -108,6 +156,20 @@ public final class DagDBEngine {
         self.colorGroupBufs = groupBufs
         self.colorGroupSizes = groupSizes
 
+        // Compacted dispatch flat buffer (per-(rank,color) node lists);
+        // built lazily on first tick (rankTopologyDirty starts true).
+        guard let clb = device.makeBuffer(length: max(nodeCount, 1) * 4,
+                                          options: shared) else {
+            throw EngineError.bufferAllocationFailed
+        }
+        self.compactedListBuf = clb
+
+        guard let backBuf = device.makeBuffer(length: max(nodeCount, 1),
+                                              options: shared) else {
+            throw EngineError.bufferAllocationFailed
+        }
+        self.truthStateBackBuf = backBuf
+
         // Load Metal library from package bundle
         let library: MTLLibrary
         if let bundleLib = try? device.makeDefaultLibrary(bundle: Bundle.module) {
@@ -129,12 +191,18 @@ public final class DagDBEngine {
             throw EngineError.functionNotFound("dagdb_reset_rank")
         }
         self.rankResetPipeline = try device.makeComputePipelineState(function: resetFn)
+
+        guard let syncFn = library.makeFunction(name: "dagdb_tick_sync") else {
+            throw EngineError.functionNotFound("dagdb_tick_sync")
+        }
+        self.syncPipeline = try device.makeComputePipelineState(function: syncFn)
     }
 
     /// Execute one tick: leaves-up rank propagation.
     /// Each rank evaluates in parallel (all nodes in rank N are independent).
     /// Then rank N-1 sees updated values from rank N.
     public func tick(tickNumber: UInt32) {
+        if rankTopologyDirty { rebuildCompaction() }
         guard let cmdBuf = queue.makeCommandBuffer() else { return }
 
         // Shuffle color order (chromatic wind fix from Gemini Deep Think)
@@ -146,9 +214,65 @@ public final class DagDBEngine {
             colorOrder.swapAt(i, j)
         }
 
-        // Leaves-up: iterate rank from max down to 0
+        // Leaves-up: iterate rank from max down to 0, dispatching only the
+        // compacted (rank,color) segments — exact thread counts, no
+        // rank-mismatch early-out waste. ONE encoder for the whole tick:
+        // memoryBarrier(scope: .buffers) between dispatches replaces the
+        // per-(rank,color) encoder create/end cycle (up to 112 of them),
+        // which measured slower than legacy on deep rank spreads.
+        guard let enc = cmdBuf.makeComputeCommandEncoder() else { return }
+        enc.setComputePipelineState(tickPipeline)
+        enc.setBuffer(truthStateBuf, offset: 0, index: 0)
+        enc.setBuffer(rankBuf, offset: 0, index: 1)
+        enc.setBuffer(lut6LowBuf, offset: 0, index: 2)
+        enc.setBuffer(lut6HighBuf, offset: 0, index: 3)
+        enc.setBuffer(neighborsBuf, offset: 0, index: 4)
+        enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
+        let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
+        var first = true
         for rankLevel in stride(from: maxRank - 1, through: 0, by: -1) {
-            // Within each rank, process 7 color groups in shuffled order
+            for colorIdx in colorOrder {
+                let seg = segmentTable[rankLevel * HexGrid.colorCount + colorIdx]
+                if seg.count == 0 { continue }
+                if !first { enc.memoryBarrier(scope: .buffers) }
+                first = false
+                enc.setBuffer(compactedListBuf, offset: seg.offset * 4, index: 5)
+                var groupSize = UInt32(seg.count)
+                enc.setBytes(&groupSize, length: 4, index: 6)
+                var currentRank = UInt64(rankLevel)
+                enc.setBytes(&currentRank, length: 8, index: 7)
+                enc.dispatchThreadgroups(
+                    MTLSize(width: (seg.count + tpg - 1) / tpg, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: tpg, height: 1, depth: 1))
+            }
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        // Latch phase: copy each BACK_EDGE source's truth into its destination.
+        // Two-phase semantics handled inside latchBackEdges. Runs after the
+        // combinational pass so the latched values reflect this tick's
+        // computed sources.
+        latchBackEdges()
+    }
+
+    /// The pre-compaction dispatch path: launches whole color groups and
+    /// lets the kernel's rank check early-out mismatched threads. Kept
+    /// (test-only) as the independent ground truth for the compacted
+    /// path's bit-for-bit equivalence tests, and as the honest "before"
+    /// in the benchmark. Do not use in production paths.
+    public func tickLegacy(tickNumber: UInt32) {
+        guard let cmdBuf = queue.makeCommandBuffer() else { return }
+        var colorOrder = Array(0..<HexGrid.colorCount)
+        var shuffleSeed = tickNumber &* 2654435761
+        for i in stride(from: colorOrder.count - 1, through: 1, by: -1) {
+            shuffleSeed = shuffleSeed &* 1103515245 &+ 12345
+            let j = Int(shuffleSeed >> 16) % (i + 1)
+            colorOrder.swapAt(i, j)
+        }
+        for rankLevel in stride(from: maxRank - 1, through: 0, by: -1) {
             for colorIdx in colorOrder {
                 guard let enc = cmdBuf.makeComputeCommandEncoder() else { continue }
                 enc.setComputePipelineState(tickPipeline)
@@ -163,22 +287,51 @@ public final class DagDBEngine {
                 var currentRank = UInt64(rankLevel)
                 enc.setBytes(&currentRank, length: 8, index: 7)
                 enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
-
                 let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
                 enc.dispatchThreadgroups(
-                    MTLSize(width: (colorGroupSizes[colorIdx] + tpg - 1) / tpg, height: 1, depth: 1),
+                    MTLSize(width: (colorGroupSizes[colorIdx] + tpg - 1) / tpg,
+                            height: 1, depth: 1),
                     threadsPerThreadgroup: MTLSize(width: tpg, height: 1, depth: 1))
                 enc.endEncoding()
             }
         }
-
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
+        latchBackEdges()
+    }
 
-        // Latch phase: copy each BACK_EDGE source's truth into its destination.
-        // Two-phase semantics handled inside latchBackEdges. Runs after the
-        // combinational pass so the latched values reflect this tick's
-        // computed sources.
+    /// TICK_SYNC — double-buffered synchronous mode (opt-in).
+    ///
+    /// Every node reads the PREVIOUS tick's truth buffer and writes the
+    /// next one: cellular-automaton semantics, one dispatch for the whole
+    /// graph, no rank/color ordering. Correct for wide-shallow synchronous
+    /// workloads; NOT equivalent to rank mode on multi-rank combinational
+    /// graphs (rank mode propagates through all ranks within one tick —
+    /// sync mode advances one hop per tick). Registers hold their value in
+    /// the kernel and are then latched by the same latch phase as rank
+    /// mode, so BACK_EDGE semantics are identical across modes.
+    public func tickSync(tickNumber: UInt32) {
+        guard let cmdBuf = queue.makeCommandBuffer(),
+              let enc = cmdBuf.makeComputeCommandEncoder() else { return }
+        enc.setComputePipelineState(syncPipeline)
+        enc.setBuffer(truthStateBuf, offset: 0, index: 0)
+        enc.setBuffer(truthStateBackBuf, offset: 0, index: 1)
+        enc.setBuffer(lut6LowBuf, offset: 0, index: 2)
+        enc.setBuffer(lut6HighBuf, offset: 0, index: 3)
+        enc.setBuffer(neighborsBuf, offset: 0, index: 4)
+        enc.setBuffer(isRegisterBuf, offset: 0, index: 5)
+        var count = UInt32(nodeCount)
+        enc.setBytes(&count, length: 4, index: 6)
+        let tpg = syncPipeline.maxTotalThreadsPerThreadgroup
+        enc.dispatchThreadgroups(
+            MTLSize(width: (nodeCount + tpg - 1) / tpg, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: tpg, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        // Ping-pong swap: the freshly written buffer becomes current.
+        // All external access goes through the property (audited).
+        swap(&truthStateBuf, &truthStateBackBuf)
         latchBackEdges()
     }
 
@@ -410,6 +563,30 @@ public final class DagDBEngine {
             sum += val * w;
         }
         truth_state[node] = (sum >= threshold) ? 1 : 0;
+    }
+
+    kernel void dagdb_tick_sync(
+        device const uint8_t*   truth_in     [[ buffer(0) ]],
+        device uint8_t*         truth_out    [[ buffer(1) ]],
+        device const uint32_t*  lut6_low     [[ buffer(2) ]],
+        device const uint32_t*  lut6_high    [[ buffer(3) ]],
+        device const int32_t*   neighbors    [[ buffer(4) ]],
+        device const uint8_t*   is_register  [[ buffer(5) ]],
+        constant uint32_t&      node_count   [[ buffer(6) ]],
+        uint                    gid          [[ thread_position_in_grid ]]
+    ) {
+        if (gid >= node_count) return;
+        // Registers hold: their next value comes from the latch phase,
+        // exactly as in rank mode.
+        if (is_register[gid] != 0) { truth_out[gid] = truth_in[gid]; return; }
+        uint8_t input_bits = 0;
+        for (int d = 0; d < 6; d++) {
+            int32_t nb = neighbors[gid * 6 + d];
+            if (nb < 0) continue;
+            uint8_t bit = (truth_in[nb] == TRUTH_TRUE) ? 1u : 0u;
+            input_bits |= (bit << d);
+        }
+        truth_out[gid] = eval_lut6(lut6_low[gid], lut6_high[gid], input_bits);
     }
     """
 }

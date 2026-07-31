@@ -104,7 +104,7 @@ public struct CarlosDelta {
             var header = Data()
             header.append(contentsOf: CarlosDelta.magic)
             var w = self.width, h = self.height
-            var nf: UInt32 = 0  // placeholder
+            var nf: UInt32 = 0  // frame count; written 0 here, backfilled at finalize() (seek to offset 12)
             var tc = self.totalCells
             var kfi = self.keyframeInterval
             var fmt = format.rawValue

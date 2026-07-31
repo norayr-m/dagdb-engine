@@ -15,6 +15,7 @@ import DagDB
 public enum DSLCommand {
     case status
     case tick(count: Int)
+    case tickSync(count: Int)
     case eval(predicate: Predicate?, rankFrom: Int?, rankTo: Int?)
     case nodes(rank: Int?, predicate: Predicate?)
     case traverse(fromNode: Int, depth: Int)
@@ -327,6 +328,12 @@ public enum DSLParser {
         case "TICK":
             let count = tokens.count > 1 ? Int(tokens[1]) ?? 1 : 1
             return .tick(count: count)
+
+        case "TICK_SYNC":
+            // Double-buffered synchronous mode: every node reads the
+            // previous tick's values (CA semantics, one hop per tick).
+            let count = tokens.count > 1 ? Int(tokens[1]) ?? 1 : 1
+            return .tickSync(count: count)
 
         case "EVAL":
             var predicate: Predicate? = nil

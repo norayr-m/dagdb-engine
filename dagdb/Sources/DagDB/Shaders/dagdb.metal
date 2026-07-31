@@ -130,3 +130,27 @@ kernel void dagdb_reset_rank(
         truth_state[gid] = TRUTH_FALSE;
     }
 }
+
+kernel void dagdb_tick_sync(
+    device const uint8_t*   truth_in     [[ buffer(0) ]],
+    device uint8_t*         truth_out    [[ buffer(1) ]],
+    device const uint32_t*  lut6_low     [[ buffer(2) ]],
+    device const uint32_t*  lut6_high    [[ buffer(3) ]],
+    device const int32_t*   neighbors    [[ buffer(4) ]],
+    device const uint8_t*   is_register  [[ buffer(5) ]],
+    constant uint32_t&      node_count   [[ buffer(6) ]],
+    uint                    gid          [[ thread_position_in_grid ]]
+) {
+    if (gid >= node_count) return;
+    // Registers hold: their next value comes from the latch phase,
+    // exactly as in rank mode.
+    if (is_register[gid] != 0) { truth_out[gid] = truth_in[gid]; return; }
+    uint8_t input_bits = 0;
+    for (int d = 0; d < 6; d++) {
+        int32_t nb = neighbors[gid * 6 + d];
+        if (nb < 0) continue;
+        uint8_t bit = (truth_in[nb] == TRUTH_TRUE) ? 1u : 0u;
+        input_bits |= (bit << d);
+    }
+    truth_out[gid] = eval_lut6(lut6_low[gid], lut6_high[gid], input_bits);
+}

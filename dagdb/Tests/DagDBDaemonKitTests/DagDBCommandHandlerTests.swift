@@ -59,6 +59,24 @@ final class DagDBCommandHandlerTests: XCTestCase {
         XCTAssertEqual(h.tickCount, 3, "handler must own and advance tickCount")
     }
 
+    func testTickSyncVerb() throws {
+        let h = try makeHandler(side: 4)
+        // one-hop propagation per sync tick: src (CONST1, rank 1) -> dst (OR, rank 0)
+        _ = h.handle("SET 0 RANK 1")
+        _ = h.handle("SET 0 LUT CONST1")
+        _ = h.handle("SET 1 RANK 0")
+        _ = h.handle("SET 1 LUT 0xFFFFFFFFFFFFFFFE")
+        XCTAssertTrue(h.handle("CONNECT FROM 0 TO 1").hasPrefix("OK"))
+        let r = h.handle("TICK_SYNC 1")
+        XCTAssertTrue(r.hasPrefix("OK TICK_SYNC 1"), r)
+        XCTAssertEqual(h.tickCount, 1, "TICK_SYNC advances the shared tickCount")
+        // after ONE sync tick src just turned on; dst still saw the old 0
+        XCTAssertTrue(h.handle("GET 1 TRUTH").hasSuffix("truth=0"))
+        _ = h.handle("TICK_SYNC 1")
+        XCTAssertTrue(h.handle("GET 1 TRUTH").hasSuffix("truth=1"),
+                      "second sync tick delivers the hop")
+    }
+
     func testUnknownCommandRejected() throws {
         let h = try makeHandler(side: 4)
         XCTAssertTrue(h.handle("FLARGLE 1 2").hasPrefix("ERROR unknown_command"))

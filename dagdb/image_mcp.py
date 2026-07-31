@@ -76,7 +76,11 @@ def image_generate(
         args.extend(["--seed", str(seed)])
 
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=180)
+        # mflux (via mlx) shells out to `system_profiler` to probe the Mac's hardware.
+        # MCP servers launch with a stripped PATH that lacks /usr/sbin, so that call
+        # dies with FileNotFoundError before generation even starts. Restore it.
+        env = {**os.environ, "PATH": "/usr/sbin:/sbin:" + os.environ.get("PATH", "")}
+        result = subprocess.run(args, capture_output=True, text=True, timeout=180, env=env)
         if result.returncode != 0:
             return f"ERROR: {result.stderr[-500:]}"
     except subprocess.TimeoutExpired:

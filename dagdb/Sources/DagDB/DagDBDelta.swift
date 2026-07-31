@@ -54,7 +54,7 @@ public struct DagDBDelta {
             var mr = self.maxRank
             header.append(Data(bytes: &mr, count: 1))
             header.append(contentsOf: [UInt8](repeating: 0, count: 3))  // padding
-            var nf: UInt32 = 0  // placeholder
+            var nf: UInt32 = 0  // frame count; written 0 here, backfilled at finalize() (seek to offset 12)
             header.append(Data(bytes: &nf, count: 4))
             var kfi = self.keyframeInterval
             header.append(Data(bytes: &kfi, count: 4))
