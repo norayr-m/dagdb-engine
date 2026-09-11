@@ -429,6 +429,27 @@ swift test --filter DagDBSecondaryIndexTests
 
 ---
 
+## Known limitation — rank-mode TICK and `maxRank`
+
+The rank kernel buckets nodes by rank with an upper bound: a node enters its
+bucket only if its rank is **below** the engine's `maxRank`, and rank-mode
+`TICK` strides over exactly those ranks. A node whose rank is at or above
+`maxRank` is therefore not computed in rank mode. Sync mode dispatches over all
+nodes and is unaffected.
+
+No verb refuses this today: `SET_RANK` validates the node index but not the
+rank value, and the bulk rank commit states in its own comment that it skips
+validation. So a graph whose ranks exceed the configured `maxRank` is ticked
+without an error and without a counter naming what was left out.
+
+Every example and every test in this release is inside `maxRank`, so the
+released behaviour matches its documentation for them. If you set ranks
+yourself, or restore a snapshot written under a larger `maxRank`, check that
+your ranks are below the bound until this is fixed.
+
+A refusal at the tick — rather than a silent skip — is in progress; this note
+comes out with it.
+
 ## License
 
 Apache 2.0. See `LICENSE` and `NOTICE`.
