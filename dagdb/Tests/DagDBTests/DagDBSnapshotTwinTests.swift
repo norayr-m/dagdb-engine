@@ -154,6 +154,138 @@ final class DagDBSnapshotTwinTests: XCTestCase {
         XCTAssertEqual(restoredStream.next64(), 0x7be48d99e6014011)
     }
 
+    // MARK: - v7 round trip: bank
+
+    func testV7RoundTripBank() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        let twin1 = TwinState()
+        let bankId = twin1.nextId(prefix: "w")
+        try twin1.apply(.bankOpen(id: bankId, name: "mouth", spec: .reference))
+
+        let path = tmpDir! + "twin_v7_bank.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 1, path: path,
+                                   twin: twin1)
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        let twin2 = TwinState()
+        _ = try DagDBSnapshot.load(engine: eng2, nodeCount: eng2.nodeCount,
+                                   gridW: gw, gridH: gh, path: path, validate: false, twin: twin2)
+
+        XCTAssertEqual(twin2.export(), twin1.export())
+
+        let probe = WaveBank.referenceProbe(spec: .reference)
+        let residual1 = "\(twin1.banks.get(bankId)!.bank.fit(probe)!.residual)"
+        let residual2 = "\(twin2.banks.get(bankId)!.bank.fit(probe)!.residual)"
+        XCTAssertEqual(residual1, residual2)
+    }
+
+    func testSnapshotJSONWithoutBanksFieldDecodes() throws {
+        let twin = TwinState()
+        try twin.apply(.clockOpen(id: twin.nextId(prefix: "c")))
+        let snap = twin.export()
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(snap)
+        var obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNotNil(obj["banks"], "sanity: the field is present before we strip it")
+        obj.removeValue(forKey: "banks")
+        let strippedData = try JSONSerialization.data(withJSONObject: obj)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(TwinState.Snapshot.self, from: strippedData)
+        XCTAssertEqual(decoded.banks, [:])
+        XCTAssertEqual(decoded.counters, snap.counters)
+    }
+
+    func testSnapshotJSONWithoutViewsFieldDecodes() throws {
+        let twin = TwinState()
+        try twin.apply(.clockOpen(id: twin.nextId(prefix: "c")))
+        let snap = twin.export()
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(snap)
+        var obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNotNil(obj["views"], "sanity: the field is present before we strip it")
+        obj.removeValue(forKey: "views")
+        let strippedData = try JSONSerialization.data(withJSONObject: obj)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(TwinState.Snapshot.self, from: strippedData)
+        XCTAssertEqual(decoded.views, [:])
+        XCTAssertEqual(decoded.counters, snap.counters)
+    }
+
+    func testSnapshotJSONWithoutKernelsFieldDecodes() throws {
+        let twin = TwinState()
+        try twin.apply(.clockOpen(id: twin.nextId(prefix: "c")))
+        let snap = twin.export()
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(snap)
+        var obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNotNil(obj["kernels"], "sanity: the field is present before we strip it")
+        obj.removeValue(forKey: "kernels")
+        let strippedData = try JSONSerialization.data(withJSONObject: obj)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(TwinState.Snapshot.self, from: strippedData)
+        XCTAssertEqual(decoded.kernels, [:])
+        XCTAssertEqual(decoded.counters, snap.counters)
+    }
+
+    func testSnapshotJSONWithoutHooksFieldDecodes() throws {
+        let twin = TwinState()
+        try twin.apply(.clockOpen(id: twin.nextId(prefix: "c")))
+        let snap = twin.export()
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(snap)
+        var obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNotNil(obj["hooks"], "sanity: the field is present before we strip it")
+        obj.removeValue(forKey: "hooks")
+        let strippedData = try JSONSerialization.data(withJSONObject: obj)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(TwinState.Snapshot.self, from: strippedData)
+        XCTAssertEqual(decoded.hooks, [:])
+        XCTAssertEqual(decoded.counters, snap.counters)
+    }
+
+    // MARK: - v7 round trip: hook (by parameters and frame counter)
+
+    func testV7RoundTripHookByParametersAndT() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        let twin1 = TwinState()
+        let (path, sha) = try writeSyntheticAlarmFixture()
+        let alarmId = twin1.nextId(prefix: "a")
+        try twin1.apply(.alarmLoad(id: alarmId, path: path, sha256: sha))
+
+        let hookId = twin1.nextId(prefix: "h")
+        let params = AttentionHook.Params(alarmId: alarmId, layoutId: nil, budget: 100_000,
+                                           delta: 3, policy: .allocator, clockId: nil)
+        try twin1.apply(.hookOpen(id: hookId, params: params))
+        try twin1.apply(.hookStep(id: hookId, count: 5))
+
+        let snapPath = tmpDir! + "twin_v7_hook.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 1, path: snapPath,
+                                   twin: twin1)
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        let twin2 = TwinState()
+        _ = try DagDBSnapshot.load(engine: eng2, nodeCount: eng2.nodeCount,
+                                   gridW: gw, gridH: gh, path: snapPath, validate: false, twin: twin2)
+
+        XCTAssertEqual(twin2.export(), twin1.export())
+        XCTAssertEqual(twin2.hooks.get(hookId)?.params, params)
+        XCTAssertEqual(twin2.hooks.get(hookId)?.hook.t, 5)
+        // The ledger is derived, never stored — restore rebuilds it by
+        // re-stepping, and it must match the original's exactly.
+        XCTAssertEqual(twin2.hooks.get(hookId)?.hook.ledger, twin1.hooks.get(hookId)?.hook.ledger)
+        XCTAssertEqual(twin2.hooks.get(hookId)?.hook.result, twin1.hooks.get(hookId)?.hook.result)
+    }
+
     // MARK: - empty section byte accounting
 
     func testEmptyTwinSectionIsEightBytes() throws {
@@ -304,5 +436,82 @@ final class DagDBSnapshotTwinTests: XCTestCase {
         )
         XCTAssertEqual(twin2.alarms.openCount, 0, "the missing-file alarm set is dropped")
         XCTAssertGreaterThan(twin2.streams.openCount, 0, "the rest of the twin state still restores")
+    }
+
+    // MARK: - view-by-reference: missing backing file
+
+    /// A minimal `CortexFixture` for view-registry plumbing tests.
+    /// `CortexFixture.load`'s own asserts (M == 129*54, every class exactly
+    /// 54 train frames, FS == 3000, OS == 8, ruling (c)) make a real
+    /// npz-backed fixture too heavy to build here — this test isolates the
+    /// restore-side WARN-and-drop behavior (the mechanic under test), not
+    /// `CortexFixture.load`'s own validation (exercised for real in
+    /// TwinViewCommandTests's synthetic-npz tests). See TwinRegistryTests.
+    /// stubCortexFixture's doc comment for the same reasoning.
+    private func stubCortexFixture(path: String = "synthetic", sha256: String = "deadbeef") -> CortexFixture {
+        CortexFixture(
+            path: path, sha256: sha256,
+            stations: 8, samples: 64, candidates: 129,
+            xTrain: [], yTrain: [], xTest: [], yTest: [],
+            tau: [], tauRaw: [],
+            scan: Array(0..<8), cand: Array(0..<129),
+            speed: 1500, dt: 1.0 / 24000, os: 8, fs: 3000
+        )
+    }
+
+    /// Verifier gap (2026-09-10): a view file that EXISTS but whose hash
+    /// changed is dropped on restore with a WARN, exactly like a missing one.
+    func testViewRefChangedHashWarnsAndDrops() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        let twin1 = TwinState()
+        try populateTwin(twin1)
+        let viewPath = tmpDir! + "changed_cortex_v4_world.npz"
+        let viewId = twin1.nextId(prefix: "v")
+        let stub = stubCortexFixture(path: viewPath, sha256: "deadbeef")
+        try twin1.apply(.viewLoad(id: viewId, path: viewPath, sha256: "deadbeef"), viewLoader: { _, _ in stub })
+        try Data("not the sealed fixture".utf8).write(to: URL(fileURLWithPath: viewPath))
+
+        let path = tmpDir! + "twin_view_changed.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 0, path: path, twin: twin1)
+        let (eng2, _, _) = try makeEngine(side: 8)
+        let twin2 = TwinState()
+        XCTAssertNoThrow(
+            try DagDBSnapshot.load(engine: eng2, nodeCount: eng2.nodeCount,
+                                   gridW: gw, gridH: gh, path: path, validate: false, twin: twin2)
+        )
+        XCTAssertEqual(twin2.views.openCount, 0, "the changed-hash view set is dropped")
+        XCTAssertGreaterThan(twin2.streams.openCount, 0, "the rest of the twin state still restores")
+    }
+
+    func testViewRefMissingFileWarnsAndDrops() throws {
+        let (eng1, gw, gh) = try makeEngine(side: 8)
+        let twin1 = TwinState()
+        try populateTwin(twin1)
+
+        // A view set loaded by reference to a path that is never actually
+        // written to disk (a stub loader stands in for CortexFixture.load
+        // at populate time, mirroring the alarm test's injected loader —
+        // see stubCortexFixture's doc comment). At restore time the
+        // DEFAULT viewLoader (real CortexFixture.load) will find nothing
+        // there.
+        let viewPath = tmpDir! + "missing_cortex_v4_world.npz"
+        let viewId = twin1.nextId(prefix: "v")
+        let stub = stubCortexFixture(path: viewPath, sha256: "deadbeef")
+        try twin1.apply(.viewLoad(id: viewId, path: viewPath, sha256: "deadbeef"), viewLoader: { _, _ in stub })
+
+        let path = tmpDir! + "twin_view_missing.dags"
+        _ = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
+                                   gridW: gw, gridH: gh, tickCount: 0, path: path, twin: twin1)
+
+        let (eng2, _, _) = try makeEngine(side: 8)
+        let twin2 = TwinState()
+        XCTAssertNoThrow(
+            try DagDBSnapshot.load(engine: eng2, nodeCount: eng2.nodeCount,
+                                   gridW: gw, gridH: gh, path: path, validate: false, twin: twin2)
+        )
+        XCTAssertEqual(twin2.views.openCount, 0, "the missing-file view set is dropped")
+        XCTAssertGreaterThan(twin2.streams.openCount, 0, "the rest of the twin state still restores")
+        XCTAssertGreaterThan(twin2.alarms.openCount, 0, "the alarm set (real backing file) still restores")
     }
 }

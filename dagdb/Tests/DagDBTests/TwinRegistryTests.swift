@@ -69,6 +69,30 @@ final class TwinRegistryTests: XCTestCase {
         return (path, DagDBSnapshot.sha256Hex(data))
     }
 
+    /// A minimal `CortexFixture` for VIEW registry tests. `CortexFixture.
+    /// load`'s own asserts (M == 129*54, every class exactly 54 train
+    /// frames, FS == 3000, OS == 8) make a *real* npz-backed synthetic
+    /// fixture heavy to build for tests that only care about registry
+    /// mechanics (mint/close/export/restore) — so this uses the struct's
+    /// synthesized memberwise init directly (internal access, reachable
+    /// here via `@testable import DagDB`) instead of routing through
+    /// `CortexFixture.load`. This never bypasses `load`'s own asserts —
+    /// those are exercised for real in TwinViewCommandTests's synthetic-npz
+    /// tests — it only lets `TwinState.apply`'s *injected* `viewLoader`
+    /// hand back a fixture without touching a file at all, the same shape
+    /// `AlarmFixture` stub tests would use if `AlarmFixture` had no on-disk
+    /// synthetic-JSON precedent already in this file.
+    private func stubCortexFixture(path: String = "synthetic", sha256: String = "deadbeef") -> CortexFixture {
+        CortexFixture(
+            path: path, sha256: sha256,
+            stations: 8, samples: 64, candidates: 129,
+            xTrain: [], yTrain: [], xTest: [], yTest: [],
+            tau: [], tauRaw: [],
+            scan: Array(0..<8), cand: Array(0..<129),
+            speed: 1500, dt: 1.0 / 24000, os: 8, fs: 3000
+        )
+    }
+
     // MARK: - TwinRegistry: id format, uniqueness, restore path
 
     func testOpenMintsPrefixedSequentialIds() {
@@ -358,6 +382,215 @@ final class TwinRegistryTests: XCTestCase {
         XCTAssertNil(twin.alarms.get(id))
     }
 
+    // MARK: - TwinState: bank (spec 8 mouth)
+
+    func testBankOpenMintsWIdAndRebuildsK160() throws {
+        let twin = TwinState()
+        let id = twin.nextId(prefix: "w")
+        try twin.apply(.bankOpen(id: id, name: "mouth", spec: .reference))
+        XCTAssertEqual(id, "w00000001")
+
+        let entry = twin.banks.get(id)
+        XCTAssertNotNil(entry)
+        XCTAssertEqual(entry?.bank.K, 160)
+        XCTAssertEqual(twin.totalOpen, 1)
+    }
+
+    func testBankOpenRejectsBadSpec() {
+        let twin = TwinState()
+        let id = twin.nextId(prefix: "w")
+        var badSpec = WaveBank.Spec.reference
+        badSpec = WaveBank.Spec(samples: badSpec.samples, sampleRate: badSpec.sampleRate,
+                                 f0: badSpec.f0, harmonics: 0, gaborCenters: badSpec.gaborCenters,
+                                 gaborFreqs: badSpec.gaborFreqs, gaborSigmaFrac: badSpec.gaborSigmaFrac)
+        XCTAssertThrowsError(try twin.apply(.bankOpen(id: id, name: "mouth", spec: badSpec))) { error in
+            guard case TwinState.TwinError.badValue = error else {
+                XCTFail("expected badValue, got \(error)"); return
+            }
+        }
+        XCTAssertNil(twin.banks.get(id))
+    }
+
+    func testCloseBankByPrefix() throws {
+        let twin = TwinState()
+        let id = twin.nextId(prefix: "w")
+        try twin.apply(.bankOpen(id: id, name: "mouth", spec: .reference))
+        XCTAssertEqual(twin.banks.openCount, 1)
+
+        try twin.apply(.close(id: id))
+        XCTAssertNil(twin.banks.get(id))
+        XCTAssertEqual(twin.banks.openCount, 0)
+
+        XCTAssertThrowsError(try twin.apply(.close(id: id))) { error in
+            guard case TwinState.TwinError.notFound(id) = error else {
+                XCTFail("expected notFound, got \(error)"); return
+            }
+        }
+    }
+
+    func testExportRestoreRoundTripsBank() throws {
+        let twin = TwinState()
+        let id = twin.nextId(prefix: "w")
+        try twin.apply(.bankOpen(id: id, name: "mouth", spec: .reference))
+
+        let snap = twin.export()
+        XCTAssertEqual(snap.counters["w"], 1)
+
+        let fresh = TwinState()
+        try fresh.restore(snap)
+
+        XCTAssertEqual(fresh.export(), snap)
+        XCTAssertEqual(fresh.banks.counter, 1)
+        XCTAssertNotNil(fresh.banks.get(id))
+
+        let probe = WaveBank.referenceProbe(spec: .reference)
+        let residualOld = "\(twin.banks.get(id)!.bank.fit(probe)!.residual)"
+        let residualNew = "\(fresh.banks.get(id)!.bank.fit(probe)!.residual)"
+        XCTAssertEqual(residualOld, residualNew)
+    }
+
+    // MARK: - TwinState: view (derived-view sets, spec line 4)
+
+    /// The loader asserts M == 129*54 (contract ruling (c)) — a real npz
+    /// fixture is too heavy for a registry-mechanics test, so this injects
+    /// a stub loader via `TwinState.apply`'s `viewLoader:` parameter (same
+    /// injection point `AlarmFixture`-backed tests would use), never
+    /// touching `CortexFixture.load` at all. See `stubCortexFixture`'s doc
+    /// comment for why this is the simplest option that keeps `load`'s own
+    /// asserts intact.
+    func testViewLoadMintsVIdViaInjectedLoader() throws {
+        let twin = TwinState()
+        let stub = stubCortexFixture(path: "/fake/cortex_v4_world.npz", sha256: "abc123")
+        let id = twin.nextId(prefix: "v")
+        try twin.apply(.viewLoad(id: id, path: "/fake/cortex_v4_world.npz", sha256: "abc123"),
+                       viewLoader: { _, _ in stub })
+
+        XCTAssertEqual(id, "v00000001")
+        let set = twin.views.get(id)
+        XCTAssertNotNil(set)
+        XCTAssertEqual(set?.ref.path, "/fake/cortex_v4_world.npz")
+        XCTAssertEqual(set?.ref.sha256, "abc123")
+        XCTAssertEqual(set?.views.fixture.candidates, 129)
+        XCTAssertEqual(twin.totalOpen, 1)
+    }
+
+    func testViewLoadWithWrongLoaderErrorThrowsIO() throws {
+        let twin = TwinState()
+        let id = twin.nextId(prefix: "v")
+        struct Boom: Error {}
+        XCTAssertThrowsError(
+            try twin.apply(.viewLoad(id: id, path: "/x.npz", sha256: "abc"), viewLoader: { _, _ in throw Boom() })
+        ) { error in
+            guard case TwinState.TwinError.io = error else {
+                XCTFail("expected io, got \(error)"); return
+            }
+        }
+        XCTAssertNil(twin.views.get(id))
+    }
+
+    func testCloseViewByPrefix() throws {
+        let twin = TwinState()
+        let stub = stubCortexFixture()
+        let id = twin.nextId(prefix: "v")
+        try twin.apply(.viewLoad(id: id, path: "synthetic", sha256: "deadbeef"), viewLoader: { _, _ in stub })
+        XCTAssertEqual(twin.views.openCount, 1)
+
+        try twin.apply(.close(id: id))
+        XCTAssertNil(twin.views.get(id))
+        XCTAssertEqual(twin.views.openCount, 0)
+
+        XCTAssertThrowsError(try twin.apply(.close(id: id))) { error in
+            guard case TwinState.TwinError.notFound(id) = error else {
+                XCTFail("expected notFound, got \(error)"); return
+            }
+        }
+    }
+
+    func testExportRestoreRoundTripsView() throws {
+        let twin = TwinState()
+        let stub = stubCortexFixture(path: "synthetic.npz", sha256: "cafef00d")
+        let id = twin.nextId(prefix: "v")
+        try twin.apply(.viewLoad(id: id, path: "synthetic.npz", sha256: "cafef00d"), viewLoader: { _, _ in stub })
+
+        let snap = twin.export()
+        XCTAssertEqual(snap.counters["v"], 1)
+        XCTAssertEqual(snap.views[id], TwinState.ViewRef(path: "synthetic.npz", sha256: "cafef00d"))
+
+        let fresh = TwinState()
+        try fresh.restore(snap, viewLoader: { _, _ in stub })
+
+        XCTAssertEqual(fresh.export(), snap)
+        XCTAssertEqual(fresh.views.counter, 1)
+        XCTAssertNotNil(fresh.views.get(id))
+        XCTAssertEqual(fresh.views.get(id)?.ref, TwinState.ViewRef(path: "synthetic.npz", sha256: "cafef00d"))
+    }
+
+    // MARK: - TwinState: kernel (per-path kernel pairs, gates K3/K4)
+
+    /// A minimal `KernelPair` for kernel-registry mechanics tests — the
+    /// real `KernelPair.load` (file + sha check) is exercised for real in
+    /// TwinKernelCommandTests's in-repo-fixture tests; this only needs a
+    /// valid pair to hand back from the injected `kernelLoader`.
+    private func stubKernelPair(fs: Double = 3000, window: Int = 4, earA: Int = 170, earB: Int = 236) -> KernelPair {
+        try! KernelPair(kA: [1, 0.5, 0.25, 0.1], kB: [0.9, 0.4, 0.2, 0.05],
+                         meta: .init(fs: fs, window: window, earA: earA, earB: earB))
+    }
+
+    func testExportRestoreRoundTripsKernelCounter() throws {
+        let twin = TwinState()
+        let pair = stubKernelPair()
+        let id = twin.nextId(prefix: "k")
+        try twin.apply(
+            .kernelLoad(id: id, path: "synthetic.json", sha256: "cafef00d",
+                        tauA: 0.18227148035108542, tauB: 0.18382585465904366, sigmaSource: 0.02, declaredWarmup: nil),
+            kernelLoader: { _ in pair }
+        )
+
+        let snap = twin.export()
+        XCTAssertEqual(snap.counters["k"], 1)
+        XCTAssertEqual(
+            snap.kernels[id],
+            TwinState.KernelRef(path: "synthetic.json", sha256: "cafef00d",
+                                 tauA: 0.18227148035108542, tauB: 0.18382585465904366, sigmaSource: 0.02, declaredWarmup: nil)
+        )
+
+        let fresh = TwinState()
+        try fresh.restore(snap, kernelLoader: { _ in pair })
+
+        XCTAssertEqual(fresh.export(), snap)
+        XCTAssertEqual(fresh.kernels.counter, 1, "restore keeps the 'k' counter")
+        XCTAssertNotNil(fresh.kernels.get(id))
+        XCTAssertEqual(fresh.kernels.get(id)?.ref, snap.kernels[id])
+    }
+
+    func testKernelLoadWithWrongLoaderErrorThrowsIO() throws {
+        let twin = TwinState()
+        let id = twin.nextId(prefix: "k")
+        struct Boom: Error {}
+        XCTAssertThrowsError(
+            try twin.apply(.kernelLoad(id: id, path: "/x.json", sha256: "abc", tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: nil),
+                            kernelLoader: { _ in throw Boom() })
+        ) { error in
+            guard case TwinState.TwinError.io = error else {
+                XCTFail("expected io, got \(error)"); return
+            }
+        }
+        XCTAssertNil(twin.kernels.get(id))
+    }
+
+    func testCloseKernelByPrefix() throws {
+        let twin = TwinState()
+        let pair = stubKernelPair()
+        let id = twin.nextId(prefix: "k")
+        try twin.apply(.kernelLoad(id: id, path: "synthetic.json", sha256: "deadbeef", tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: nil),
+                       kernelLoader: { _ in pair })
+        XCTAssertEqual(twin.kernels.openCount, 1)
+
+        try twin.apply(.close(id: id))
+        XCTAssertNil(twin.kernels.get(id))
+        XCTAssertEqual(twin.kernels.openCount, 0)
+    }
+
     // MARK: - close(): prefix routing, unknown ids
 
     func testCloseUnknownIdThrowsNotFound() {
@@ -491,6 +724,135 @@ final class TwinRegistryTests: XCTestCase {
         // the rest of the state restores normally — one bad alarm entry
         // never refuses the whole load.
         XCTAssertNotNil(fresh.streams.get(streamId))
+    }
+}
+
+// MARK: - Hook (docs/contracts/HOOK_GATES_FROZEN.md, twin spec line 6)
+extension TwinRegistryTests {
+    private func loadHookSealedOrSkip() throws -> AlarmFixture {
+        guard let path = AlarmFixture.envPath else {
+            throw XCTSkip("DAGDB_W2_FIXTURE not set — sealed gate skipped")
+        }
+        return try AlarmFixture.load(path: path, expectedSHA256: AlarmFixture.sealedSHA256)
+    }
+
+    func testHookOpenStepAndBindingRules() throws {
+        let (path, sha) = try writeSyntheticAlarmFixture()
+        let twin = TwinState()
+        let alarmId = twin.nextId(prefix: "a")
+        try twin.apply(.alarmLoad(id: alarmId, path: path, sha256: sha))
+
+        // Unbound hook: HOOK STEP works directly. (5 records + delta 3 = 8 frames.)
+        let unboundId = twin.nextId(prefix: "h")
+        let unboundParams = AttentionHook.Params(alarmId: alarmId, layoutId: nil, budget: 100_000,
+                                                   delta: 3, policy: .allocator, clockId: nil)
+        try twin.apply(.hookOpen(id: unboundId, params: unboundParams))
+        try twin.apply(.hookStep(id: unboundId, count: 8))
+        XCTAssertTrue(twin.hooks.get(unboundId)!.hook.done)
+
+        // Bound hook: HOOK STEP refuses with "bound to clock".
+        let clockId = twin.nextId(prefix: "c")
+        try twin.apply(.clockOpen(id: clockId))
+        let boundId = twin.nextId(prefix: "h")
+        let boundParams = AttentionHook.Params(alarmId: alarmId, layoutId: nil, budget: 100_000,
+                                                 delta: 3, policy: .allocator, clockId: clockId)
+        try twin.apply(.hookOpen(id: boundId, params: boundParams))
+        XCTAssertEqual(twin.clocks.get(clockId)?.hookIds, [boundId])
+
+        XCTAssertThrowsError(try twin.apply(.hookStep(id: boundId, count: 1))) { error in
+            guard case TwinState.TwinError.badValue(let msg) = error else {
+                XCTFail("expected badValue, got \(error)"); return
+            }
+            XCTAssertTrue(msg.contains("bound to clock"), msg)
+            XCTAssertTrue(msg.contains(clockId), msg)
+        }
+
+        // CLOCK ADVANCE 8 steps the bound hook to done.
+        try twin.apply(.clockAdvance(id: clockId, count: 8, value: 0))
+        XCTAssertTrue(twin.hooks.get(boundId)!.hook.done)
+
+        // CLOCK CLOSE cascades to the bound hook, like gears.
+        try twin.apply(.close(id: clockId))
+        XCTAssertNil(twin.clocks.get(clockId))
+        XCTAssertNil(twin.hooks.get(boundId))
+
+        // Closing the alarm set while the unbound hook is still live refuses.
+        XCTAssertThrowsError(try twin.apply(.close(id: alarmId))) { error in
+            guard case TwinState.TwinError.badValue(let msg) = error else {
+                XCTFail("expected badValue, got \(error)"); return
+            }
+            XCTAssertTrue(msg.contains(unboundId), msg)
+            XCTAssertTrue(msg.contains(alarmId), msg)
+        }
+
+        // After closing the hook, closing the alarm set succeeds.
+        try twin.apply(.close(id: unboundId))
+        XCTAssertNoThrow(try twin.apply(.close(id: alarmId)))
+    }
+
+    func testHookSnapshotRoundTripRebuildsLedger() throws {
+        let (path, sha) = try writeSyntheticAlarmFixture()
+        let twin = TwinState()
+        let alarmId = twin.nextId(prefix: "a")
+        try twin.apply(.alarmLoad(id: alarmId, path: path, sha256: sha))
+
+        let hookId = twin.nextId(prefix: "h")
+        let params = AttentionHook.Params(alarmId: alarmId, layoutId: nil, budget: 100_000,
+                                           delta: 3, policy: .allocator, clockId: nil)
+        try twin.apply(.hookOpen(id: hookId, params: params))
+        try twin.apply(.hookStep(id: hookId, count: 5))
+
+        let snap = twin.export()
+        XCTAssertEqual(snap.hooks[hookId], TwinState.HookRef(params: params, t: 5))
+
+        let fresh = TwinState()
+        try fresh.restore(snap)
+
+        XCTAssertEqual(fresh.hooks.get(hookId)?.hook.result, twin.hooks.get(hookId)?.hook.result)
+        XCTAssertEqual(fresh.hooks.get(hookId)?.hook.ledger, twin.hooks.get(hookId)?.hook.ledger)
+        XCTAssertEqual(fresh.hooks.get(hookId)?.hook.t, 5)
+        XCTAssertEqual(fresh.export(), snap)
+    }
+
+    /// H4: "H1 is asserted both ways at one grid point" — bound (via
+    /// CLOCK ADVANCE) and unbound (via HOOK STEP) hooks over the sealed
+    /// fixture at the richest point must reach identical results and
+    /// ledgers.
+    func testH4BothWaysAtRichestPoint() throws {
+        let fixture = try loadHookSealedOrSkip()
+        XCTAssertEqual(fixture.records.count, 200, "sanity: the sealed fixture")
+        let path = AlarmFixture.envPath!
+        let budget = SealedCourt.budgetGrid[0].budget
+
+        let twin = TwinState()
+        let alarmId = twin.nextId(prefix: "a")
+        try twin.apply(.alarmLoad(id: alarmId, path: path, sha256: AlarmFixture.sealedSHA256))
+
+        // Unbound: HOOK STEP 203 directly.
+        let unboundId = twin.nextId(prefix: "h")
+        let unboundParams = AttentionHook.Params(alarmId: alarmId, layoutId: nil, budget: budget,
+                                                   delta: SealedCourt.delta, policy: .allocator, clockId: nil)
+        try twin.apply(.hookOpen(id: unboundId, params: unboundParams))
+        try twin.apply(.hookStep(id: unboundId, count: 200 + SealedCourt.delta))
+
+        // Bound: 203 CLOCK ADVANCE ticks.
+        let clockId = twin.nextId(prefix: "c")
+        try twin.apply(.clockOpen(id: clockId))
+        let boundId = twin.nextId(prefix: "h")
+        let boundParams = AttentionHook.Params(alarmId: alarmId, layoutId: nil, budget: budget,
+                                                 delta: SealedCourt.delta, policy: .allocator, clockId: clockId)
+        try twin.apply(.hookOpen(id: boundId, params: boundParams))
+        try twin.apply(.clockAdvance(id: clockId, count: UInt64(200 + SealedCourt.delta), value: 0))
+
+        let unbound = twin.hooks.get(unboundId)!.hook
+        let bound = twin.hooks.get(boundId)!.hook
+        XCTAssertTrue(unbound.done)
+        XCTAssertTrue(bound.done)
+        XCTAssertEqual(unbound.result, bound.result)
+        XCTAssertEqual(unbound.ledger, bound.ledger)
+
+        let expected = AllocatorCourt.run(records: fixture.records, budget: budget)[.allocator]!
+        XCTAssertEqual(unbound.result, expected)
     }
 }
 

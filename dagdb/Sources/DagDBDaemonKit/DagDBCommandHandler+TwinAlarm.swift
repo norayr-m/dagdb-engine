@@ -208,13 +208,18 @@ extension DagDBCommandHandler {
     /// `TwinState.TwinError` renders via its own `description`; kept as a
     /// file-local twin (see DagDBCommandHandler+TwinStreams.swift's
     /// `twinErrorLine`) since `private` helpers in a sibling extension file
-    /// aren't visible here.
+    /// aren't visible here. `ALARM CLOSE` on an alarm set a live hook
+    /// depends on throws `.badValue("hook <h> depends on <id>")` (gate H5) —
+    /// mapped to `ERROR forbidden:`, not `bad_value`, per the hook grammar's
+    /// refusal line.
     private func twinStateErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
             case .notFound(let s): return "ERROR not_found: \(s)"
             case .badId(let s): return "ERROR bad_value: \(s)"
-            case .badValue(let s): return "ERROR bad_value: \(s)"
+            case .badValue(let s):
+                if s.contains("depends on") { return "ERROR forbidden: \(s)" }
+                return "ERROR bad_value: \(s)"
             case .schema(let s): return "ERROR schema: \(s)"
             case .io(let s): return "ERROR io: \(s)"
             }

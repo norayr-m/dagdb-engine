@@ -180,6 +180,33 @@ public enum DagDBSnapshot {
                 seen.insert(src)
             }
         }
+
+        // Rank bound (R4, docs/contracts/RANK_BOUND_GATES_FROZEN.md).
+        // A snapshot written under a large `maxRank` and restored under a
+        // small one carries ranks at or above the running bound. The rank
+        // dispatch now covers them (`DagDBEngine.effectiveRankCount`), so
+        // this is not a refusal — the load path still accepts the file —
+        // but the state has to be catchable WITHOUT ticking, so VALIDATE
+        // names it: how many nodes, the first of them, and how far the
+        // ranks actually run. Reported last, so a genuine edge violation
+        // still surfaces first.
+        var overCount = 0
+        var firstOver = -1
+        var firstOverRank: UInt64 = 0
+        var highest: UInt64 = 0
+        for i in 0..<nodeCount {
+            let r = rank[i]
+            if r > highest { highest = r }
+            if r >= UInt64(engine.maxRank) {
+                overCount += 1
+                if firstOver < 0 { firstOver = i; firstOverRank = r }
+            }
+        }
+        if overCount > 0 {
+            return "rank bound: \(overCount) node(s) at or above maxRank " +
+                   "\(engine.maxRank) (first node \(firstOver) rank " +
+                   "\(firstOverRank), highest rank \(highest))"
+        }
         return nil
     }
 

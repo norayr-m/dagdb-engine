@@ -126,6 +126,120 @@ final class DagDBWALTwinTests: XCTestCase {
         XCTAssertNil(TwinWALCodec.decode(opcode: 0x99, payload: Data()))
     }
 
+    // MARK: - bankOpen codec round trip
+
+    func testBankOpenCodecRoundTrip() throws {
+        let referenceOp = TwinOp.bankOpen(id: "w00000001", name: "mouth", spec: .reference)
+        let (refOpcode, refPayload) = TwinWALCodec.encode(referenceOp)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: refOpcode.rawValue, payload: refPayload), referenceOp)
+
+        let tinySpec = WaveBank.Spec(samples: 64, sampleRate: 3000, f0: 60, harmonics: 3,
+                                      gaborCenters: 0, gaborFreqs: 0, gaborSigmaFrac: 0.02)
+        let tinyOp = TwinOp.bankOpen(id: "w00000002", name: "tiny", spec: tinySpec)
+        let (tinyOpcode, tinyPayload) = TwinWALCodec.encode(tinyOp)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: tinyOpcode.rawValue, payload: tinyPayload), tinyOp)
+    }
+
+    // MARK: - viewLoad codec round trip
+
+    /// Verbatim shape from TwinRegistryTests.stubCortexFixture — see its
+    /// doc comment for why the memberwise init (reachable via `@testable`)
+    /// is used instead of a real npz-backed `CortexFixture.load` here.
+    private func stubCortexFixture(path: String = "synthetic", sha256: String = "deadbeef") -> CortexFixture {
+        CortexFixture(
+            path: path, sha256: sha256,
+            stations: 8, samples: 64, candidates: 129,
+            xTrain: [], yTrain: [], xTest: [], yTest: [],
+            tau: [], tauRaw: [],
+            scan: Array(0..<8), cand: Array(0..<129),
+            speed: 1500, dt: 1.0 / 24000, os: 8, fs: 3000
+        )
+    }
+
+    func testViewLoadCodecRoundTrip() throws {
+        let op = TwinOp.viewLoad(id: "v00000001", path: "/data/cortex_v4_world.npz",
+                                   sha256: String(repeating: "a", count: 64))
+        let (opcode, payload) = TwinWALCodec.encode(op)
+        XCTAssertEqual(opcode, .twinViewLoad)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
+    }
+
+    /// `DagDBWAL.replay(twin:)` applies every twin op with the DEFAULT
+    /// loader (no per-op injection point — see `.alarmLoad`'s replay path,
+    /// which always re-reads the real fixture file), so a `.viewLoad`
+    /// record can't be replayed through the binary WAL without a real npz.
+    /// This exercises the same decode-then-apply step replay performs,
+    /// but with the loader `TwinState.apply` exposes for exactly this
+    /// case: a stub that records the (path, sha) it was called with.
+    func testViewLoadReplayDecodeThenApplyWithStubLoader() throws {
+        let path = tmpDir! + "wal_view_replay.log"
+        let eng = try makeEngine(side: 8)
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        let op = TwinOp.viewLoad(id: "v00000001", path: "/fake/cortex_v4_world.npz", sha256: "deadbeef")
+        _ = try appender.twin(op)
+
+        // Confirm the record actually landed on disk (appender.twin wrote
+        // it), then decode the SAME encoding replay would walk and apply
+        // into a fresh TwinState via the injectable viewLoader, recording
+        // what it was called with.
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        XCTAssertGreaterThan(data.count, DagDBWAL.headerSize, "sanity: the record was appended")
+        let (opcode, payload) = TwinWALCodec.encode(op)
+        let decoded = TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload)
+        XCTAssertEqual(decoded, op)
+
+        var recordedPath: String?
+        var recordedSha: String?
+        let stub = stubCortexFixture(path: "/fake/cortex_v4_world.npz", sha256: "deadbeef")
+        let fresh = TwinState()
+        try fresh.apply(decoded!, viewLoader: { p, s in
+            recordedPath = p
+            recordedSha = s
+            return stub
+        })
+
+        XCTAssertEqual(recordedPath, "/fake/cortex_v4_world.npz")
+        XCTAssertEqual(recordedSha, "deadbeef")
+        XCTAssertNotNil(fresh.views.get("v00000001"))
+        XCTAssertEqual(fresh.views.get("v00000001")?.ref.path, "/fake/cortex_v4_world.npz")
+    }
+
+    // MARK: - kernelLoad codec round trip (gates K3/K4)
+
+    func testKernelLoadCodecRoundTripWithOptionals() throws {
+        let op = TwinOp.kernelLoad(
+            id: "k00000001", path: "/data/w1_kernels.json",
+            sha256: String(repeating: "a", count: 64),
+            tauA: 0.18227148035108542, tauB: 0.18382585465904366,
+            sigmaSource: 0.02, declaredWarmup: 185
+        )
+        let (opcode, payload) = TwinWALCodec.encode(op)
+        XCTAssertEqual(opcode, .twinKernelLoad)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
+    }
+
+    func testKernelLoadCodecRoundTripWithoutOptionals() throws {
+        let op = TwinOp.kernelLoad(
+            id: "k00000002", path: "/data/w1_kernels.json",
+            sha256: String(repeating: "b", count: 64),
+            tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: nil
+        )
+        let (opcode, payload) = TwinWALCodec.encode(op)
+        XCTAssertEqual(opcode, .twinKernelLoad)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
+    }
+
+    func testKernelLoadCodecRoundTripWithSomeOptionals() throws {
+        // A mix: declaredWarmup only, no TAU/SIGMA — the "WARMUP n given,
+        // no TAU/SIGMA" load shape (K4: derived=0).
+        let op = TwinOp.kernelLoad(
+            id: "k00000003", path: "/x.json", sha256: "deadbeef",
+            tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: 42
+        )
+        let (opcode, payload) = TwinWALCodec.encode(op)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
+    }
+
     // MARK: - replay(twin:) applies into fresh state
 
     func testTwinOpsReplayIntoFreshState() throws {
@@ -173,7 +287,44 @@ final class DagDBWALTwinTests: XCTestCase {
         XCTAssertEqual(actual.export(), expected.export())
     }
 
+    // MARK: - bankOpen replays into fresh state
+
+    func testBankOpenReplaysIntoFreshState() throws {
+        let path = tmpDir! + "wal_twin_bankopen_replay.log"
+        let eng = try makeEngine(side: 8)
+
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        _ = try appender.twin(.bankOpen(id: "w00000001", name: "mouth", spec: .reference))
+
+        let engR = try makeEngine(side: 8)
+        let actual = TwinState()
+        let r = try DagDBWAL.replay(engine: engR, nodeCount: engR.nodeCount, path: path, twin: actual)
+
+        XCTAssertEqual(r.recordsApplied, 1)
+        let entry = actual.banks.get("w00000001")
+        XCTAssertEqual(entry?.bank.K, 160)
+
+        let directBank = try WaveBank(spec: .reference)
+        let probe = WaveBank.referenceProbe(spec: .reference)
+        let replayedResidual = "\(entry!.bank.fit(probe)!.residual)"
+        let directResidual = "\(directBank.fit(probe)!.residual)"
+        XCTAssertEqual(replayedResidual, directResidual)
+    }
+
     // MARK: - twin: nil skips the twin opcode range entirely
+
+    func testBankOpenSkippedWithoutTwinParam() throws {
+        let path = tmpDir! + "wal_twin_bankopen_skip.log"
+        let eng = try makeEngine(side: 8)
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        _ = try appender.twin(.bankOpen(id: "w00000001", name: "mouth", spec: .reference))
+
+        let engR = try makeEngine(side: 8)
+        let r = try DagDBWAL.replay(engine: engR, nodeCount: engR.nodeCount, path: path)
+
+        XCTAssertEqual(r.recordsApplied, 0, "bankOpen is not applied without a TwinState")
+        XCTAssertNil(r.truncatedAtOffset)
+    }
 
     func testTwinOpsSkippedWithoutTwinParam() throws {
         let path = tmpDir! + "wal_twin_skip.log"
@@ -246,6 +397,70 @@ final class DagDBWALTwinTests: XCTestCase {
         XCTAssertEqual(r.recordsAfterCheckpoint, 1, "only the post-checkpoint streamOpen replays")
         XCTAssertNil(twin.streams.get("s00000001"), "pre-checkpoint op is already in the snapshot — must not replay")
         XCTAssertNotNil(twin.streams.get("s00000002"), "post-checkpoint op must replay")
+    }
+
+    // MARK: - hookOpen/hookStep codec round trip (HOOK_GATES_FROZEN.md, H3)
+
+    func testHookOpsCodecRoundTrip() throws {
+        let withBoth = TwinOp.hookOpen(
+            id: "h00000001",
+            params: AttentionHook.Params(alarmId: "a00000001", layoutId: "b00000001", budget: 16164.352484758914,
+                                          delta: 3, policy: .allocator, clockId: "c00000001"))
+        let (opWith, payloadWith) = TwinWALCodec.encode(withBoth)
+        XCTAssertEqual(opWith, .twinHookOpen)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: opWith.rawValue, payload: payloadWith), withBoth)
+
+        let withoutEither = TwinOp.hookOpen(
+            id: "h00000002",
+            params: AttentionHook.Params(alarmId: "a00000001", layoutId: nil, budget: 3128.126645687496,
+                                          delta: 3, policy: .uniform, clockId: nil))
+        let (opWithout, payloadWithout) = TwinWALCodec.encode(withoutEither)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: opWithout.rawValue, payload: payloadWithout), withoutEither)
+
+        // Every policy byte round trips.
+        for policy in AttentionHook.Policy.allCases {
+            let op = TwinOp.hookOpen(
+                id: "h00000003",
+                params: AttentionHook.Params(alarmId: "a00000001", layoutId: nil, budget: 100, delta: 3, policy: policy))
+            let (opcode, payload) = TwinWALCodec.encode(op)
+            XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op, "policy \(policy)")
+        }
+
+        let step = TwinOp.hookStep(id: "h00000001", count: 203)
+        let (stepOpcode, stepPayload) = TwinWALCodec.encode(step)
+        XCTAssertEqual(stepOpcode, .twinHookStep)
+        XCTAssertEqual(TwinWALCodec.decode(opcode: stepOpcode.rawValue, payload: stepPayload), step)
+    }
+
+    // MARK: - hookOpen/hookStep replay into a fresh state
+
+    func testHookOpsReplayIntoFreshState() throws {
+        let path = tmpDir! + "wal_twin_hook_replay.log"
+        let eng = try makeEngine(side: 8)
+        let (alarmPath, alarmSha) = try writeSyntheticAlarmFixture()
+
+        let hookParams = AttentionHook.Params(alarmId: "a00000001", layoutId: nil, budget: 100_000,
+                                               delta: 3, policy: .allocator, clockId: nil)
+        let ops: [TwinOp] = [
+            .alarmLoad(id: "a00000001", path: alarmPath, sha256: alarmSha),
+            .hookOpen(id: "h00000001", params: hookParams),
+            .hookStep(id: "h00000001", count: 8),
+        ]
+
+        let expected = TwinState()
+        for op in ops { try expected.apply(op) }
+
+        let appender = try DagDBWAL.Appender(path: path, nodeCount: eng.nodeCount)
+        for op in ops { _ = try appender.twin(op) }
+
+        let engR = try makeEngine(side: 8)
+        let actual = TwinState()
+        let r = try DagDBWAL.replay(engine: engR, nodeCount: engR.nodeCount, path: path, twin: actual)
+
+        XCTAssertEqual(r.recordsApplied, ops.count)
+        XCTAssertTrue(actual.hooks.get("h00000001")!.hook.done)
+        XCTAssertEqual(actual.hooks.get("h00000001")!.hook.result, expected.hooks.get("h00000001")!.hook.result)
+        XCTAssertEqual(actual.export(), expected.export())
     }
 
     // MARK: - truncated tail on a twin record is dropped, not applied

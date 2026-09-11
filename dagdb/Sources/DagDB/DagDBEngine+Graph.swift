@@ -60,8 +60,14 @@ extension DagDBEngine {
             colorOrder.swapAt(i, j)
         }
 
-        // Leaves-up: iterate rank from max down to 0
-        for rankLevel in stride(from: maxRank - 1, through: 0, by: -1) {
+        // Leaves-up: iterate rank from max down to 0. Bounded by
+        // `effectiveRankCount`, not by `maxRank` — the third rank-mode loop
+        // in the engine, carrying the same defect as `tick`/`tickLegacy`
+        // (docs/contracts/RANK_BOUND_GATES_FROZEN.md). Fixed by the same
+        // mechanism; not separately gated, since nothing in the tree calls
+        // this path.
+        ensureRankTopology()
+        for rankLevel in stride(from: effectiveRankCount - 1, through: 0, by: -1) {
             // Snapshot truth states before this rank's micro-time
             let prevSnapshot = readTruthStates()
 

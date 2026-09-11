@@ -107,10 +107,16 @@ extension DagDBCommandHandler {
         case .clockClose(let id):
             guard let entry = twin.clocks.get(id) else { return "ERROR not_found: \(id)" }
             let gearsClosed = entry.gearIds.count
+            // Hooks bound to this clock cascade-close too (H4) — counted
+            // before `.apply` closes them, like `gearsClosed` above.
+            let hooksClosed = entry.hookIds.count
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinClockErrorLine(error) }
-            return twinResponse("CLOCK CLOSE", sessionId: sessionId, "id=\(id) gears_closed=\(gearsClosed)")
+            return twinResponse(
+                "CLOCK CLOSE", sessionId: sessionId,
+                "id=\(id) gears_closed=\(gearsClosed) hooks_closed=\(hooksClosed)"
+            )
 
         case .clockList:
             let ids = twin.clocks.ids.sorted()

@@ -23,7 +23,7 @@ def test_first_event_has_no_parents():
     ctx = IngestContext()
     ev = {
         "ts": "2026-04-20T10:00:00+00:00",
-        "agent": "hari",
+        "agent": "alpha",
         "branch": "main",
         "event": "response",
         "summary": "first event ever",
@@ -100,10 +100,10 @@ def test_dialogue_turn_separate_threads_dont_cross():
 
 def test_cites_drop_capped_at_4():
     body_with_5_drops = " ".join(
-        f"2026-04-20_hari-to-{x}_topic_HARI_v1.md" for x in ["a", "b", "c", "d", "e"]
+        f"2026-04-20_alpha-to-{x}_topic_ALPHA_v1.md" for x in ["a", "b", "c", "d", "e"]
     )
     ev = {
-        "ts": "t1", "agent": "hari", "event": "response",
+        "ts": "t1", "agent": "alpha", "event": "response",
         "summary": body_with_5_drops,
     }
     rec = event_to_node(ev, IngestContext())
@@ -119,11 +119,11 @@ def test_cites_drop_edges_added_when_drop_exists():
     ctx = IngestContext(
         next_counter=1,
         last_event_by_agent={},
-        drop_node_by_filename={"2026-04-20_hari-to-dag_x_HARI_v1.md": 0},
+        drop_node_by_filename={"2026-04-20_alpha-to-beta_x_ALPHA_v1.md": 0},
     )
     ev = {
         "ts": "t1", "agent": "fold", "event": "response",
-        "summary": "saw 2026-04-20_hari-to-dag_x_HARI_v1.md, responding now",
+        "summary": "saw 2026-04-20_alpha-to-beta_x_ALPHA_v1.md, responding now",
     }
     rec = event_to_node(ev, ctx)
     assert 0 in rec.neighbors, "the cited drop node should appear as a parent"
@@ -162,7 +162,7 @@ def test_rank_is_strictly_monotonic_decreasing():
 
 
 def test_unknown_event_type_raises():
-    ev = {"ts": "t1", "agent": "hari", "event": "totally_made_up", "summary": ""}
+    ev = {"ts": "t1", "agent": "alpha", "event": "totally_made_up", "summary": ""}
     try:
         event_to_node(ev, IngestContext())
     except ValueError as e:

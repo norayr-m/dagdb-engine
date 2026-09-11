@@ -152,13 +152,9 @@ extension DagDBCommandHandler {
     }
 
     // MARK: - shm readers for f64 / u32 (BUDGET OPEN's cost table + minTier
-    // vector; XCONV CHECK reuses the shared f32 `readFloats` from +Twin.swift).
-
-    private func readDoubles(count: Int, at byteOffset: Int) -> [Double]? {
-        guard count >= 0, byteOffset >= 0, byteOffset + count * 8 <= shmCapacityBytes else { return nil }
-        let ptr = shmBase.advanced(by: byteOffset).bindMemory(to: Double.self, capacity: max(1, count))
-        return (0..<count).map { ptr[$0] }
-    }
+    // vector; XCONV CHECK reuses the shared f32 `readFloats` from +Twin.swift;
+    // `readDoubles` itself moved to +Twin.swift 2026-09-10 (K3's XCONV SEALED
+    // needs it too) — kept as a shared, non-private helper there now).
 
     private func readU32s(count: Int, at byteOffset: Int) -> [UInt32]? {
         guard count >= 0, byteOffset >= 0, byteOffset + count * 4 <= shmCapacityBytes else { return nil }
@@ -171,13 +167,18 @@ extension DagDBCommandHandler {
     /// +TwinStreams.swift's private `twinErrorLine` — file-scoped `private`
     /// helpers don't cross extension files, and T8.2/T8.4 are parallel-safe
     /// disjoint-file tasks (plan §ordering), so this stays a local copy
-    /// rather than widening another task's file.
+    /// rather than widening another task's file. `BUDGET CLOSE` on a layout
+    /// a live hook depends on throws `.badValue("hook <h> depends on
+    /// <id>")` (gate H5) — mapped to `ERROR forbidden:`, not `bad_value`,
+    /// per the hook grammar's refusal line.
     private func twinBudgetErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
             case .notFound(let s): return "ERROR not_found: \(s)"
             case .badId(let s): return "ERROR bad_value: \(s)"
-            case .badValue(let s): return "ERROR bad_value: \(s)"
+            case .badValue(let s):
+                if s.contains("depends on") { return "ERROR forbidden: \(s)" }
+                return "ERROR bad_value: \(s)"
             case .schema(let s): return "ERROR schema: \(s)"
             case .io(let s): return "ERROR io: \(s)"
             }

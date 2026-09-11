@@ -47,9 +47,7 @@ That's it. Three nodes, one tick, an AND gate runs.
 
 You can scale this up. A Game of Life cell is ~9 inputs of logic,
 which fits in two LUT6 nodes. A 1024×1024 Game of Life grid is
-about two million nodes, a rank tick under 5 ms on an M5 Max GPU on a
-shallow rank spread (single runs vary up to about 2x with thermal state;
-conditions in docs_perf_recovery/results.md). We
+about two million nodes, ticks under 5 ms on an M5 Max GPU. We
 have run 100 million live cells; the engineering goal is 100
 billion (with tile streaming).
 

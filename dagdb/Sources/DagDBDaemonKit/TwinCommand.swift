@@ -7,7 +7,10 @@
 /// Wiring is staged: T8.1 lands the grammar + parser + dispatch skeleton
 /// only. The four verb families (STREAM/HEADER/RECORD, RINGS/CLOCK/GEAR,
 /// XCONV/BUDGET, ALARM) are implemented in T8.2–T8.5; until then every case
-/// falls through to a stub reply.
+/// falls through to a stub reply. BANK (spec 8, the waveform mouth) lands
+/// in T9.
+import DagDB
+
 public enum TwinCommand: Equatable {
 
     // MARK: STREAM
@@ -62,6 +65,12 @@ public enum TwinCommand: Equatable {
     // MARK: XCONV
 
     case xconvCheck(nA: Int, nB: Int, kA: Int, kB: Int, warmup: Int)
+    // gate K3 (docs/contracts/KERNELS_GATES_FROZEN.md) — the sealed
+    // cross-convolution residual, distinct from XCONV CHECK (the patrol
+    // check, unchanged above): this is the court's frozen formula, and it
+    // is NOT the contract's finding — XCONV CHECK stays the standing cheap
+    // check.
+    case xconvSealed(id: String, n: Int, warmup: Int?)
 
     // MARK: BUDGET
 
@@ -83,8 +92,70 @@ public enum TwinCommand: Equatable {
     case alarmSuccessor(id: String, budget: Double, epsM: Double, epsS: Double, epsN: Double)
     case alarmCorrupt(id: String, idx: Int, epsM: Double, epsS: Double, epsN: Double)
 
+    // MARK: VIEW
+
+    case viewLoad(path: String, sha256: String?)
+    case viewReflex(id: String, stations: Int)
+    case viewRung(id: String, stations: Int)
+    case viewCeiling(id: String, stations: Int)
+    case viewFeatures(id: String, frame: Int, stations: Int)
+    case viewInfo(id: String)
+    case viewList
+    case viewClose(id: String)
+
+    // MARK: KERNEL (gate K3/K4 — docs/contracts/KERNELS_GATES_FROZEN.md).
+    // Per-path kernel pairs, stored BY REFERENCE (path + sha256); τA/τB/
+    // σ_source are DECLARED at LOAD (K4: never read from the kernels
+    // file), and drive the derived warmup XCONV SEALED uses by default.
+
+    case kernelLoad(path: String, sha256: String?, tauA: Double?, tauB: Double?, sigmaSource: Double?, declaredWarmup: Int?)
+    case kernelInfo(id: String)
+    case kernelList
+    case kernelClose(id: String)
+
+    // MARK: BANK
+
+    case bankOpen(name: String, spec: WaveBank.Spec?, aliased: Bool)
+    case bankGenerate(id: String, columns: Int)
+    case bankFit(id: String)
+    case bankNoise(id: String, seed: Int, count: Int)
+    case bankBench(id: String, columns: Int, reps: Int)
+    case bankInfo(id: String)
+    case bankList
+    case bankClose(id: String)
+
+    // MARK: FOLD (gate F4 — docs/contracts/FOLD_API_GATES_FROZEN.md). Pure
+    // computation over the daemon's CURRENT lanes (neighbors, edge weights,
+    // nodeValue-as-leak, rank); nothing persisted, no WAL, no registry —
+    // every FOLD verb is read-only, RUN included.
+
+    case foldRun(maxRank: Int, keepRank: Int, f1: Int, f2: Int, f3: Int, checkpoints: [Int])
+    case foldKept
+    case foldSource(which: Int)
+    case foldTier(level: String, which: Int)
+    case foldInfo
+
+    // MARK: HOOK (gate H5 — docs/contracts/HOOK_GATES_FROZEN.md). The
+    // attention hook — the sealed allocator court as a daemon-global ticked
+    // process, bound to an alarm set + budget layout (SEALED default,
+    // `layoutId == nil`) + budget B + lag delta + policy, and optionally a
+    // master clock. OPEN mints a hook with resolved defaults (delta 3,
+    // policy allocator); STEP/STATE/LEDGER/INFO/LIST/CLOSE mirror ALARM's
+    // shape. `delta`/`policy` are optional at the grammar layer (DSLParser+
+    // Twin.swift resolves DELTA/POLICY's absence to nil here, the HANDLER
+    // resolves nil to the sealed defaults) so a caller can tell "not given"
+    // from "given the sealed value explicitly" if it ever matters.
+
+    case hookOpen(alarmId: String, layoutId: String?, budget: Double, delta: Int?, policy: AttentionHook.Policy?, clockId: String?)
+    case hookStep(id: String, count: Int)
+    case hookState(id: String)
+    case hookLedger(id: String, from: Int?, count: Int?)
+    case hookInfo(id: String)
+    case hookList
+    case hookClose(id: String)
+
     /// Read-only iff the verb's second token is one of
-    /// STATE/LIST/INFO/CHECK/REPLAY/VERIFY/RECALL/ALLOCATE/FRAME/COURT/SUCCESSOR/CORRUPT
+    /// STATE/LIST/INFO/CHECK/REPLAY/VERIFY/RECALL/ALLOCATE/FRAME/COURT/SUCCESSOR/CORRUPT/LEDGER
     /// (§0.13 — twin registries are daemon-global; a reader session may only
     /// look, never mutate).
     public var isReadOnly: Bool {
@@ -95,9 +166,14 @@ public enum TwinCommand: Equatable {
              .ringsRecall, .ringsInfo, .ringsList,
              .clockState, .clockList,
              .gearState,
-             .xconvCheck,
+             .xconvCheck, .xconvSealed,
              .budgetAllocate, .budgetInfo, .budgetList,
-             .alarmInfo, .alarmList, .alarmFrame, .alarmCourt, .alarmSuccessor, .alarmCorrupt:
+             .alarmInfo, .alarmList, .alarmFrame, .alarmCourt, .alarmSuccessor, .alarmCorrupt,
+             .bankGenerate, .bankFit, .bankNoise, .bankBench, .bankInfo, .bankList,
+             .viewReflex, .viewRung, .viewCeiling, .viewFeatures, .viewInfo, .viewList,
+             .kernelInfo, .kernelList,
+             .foldRun, .foldKept, .foldSource, .foldTier, .foldInfo,
+             .hookState, .hookLedger, .hookInfo, .hookList:
             return true
 
         case .streamOpen, .streamNext, .streamClose,
@@ -106,7 +182,11 @@ public enum TwinCommand: Equatable {
              .clockOpen, .clockAdvance, .clockClose,
              .gearOpen, .gearClose,
              .budgetOpen, .budgetSealed, .budgetClose,
-             .alarmLoad, .alarmClose:
+             .alarmLoad, .alarmClose,
+             .bankOpen, .bankClose,
+             .viewLoad, .viewClose,
+             .kernelLoad, .kernelClose,
+             .hookOpen, .hookStep, .hookClose:
             return false
         }
     }
@@ -158,6 +238,8 @@ public enum TwinCommand: Equatable {
 
         case let (.xconvCheck(a1, b1, ka1, kb1, w1), .xconvCheck(a2, b2, ka2, kb2, w2)):
             return a1 == a2 && b1 == b2 && ka1 == ka2 && kb1 == kb2 && w1 == w2
+        case let (.xconvSealed(i1, n1, w1), .xconvSealed(i2, n2, w2)):
+            return i1 == i2 && n1 == n2 && w1 == w2
 
         case let (.budgetOpen(p1, t1, c1), .budgetOpen(p2, t2, c2)): return p1 == p2 && t1 == t2 && c1 == c2
         case (.budgetSealed, .budgetSealed): return true
@@ -179,6 +261,46 @@ public enum TwinCommand: Equatable {
             return i1 == i2 && b1 == b2 && m1 == m2 && s1 == s2 && n1 == n2
         case let (.alarmCorrupt(i1, x1, m1, s1, n1), .alarmCorrupt(i2, x2, m2, s2, n2)):
             return i1 == i2 && x1 == x2 && m1 == m2 && s1 == s2 && n1 == n2
+
+        case let (.viewLoad(p1, s1), .viewLoad(p2, s2)): return p1 == p2 && s1 == s2
+        case let (.viewReflex(i1, s1), .viewReflex(i2, s2)): return i1 == i2 && s1 == s2
+        case let (.viewRung(i1, s1), .viewRung(i2, s2)): return i1 == i2 && s1 == s2
+        case let (.viewCeiling(i1, s1), .viewCeiling(i2, s2)): return i1 == i2 && s1 == s2
+        case let (.viewFeatures(i1, f1, s1), .viewFeatures(i2, f2, s2)): return i1 == i2 && f1 == f2 && s1 == s2
+        case let (.viewInfo(i1), .viewInfo(i2)): return i1 == i2
+        case (.viewList, .viewList): return true
+        case let (.viewClose(i1), .viewClose(i2)): return i1 == i2
+
+        case let (.kernelLoad(p1, s1, ta1, tb1, sg1, dw1), .kernelLoad(p2, s2, ta2, tb2, sg2, dw2)):
+            return p1 == p2 && s1 == s2 && ta1 == ta2 && tb1 == tb2 && sg1 == sg2 && dw1 == dw2
+        case let (.kernelInfo(i1), .kernelInfo(i2)): return i1 == i2
+        case (.kernelList, .kernelList): return true
+        case let (.kernelClose(i1), .kernelClose(i2)): return i1 == i2
+
+        case let (.bankOpen(n1, s1, a1), .bankOpen(n2, s2, a2)): return n1 == n2 && s1 == s2 && a1 == a2
+        case let (.bankGenerate(i1, m1), .bankGenerate(i2, m2)): return i1 == i2 && m1 == m2
+        case let (.bankFit(i1), .bankFit(i2)): return i1 == i2
+        case let (.bankNoise(i1, s1, n1), .bankNoise(i2, s2, n2)): return i1 == i2 && s1 == s2 && n1 == n2
+        case let (.bankBench(i1, m1, r1), .bankBench(i2, m2, r2)): return i1 == i2 && m1 == m2 && r1 == r2
+        case let (.bankInfo(i1), .bankInfo(i2)): return i1 == i2
+        case (.bankList, .bankList): return true
+        case let (.bankClose(i1), .bankClose(i2)): return i1 == i2
+
+        case let (.foldRun(mx1, kp1, a1, b1, c1, ck1), .foldRun(mx2, kp2, a2, b2, c2, ck2)):
+            return mx1 == mx2 && kp1 == kp2 && a1 == a2 && b1 == b2 && c1 == c2 && ck1 == ck2
+        case (.foldKept, .foldKept): return true
+        case let (.foldSource(w1), .foldSource(w2)): return w1 == w2
+        case let (.foldTier(l1, w1), .foldTier(l2, w2)): return l1 == l2 && w1 == w2
+        case (.foldInfo, .foldInfo): return true
+
+        case let (.hookOpen(a1, l1, b1, d1, p1, c1), .hookOpen(a2, l2, b2, d2, p2, c2)):
+            return a1 == a2 && l1 == l2 && b1 == b2 && d1 == d2 && p1 == p2 && c1 == c2
+        case let (.hookStep(i1, n1), .hookStep(i2, n2)): return i1 == i2 && n1 == n2
+        case let (.hookState(i1), .hookState(i2)): return i1 == i2
+        case let (.hookLedger(i1, f1, c1), .hookLedger(i2, f2, c2)): return i1 == i2 && f1 == f2 && c1 == c2
+        case let (.hookInfo(i1), .hookInfo(i2)): return i1 == i2
+        case (.hookList, .hookList): return true
+        case let (.hookClose(i1), .hookClose(i2)): return i1 == i2
 
         default:
             return false

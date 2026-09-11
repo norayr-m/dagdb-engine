@@ -60,29 +60,87 @@ public final class DagDBEngine {
     private var segmentTable: [(offset: Int, count: Int)] = []
     public private(set) var rankTopologyDirty = true
 
+    // ── Rank bound correction (2026-09-10, docs/contracts/RANK_BOUND_GATES_FROZEN.md) ──
+    // `maxRank` is the CONFIGURED bound: the initial table size, what STATUS
+    // has always printed, and what the fold schedules mean by the word. It is
+    // an allocation hint, not a property of the graph — a snapshot written
+    // under a large bound and restored under a small one carries ranks above
+    // it, and those nodes used to be dropped from the buckets and skipped by
+    // the rank loop while `tickSync` computed them. The dispatch now covers
+    // every rank actually present:
+    //
+    //     effectiveRankCount = max(maxRank, highestRankPresent + 1)
+    //
+    // Nothing in Metal is sized by either number — the segment table and the
+    // rank loop are CPU-side — so the cost is a longer loop over mostly-empty
+    // segments and nothing else.
+
+    /// Rank levels the rank-mode dispatch actually covers. Equal to
+    /// `maxRank` whenever the graph fits inside the configured bound.
+    /// Refreshed by `rebuildCompaction()`.
+    public private(set) var effectiveRankCount: Int
+
+    /// Highest rank value present in `rankBuf` at the last compaction.
+    /// Refreshed by `rebuildCompaction()`.
+    public private(set) var highestRankPresent: Int
+
     /// Call after any write to rankBuf (SET RANK, bulk install, LOAD).
     /// The next tick rebuilds the compacted dispatch lists.
     public func markRankTopologyDirty() { rankTopologyDirty = true }
 
+    /// Rebuild the compacted dispatch lists if the rank topology changed,
+    /// so `effectiveRankCount` / `highestRankPresent` / the segment table
+    /// are current. Cheap (one O(N) pass) and idempotent; callers that
+    /// only want to REPORT the rank shape (STATUS) use this instead of
+    /// ticking.
+    public func ensureRankTopology() {
+        if rankTopologyDirty { rebuildCompaction() }
+    }
+
+    /// How many node slots one rank-mode tick dispatches with the current
+    /// rank topology — the sum of every (rank, colour) segment. Equals
+    /// `nodeCount` when every node's rank is covered.
+    public func rankDispatchNodeCount() -> Int {
+        ensureRankTopology()
+        return segmentTable.reduce(0) { $0 + $1.count }
+    }
+
     private func rebuildCompaction() {
         let rankPtr = rankBuf.contents().bindMemory(to: UInt64.self,
                                                     capacity: nodeCount)
+        // Highest rank actually present, so the buckets and the segment
+        // table cover the whole graph and not just the configured bound.
+        // Clamped at `nodeCount`: no valid DAG on N nodes holds a rank of
+        // N or more (the door at SET_RANK and at the bulk commit refuses
+        // those), and a corrupt buffer carrying, say, UInt64.max must not
+        // turn the table allocation into a denial of service. Anything
+        // above the clamp is left out of the dispatch and named by
+        // VALIDATE instead.
+        var highest = 0
+        for i in 0..<nodeCount {
+            let r = rankPtr[i]
+            if r > UInt64(highest) && r < UInt64(nodeCount) { highest = Int(r) }
+        }
+        highestRankPresent = highest
+        let levels = max(maxRank, min(highest + 1, max(nodeCount, 1)))
+        effectiveRankCount = levels
+
         // bucket[color][rank] = node ids (single O(N) pass)
         var buckets = Array(repeating: Array(repeating: [UInt32](),
-                                             count: maxRank),
+                                             count: levels),
                             count: HexGrid.colorCount)
         for (color, group) in grid.colorGroups.enumerated() {
             for node in group {
                 let r = rankPtr[Int(node)]
-                if r < UInt64(maxRank) {
+                if r < UInt64(levels) {
                     buckets[color][Int(r)].append(UInt32(node))
                 }
             }
         }
         var flat = [UInt32](); flat.reserveCapacity(nodeCount)
         segmentTable = Array(repeating: (0, 0),
-                             count: maxRank * HexGrid.colorCount)
-        for rank in 0..<maxRank {
+                             count: levels * HexGrid.colorCount)
+        for rank in 0..<levels {
             for color in 0..<HexGrid.colorCount {
                 let ids = buckets[color][rank]
                 segmentTable[rank * HexGrid.colorCount + color] =
@@ -109,6 +167,9 @@ public final class DagDBEngine {
         self.grid = grid
         self.nodeCount = grid.nodeCount
         self.maxRank = maxRank
+        // Provisional until the first compaction: the configured bound.
+        self.effectiveRankCount = maxRank
+        self.highestRankPresent = 0
 
         // Allocate state buffers (unified memory on M-series)
         let shared = MTLResourceOptions.storageModeShared
@@ -146,14 +207,30 @@ public final class DagDBEngine {
         }
         self.neighborsBuf = nb
 
-        // Color groups
+        // Color groups. A small grid (see `TiledGraphFiles`'s
+        // `minEngineNodeCount` comment: `HexGrid(width: n, height: 1)`
+        // needs n >= 11 before every colour residue is populated) can have
+        // an EMPTY colour bucket — `device.makeBuffer(length: 0, ...)`
+        // returns nil, failing the whole init. Allocate at least one
+        // element (`max(1, group.count)`) so a zero-length request never
+        // reaches Metal; `groupSizes` still records the TRUE count (0),
+        // so dispatch (`seg.count == 0` skip in `tick`) is unaffected.
+        // The `bytes:`-initializer path is used only when the group is
+        // non-empty — an empty Swift array's storage isn't a safe source
+        // for a `length:`-sized copy beyond its own (zero) extent.
         var groupBufs = [MTLBuffer]()
         var groupSizes = [Int]()
         for group in grid.colorGroups {
-            guard let gb = device.makeBuffer(bytes: group, length: group.count * 4, options: shared) else {
+            let gb: MTLBuffer?
+            if group.isEmpty {
+                gb = device.makeBuffer(length: 4, options: shared)
+            } else {
+                gb = device.makeBuffer(bytes: group, length: group.count * 4, options: shared)
+            }
+            guard let gbuf = gb else {
                 throw EngineError.bufferAllocationFailed
             }
-            groupBufs.append(gb)
+            groupBufs.append(gbuf)
             groupSizes.append(group.count)
         }
         self.colorGroupBufs = groupBufs
@@ -233,7 +310,7 @@ public final class DagDBEngine {
         enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
         let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
         var first = true
-        for rankLevel in stride(from: maxRank - 1, through: 0, by: -1) {
+        for rankLevel in stride(from: effectiveRankCount - 1, through: 0, by: -1) {
             for colorIdx in colorOrder {
                 let seg = segmentTable[rankLevel * HexGrid.colorCount + colorIdx]
                 if seg.count == 0 { continue }
@@ -267,6 +344,10 @@ public final class DagDBEngine {
     /// path's bit-for-bit equivalence tests, and as the honest "before"
     /// in the benchmark. Do not use in production paths.
     public func tickLegacy(tickNumber: UInt32) {
+        // Dispatches whole colour groups, so it needs no compacted lists —
+        // but it does need `effectiveRankCount`, which the compaction is
+        // what computes. One O(N) pass, only when the topology changed.
+        ensureRankTopology()
         guard let cmdBuf = queue.makeCommandBuffer() else { return }
         var colorOrder = Array(0..<HexGrid.colorCount)
         var shuffleSeed = tickNumber &* 2654435761
@@ -275,7 +356,7 @@ public final class DagDBEngine {
             let j = Int(shuffleSeed >> 16) % (i + 1)
             colorOrder.swapAt(i, j)
         }
-        for rankLevel in stride(from: maxRank - 1, through: 0, by: -1) {
+        for rankLevel in stride(from: effectiveRankCount - 1, through: 0, by: -1) {
             for colorIdx in colorOrder {
                 guard let enc = cmdBuf.makeComputeCommandEncoder() else { continue }
                 enc.setComputePipelineState(tickPipeline)

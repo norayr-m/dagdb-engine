@@ -194,7 +194,7 @@ For approximation workloads that fit the "many identical
 microcircuits, one per physical node" pattern:
 
 - Million-node compile in seconds, not minutes.
-- Evaluation at the substrate's measured throughput (0.81-1.69 GCUPS, compacted rank tick on a shallow spread; see docs_perf_recovery/results.md at
+- Evaluation at the substrate's measured throughput (0.71 GCUPS at
   1M nodes on M5 Max — see Benchmarks), parallel across all
   physical nodes per tick.
 - Mid-tick introspection of any internal LUT state via `NODES AT

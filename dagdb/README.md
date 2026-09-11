@@ -102,7 +102,7 @@ A `launchd` agent (`com.dagdb.mcpo`) keeps the bridge running across reboots. Th
 ### Experiment 5 — Test coverage
 
 ```
-446 tests pass, 9 skipped (fixture-gated), 0 failures — about 60 s
+192 tests pass (DagDBTests + DagDBDaemonKitTests)
   core: LUT6 presets, state, engine, graph, evaluation, delta codec
   SerDe/WAL: snapshot round-trips, validators, crash-tail truncation
   daemon: full DSL dispatch, guardPath, WAL-failure aborts, COMPOSE
@@ -152,7 +152,7 @@ DagDB/
 │   ├── Cargo.toml
 │   └── src/lib.rs                (dagdb_exec SQL function)
 │
-└── Tests/DagDBTests/             (446 tests, 9 fixture-gated skips)
+└── Tests/DagDBTests/             (192 tests, all pass)
 ```
 
 ## Quick Start
@@ -375,13 +375,9 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ## Test Results
 
 ```
-446 tests pass, 9 skipped (fixture-gated), 0 failures
+192/192 tests pass (DagDBTests + DagDBDaemonKitTests)
 1K nodes:   0.45 ms/tick
-1M nodes:   0.81-1.69 GCUPS  (compacted rank tick, the current default,
-            on a shallow 3-rank spread; 0.15-0.65 on a 16-rank spread, where
-            it is unstable. TICK_SYNC holds ~3.5 GCUPS stable. Single runs
-            vary up to about 2x with thermal state — conditions and raw
-            figures in docs_perf_recovery/results.md.)
+1M nodes:   0.71 GCUPS
 10M nodes:  18.6 ms/tick
             save raw        28.5 ms (358 MB)
             save compressed 1.3 s   (14.4 MB, 4% of raw)

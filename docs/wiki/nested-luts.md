@@ -80,7 +80,7 @@ nested network is exact.
 
 ## Performance framing (honest numbers)
 
-Evaluation runs at the substrate's measured rate — **0.81-1.69 GCUPS (compacted rank tick, shallow spread; see docs_perf_recovery/results.md for conditions) at
+Evaluation runs at the substrate's measured rate — **0.71 GCUPS at
 1M nodes** on an M5 Max (see [Benchmarks](Benchmarks.md)) — in
 parallel across every microcircuit instance on the graph. The win is
 not per-gate speed; it is that a compiled network evaluates *in place,

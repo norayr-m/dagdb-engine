@@ -11,7 +11,7 @@ import XCTest
 /// bits (exhaustive census in the edt prototype), so no single LUT6 —
 /// which reads at most 6 — can compute them; the composed network must.
 ///
-/// Python twin: 111_experiments/edt/prototypes/nested_lut/ (2026-07-01).
+/// Python twin: a reference implementation held outside this repository (2026-07-01).
 final class DagDBMicrocircuitTests: XCTestCase {
 
     // ── tiny netlist spec, mirrored from the Python compiler ─────────

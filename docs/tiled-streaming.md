@@ -152,7 +152,24 @@ Each tile lives on disk as a directory:
 
 ### 4.1 `body.dags` layout
 
-Unchanged from the current `DagDBSnapshot` v3 format:
+> **AMENDMENT (docs/contracts/TILING_GATES_FROZEN.md, "Prior work
+> (frozen)" paragraph, 2026-09-10).** `body.dags` is the CURRENT
+> `DagDBSnapshot` format at whatever version the running daemon
+> writes (v7 as of 2026-09-10: lanes + the twin section, a superset of
+> the v3 body below) — NOT a format frozen at v3. A tile is written
+> and loaded by `DagDBSnapshot.save`/`.load` unchanged, so it always
+> carries the engine's current format, version field included; the v3
+> table below is the shape those fields had at the time this spec was
+> written, kept for illustration, not a version pin. Likewise,
+> `meta.json`/`manifest.json` (§4.3) use the scaffold's Codable
+> camelCase keys (`rankLo`, `crossingsOut`, …), not this section's
+> earlier snake_case examples — the scaffold's Codable is the letter,
+> this spec's key names are a shape. The rest of this section (byte
+> layout, tile-local IDs, the `-2` cross-tile sentinel) is unchanged.
+
+Unchanged from the current `DagDBSnapshot` v3 format at the time this
+spec was written (see the amendment above for what "current" means
+today):
 
 ```
 offset  bytes  field
@@ -622,7 +639,7 @@ are tile-local and each tile lives under its own node count.
 ## 12. Standing charge
 
 This spec is internal. No public wiki page, no README mention,
-no Pub-staging. If we build to this spec and the build passes
+no release staging. If we build to this spec and the build passes
 an honest benchmark, we publish what the benchmark showed, not
 what the spec claimed. Numbers speak. Ego doesn't.
 

@@ -31,6 +31,11 @@
 ///     0x29 TWIN_LAYOUT_OPEN    TwinOp.layoutOpen
 ///     0x2A TWIN_ALARM_LOAD     TwinOp.alarmLoad
 ///     0x2B TWIN_CLOSE          TwinOp.close
+///     0x2C TWIN_BANK_OPEN      TwinOp.bankOpen
+///     0x2D TWIN_VIEW_LOAD      TwinOp.viewLoad
+///     0x2E TWIN_KERNEL_LOAD    TwinOp.kernelLoad
+///     0x2F TWIN_HOOK_OPEN      TwinOp.hookOpen
+///     0x30 TWIN_HOOK_STEP      TwinOp.hookStep
 ///     A twin op with a malformed payload (bad length, bad UTF-8) is
 ///     skipped on replay, never fatal. `replay(twin:)` with `twin == nil`
 ///     skips all twin-range opcodes entirely (the record is still walked,
@@ -77,6 +82,11 @@ public enum DagDBWAL {
         case twinLayoutOpen   = 0x29  // TwinOp.layoutOpen
         case twinAlarmLoad    = 0x2A  // TwinOp.alarmLoad
         case twinClose        = 0x2B  // TwinOp.close
+        case twinBankOpen     = 0x2C  // TwinOp.bankOpen
+        case twinViewLoad     = 0x2D  // TwinOp.viewLoad
+        case twinKernelLoad   = 0x2E  // TwinOp.kernelLoad
+        case twinHookOpen     = 0x2F  // TwinOp.hookOpen
+        case twinHookStep     = 0x30  // TwinOp.hookStep
         case checkpoint      = 0xF0
     }
 
@@ -515,7 +525,7 @@ public enum DagDBWAL {
                         engine.clearBackEdges(toNode: dst)
                         applied += 1; afterCheckpoint += 1
                     }
-                case Opcode.twinStreamOpen.rawValue...Opcode.twinClose.rawValue:
+                case Opcode.twinStreamOpen.rawValue...Opcode.twinHookStep.rawValue:
                     // Twin registry ops (interface phase, 2026-09). `twin == nil` means the
                     // caller isn't restoring twin state at all — walk past
                     // the record without applying or counting it. A

@@ -47,6 +47,35 @@ public enum DSLCommand {
     case loadJSON(path: String)
     case saveCSV(dir: String)
     case loadCSV(dir: String)
+    /// SAVE TILED <dir> <b1,b2,...> — gate T5. `boundaries` is the raw
+    /// comma-separated list as parsed (numeric, but not yet checked for
+    /// ascending order — that's a semantic check the handler makes, same
+    /// split as every other bad-number case in this grammar). Splits the
+    /// DAEMON'S OWN live engine into tile directories under `dir`; NOT a
+    /// twin registry verb (see `TiledGraphRouter`'s own header comment) —
+    /// parsed at the top level, not through `parseTwin`.
+    case saveTiled(dir: String, boundaries: [UInt64])
+    /// TILED OPEN <dir> [<K>] — opens a `TiledGraphRouter` over `dir`'s
+    /// manifest, K resident tiles (default 2, checked 1...64 by the
+    /// handler).
+    case tiledOpen(dir: String, k: Int)
+    /// TILED BFS <id> <globalId> <depth> [BACK] — cross-tile BFS/ancestry
+    /// through an open router. `globalId` is the raw packed `GlobalNodeID`
+    /// (decimal u64, matching `TiledGraphFiles.WriteReport.globalOf`'s
+    /// wire form). `backward` mirrors ANCESTRY/BFS_DEPTHS's own BACK/
+    /// BACKWARD convention.
+    case tiledBFS(id: String, globalId: UInt64, depth: Int, backward: Bool)
+    /// TILED SELECT <id> <truth> <lo> <hi> — cross-tile truth/rank-range
+    /// select through an open router.
+    case tiledSelect(id: String, truth: UInt8, rankLo: UInt64, rankHi: UInt64)
+    /// TILED STATUS <id> — one router's residency/load/evict/refusal counters.
+    case tiledStatus(id: String)
+    /// TILED LIST — every open router, id + dir + tile count.
+    case tiledList
+    /// TILED CLOSE <id> — drop a router (not persisted; nothing to flush —
+    /// see `TiledGraphRouter`'s header comment on why `save`/`close` on the
+    /// router itself stay stubs).
+    case tiledClose(id: String)
     case backupInit(dir: String)
     case backupAppend(dir: String)
     case backupRestore(dir: String)
@@ -86,8 +115,8 @@ public enum DSLCommand {
     /// a common input vector — the engine just performs the bitwise op
     /// on the 64-bit LUT integers.  Result composes the truth tables.
     case composeLUT(op: String, src1: Int, src2: Int?, dst: Int)
-    /// Twin-spec DSL: one of the nine verb families (STREAM, HEADER, RECORD,
-    /// RINGS, CLOCK, GEAR, XCONV, BUDGET, ALARM) parsed by DSLParser+Twin.
+    /// Twin-spec DSL: one of the ten verb families (STREAM, HEADER, RECORD,
+    /// RINGS, CLOCK, GEAR, XCONV, BUDGET, ALARM, VIEW) parsed by DSLParser+Twin.
     /// See TwinCommand for the full grammar (interface phase, 2026-09).
     case twin(TwinCommand)
     case unknown(String)
@@ -163,12 +192,22 @@ public enum DSLParser {
             // SAVE <path> [COMPRESSED]        — binary snapshot
             // SAVE JSON <path>                — JSON
             // SAVE CSV <dir>                  — two-file CSV
+            // SAVE TILED <dir> <b1,b2,...>    — gate T5, tile split
             guard rawTokens.count >= 2 else { return .unknown(input) }
             if rawTokens.count >= 3 && tokens[1] == "JSON" {
                 return .saveJSON(path: rawTokens[2])
             }
             if rawTokens.count >= 3 && tokens[1] == "CSV" {
                 return .saveCSV(dir: rawTokens[2])
+            }
+            if tokens[1] == "TILED" {
+                guard rawTokens.count >= 4 else { return .unknown(input) }
+                var boundaries: [UInt64] = []
+                for part in rawTokens[3].split(separator: ",", omittingEmptySubsequences: false) {
+                    guard let v = UInt64(part) else { return .unknown(input) }
+                    boundaries.append(v)
+                }
+                return .saveTiled(dir: rawTokens[2], boundaries: boundaries)
             }
             let compressed = rawTokens.count >= 3 && tokens[2] == "COMPRESSED"
             return .save(path: rawTokens[1], compressed: compressed)
@@ -263,6 +302,54 @@ public enum DSLParser {
                 return .unknown(input)
             }
             return .selectByTruthRank(truth: truthVal, rankLo: lo, rankHi: hi)
+
+        case "TILED":
+            // TILED OPEN <dir> [<K>]
+            // TILED BFS <id> <globalId> <depth> [BACK]
+            // TILED SELECT <id> <truth> <lo> <hi>
+            // TILED STATUS <id>
+            // TILED LIST
+            // TILED CLOSE <id>
+            // Gate T5 — NOT a twin verb (routers aren't a twin registry:
+            // `TiledGraphRouter`'s own header comment), so this is parsed
+            // at the top level, not routed through `parseTwin`.
+            guard rawTokens.count >= 2 else { return .unknown(input) }
+            switch tokens[1] {
+            case "OPEN":
+                guard rawTokens.count >= 3 else { return .unknown(input) }
+                var k = 2
+                if rawTokens.count >= 4 {
+                    guard let kv = Int(rawTokens[3]) else { return .unknown(input) }
+                    k = kv
+                }
+                return .tiledOpen(dir: rawTokens[2], k: k)
+            case "BFS":
+                guard rawTokens.count >= 5,
+                      let globalId = UInt64(rawTokens[3]),
+                      let depth = Int(rawTokens[4]) else {
+                    return .unknown(input)
+                }
+                let backward = tokens.count >= 6 && tokens[5] == "BACK"
+                return .tiledBFS(id: rawTokens[2], globalId: globalId, depth: depth, backward: backward)
+            case "SELECT":
+                guard rawTokens.count >= 6,
+                      let truthVal = UInt8(rawTokens[3]),
+                      let lo = UInt64(rawTokens[4]),
+                      let hi = UInt64(rawTokens[5]) else {
+                    return .unknown(input)
+                }
+                return .tiledSelect(id: rawTokens[2], truth: truthVal, rankLo: lo, rankHi: hi)
+            case "STATUS":
+                guard rawTokens.count >= 3 else { return .unknown(input) }
+                return .tiledStatus(id: rawTokens[2])
+            case "LIST":
+                return .tiledList
+            case "CLOSE":
+                guard rawTokens.count >= 3 else { return .unknown(input) }
+                return .tiledClose(id: rawTokens[2])
+            default:
+                return .unknown(input)
+            }
 
         case "SET_RANKS_BULK":
             // SET_RANKS_BULK  — caller has already written u64 rank vector
@@ -450,8 +537,12 @@ public enum DSLParser {
             }
             return .getTruth(node: node)
 
-        case "STREAM", "HEADER", "RECORD", "RINGS", "CLOCK", "GEAR", "XCONV", "BUDGET", "ALARM":
+        case "STREAM", "HEADER", "RECORD", "RINGS", "CLOCK", "GEAR", "XCONV", "BUDGET", "ALARM", "BANK", "VIEW", "KERNEL", "FOLD", "HOOK":
             // Twin-spec DSL (interface phase, 2026-09) — see DSLParser+Twin.swift for the grammar.
+            // FOLD (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md) joined
+            // this route 2026-09-10. KERNEL (gates K3/K4, docs/contracts/
+            // KERNELS_GATES_FROZEN.md) joined the same day. HOOK (gate H5,
+            // docs/contracts/HOOK_GATES_FROZEN.md) joined the same day too.
             return parseTwin(rawTokens: rawTokens, tokens: tokens, input: input)
 
         default:

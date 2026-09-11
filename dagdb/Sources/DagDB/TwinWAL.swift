@@ -1,7 +1,7 @@
 import Foundation
 
 /// TwinWALCodec — binary wire format for `TwinOp`, the payload carried by
-/// WAL opcodes 0x20–0x2B (twin registry ops, the interface phase).
+/// WAL opcodes 0x20–0x2C (twin registry ops, the interface phase).
 ///
 /// Format (little-endian throughout, no padding):
 ///   - String:  u16 length + UTF-8 bytes.
@@ -106,6 +106,49 @@ public enum TwinWALCodec {
             writeString(path, &d)
             writeString(sha256, &d)
 
+        case .bankOpen(let id, let name, let spec):
+            opcode = .twinBankOpen
+            writeString(id, &d)
+            writeString(name, &d)
+            writeU64(UInt64(spec.samples), &d)
+            writeF64(spec.sampleRate, &d)
+            writeF64(spec.f0, &d)
+            writeU32(UInt32(spec.harmonics), &d)
+            writeU32(UInt32(spec.gaborCenters), &d)
+            writeU32(UInt32(spec.gaborFreqs), &d)
+            writeF64(spec.gaborSigmaFrac, &d)
+
+        case .viewLoad(let id, let path, let sha256):
+            opcode = .twinViewLoad
+            writeString(id, &d)
+            writeString(path, &d)
+            writeString(sha256, &d)
+
+        case .kernelLoad(let id, let path, let sha256, let tauA, let tauB, let sigmaSource, let declaredWarmup):
+            opcode = .twinKernelLoad
+            writeString(id, &d)
+            writeString(path, &d)
+            writeString(sha256, &d)
+            writeOptionalF64(tauA, &d)
+            writeOptionalF64(tauB, &d)
+            writeOptionalF64(sigmaSource, &d)
+            writeOptionalU32(declaredWarmup, &d)
+
+        case .hookOpen(let id, let params):
+            opcode = .twinHookOpen
+            writeString(id, &d)
+            writeString(params.alarmId, &d)
+            writeOptionalString(params.layoutId, &d)
+            writeF64(params.budget, &d)
+            writeU32(UInt32(truncatingIfNeeded: params.delta), &d)
+            d.append(policyByte(params.policy))
+            writeOptionalString(params.clockId, &d)
+
+        case .hookStep(let id, let count):
+            opcode = .twinHookStep
+            writeString(id, &d)
+            writeU32(UInt32(truncatingIfNeeded: count), &d)
+
         case .close(let id):
             opcode = .twinClose
             writeString(id, &d)
@@ -159,6 +202,45 @@ public enum TwinWALCodec {
         func readI32() -> Int32? {
             guard let u = readU32() else { return nil }
             return Int32(bitPattern: u)
+        }
+        // Presence byte (0/1) followed by the value when present — used by
+        // .kernelLoad's four optionals (tauA, tauB, sigmaSource,
+        // declaredWarmup). Outer Optional is decode failure (bad flag byte
+        // or truncated payload); inner Optional is the field's own nil.
+        func readOptionalF64() -> Double?? {
+            guard off < bytes.count else { return nil }
+            let flag = bytes[off]; off += 1
+            switch flag {
+            case 0: return Optional<Double>.none
+            case 1:
+                guard let v = readF64() else { return nil }
+                return Optional<Double>.some(v)
+            default: return nil
+            }
+        }
+        func readOptionalU32AsInt() -> Int?? {
+            guard off < bytes.count else { return nil }
+            let flag = bytes[off]; off += 1
+            switch flag {
+            case 0: return Optional<Int>.none
+            case 1:
+                guard let v = readU32() else { return nil }
+                return Optional<Int>.some(Int(v))
+            default: return nil
+            }
+        }
+        // Presence byte (0/1) then a length-prefixed string when present —
+        // `.hookOpen`'s `layoutId`/`clockId`.
+        func readOptionalString() -> String?? {
+            guard off < bytes.count else { return nil }
+            let flag = bytes[off]; off += 1
+            switch flag {
+            case 0: return Optional<String>.none
+            case 1:
+                guard let s = readString() else { return nil }
+                return Optional<String>.some(s)
+            default: return nil
+            }
         }
 
         let decoded: TwinOp?
@@ -258,6 +340,48 @@ public enum TwinWALCodec {
             guard let id = readString() else { return nil }
             decoded = .close(id: id)
 
+        case .twinHookOpen:
+            guard let id = readString(), let alarmId = readString(),
+                  let layoutIdOpt = readOptionalString(),
+                  let budget = readF64(), let delta = readU32(),
+                  off < bytes.count
+            else { return nil }
+            let policyRaw = bytes[off]; off += 1
+            guard let policy = TwinWALCodec.policy(fromByte: policyRaw) else { return nil }
+            guard let clockIdOpt = readOptionalString() else { return nil }
+            let params = AttentionHook.Params(alarmId: alarmId, layoutId: layoutIdOpt, budget: budget,
+                                               delta: Int(delta), policy: policy, clockId: clockIdOpt)
+            decoded = .hookOpen(id: id, params: params)
+
+        case .twinHookStep:
+            guard let id = readString(), let count = readU32() else { return nil }
+            decoded = .hookStep(id: id, count: Int(count))
+
+        case .twinBankOpen:
+            guard let id = readString(), let name = readString(),
+                  let samples = readU64(),
+                  let sampleRate = readF64(), let f0 = readF64(),
+                  let harmonics = readU32(), let gaborCenters = readU32(), let gaborFreqs = readU32(),
+                  let gaborSigmaFrac = readF64()
+            else { return nil }
+            let spec = WaveBank.Spec(samples: Int(samples), sampleRate: sampleRate, f0: f0,
+                                      harmonics: Int(harmonics), gaborCenters: Int(gaborCenters),
+                                      gaborFreqs: Int(gaborFreqs), gaborSigmaFrac: gaborSigmaFrac)
+            decoded = .bankOpen(id: id, name: name, spec: spec)
+
+        case .twinViewLoad:
+            guard let id = readString(), let path = readString(), let sha256 = readString()
+            else { return nil }
+            decoded = .viewLoad(id: id, path: path, sha256: sha256)
+
+        case .twinKernelLoad:
+            guard let id = readString(), let path = readString(), let sha256 = readString(),
+                  let tauAOpt = readOptionalF64(), let tauBOpt = readOptionalF64(),
+                  let sigmaOpt = readOptionalF64(), let warmupOpt = readOptionalU32AsInt()
+            else { return nil }
+            decoded = .kernelLoad(id: id, path: path, sha256: sha256, tauA: tauAOpt, tauB: tauBOpt,
+                                   sigmaSource: sigmaOpt, declaredWarmup: warmupOpt)
+
         default:
             return nil
         }
@@ -300,6 +424,57 @@ public enum TwinWALCodec {
         let utf8 = Array(s.utf8)
         writeU16(UInt16(truncatingIfNeeded: utf8.count), &d)
         d.append(contentsOf: utf8)
+    }
+
+    /// Presence byte (0/1) then the value when present — `.kernelLoad`'s
+    /// four optionals (tauA, tauB, sigmaSource, declaredWarmup).
+    private static func writeOptionalF64(_ v: Double?, _ d: inout Data) {
+        if let v = v {
+            d.append(1)
+            writeF64(v, &d)
+        } else {
+            d.append(0)
+        }
+    }
+
+    private static func writeOptionalU32(_ v: Int?, _ d: inout Data) {
+        if let v = v {
+            d.append(1)
+            writeU32(UInt32(truncatingIfNeeded: v), &d)
+        } else {
+            d.append(0)
+        }
+    }
+
+    /// Presence byte (0/1) then a length-prefixed string when present —
+    /// `.hookOpen`'s `layoutId`/`clockId`.
+    private static func writeOptionalString(_ v: String?, _ d: inout Data) {
+        if let v = v {
+            d.append(1)
+            writeString(v, &d)
+        } else {
+            d.append(0)
+        }
+    }
+
+    /// `.hookOpen`'s policy byte: 0 allocator, 1 greedy, 2 uniform (per
+    /// `docs/contracts/HOOK_GATES_FROZEN.md`'s codec letter — NOT the
+    /// `Policy.rawValue` string).
+    private static func policyByte(_ p: AttentionHook.Policy) -> UInt8 {
+        switch p {
+        case .allocator: return 0
+        case .greedy: return 1
+        case .uniform: return 2
+        }
+    }
+
+    private static func policy(fromByte b: UInt8) -> AttentionHook.Policy? {
+        switch b {
+        case 0: return .allocator
+        case 1: return .greedy
+        case 2: return .uniform
+        default: return nil
+        }
     }
 }
 

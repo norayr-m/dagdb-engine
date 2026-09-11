@@ -28,7 +28,16 @@ Tools:
   dagdb_xconv_check                        — cross-convolution residual check
   dagdb_budget_sealed/open/allocate        — sealed/custom budget-layout allocator
   dagdb_alarm_load/frame/court/successor/corrupt — alarm-stream fixture + courts
+  dagdb_bank_open/generate/fit/noise/bench/info    — spec 8 waveform mouth (frozen bank, W = bank × coefficients)
+  dagdb_view_load/reflex/rung/ceiling/features/info — alarm-set derived views over the sealed cortex v4 world
+  dagdb_kernel_load/info + dagdb_xconv_sealed      — per-path kernel storage + the court's sealed cross-convolution residual (gates K3/K4)
+  dagdb_hook_open/step/state/ledger/info   — attention hook: the sealed allocator court as a ticked process (gate H5)
   dagdb_twin_list/dagdb_twin_close         — cross-registry list/close by id prefix
+  dagdb_fold_run/kept/source/tier/info     — gate F4 tier-ladder fold over the CURRENT fabric lanes (no registry, nothing persisted)
+
+  Tiled (step one, gate T5, docs/contracts/TILING_GATES_FROZEN.md — NOT a twin registry):
+  dagdb_save_tiled                         — split the daemon's CURRENT graph into tile files by rank range
+  dagdb_tiled_open/bfs/select/status/close — cross-tile router: load-on-demand tiles, BFS/ancestry/select across them
 
 Usage: python3 mcp_server.py
 Requires: pip install mcp
@@ -83,21 +92,25 @@ def query_daemon(cmd: str) -> str:
 
 # Twin registries (interface phase, 2026-09). Ids are minted by the daemon as "<letter>%08x"
 # from a per-registry counter (§0.14): s stream, t record, n rings, c
-# clock, g gear, b budget layout, a alarm set. Wrappers below validate any
-# id argument against this shape client-side, before touching the socket —
-# a malformed id can never be a legitimate reply from any registry, so
-# there is nothing to gain by round-tripping it to the daemon.
-_TWIN_ID_RE = re.compile(r"^[stncgba][0-9a-f]{8}$")
+# clock, g gear, b budget layout, a alarm set, w wave bank (spec 8, the interface phase),
+# v derived-view set (spec line 4 second view family), k kernel pair
+# (spec line 6 second half, gates K3/K4), h attention hook (gate H5,
+# docs/contracts/HOOK_GATES_FROZEN.md). Wrappers below validate any id
+# argument against this shape client-side, before touching the socket — a
+# malformed id can never be a legitimate reply from any registry, so there
+# is nothing to gain by round-tripping it to the daemon.
+_TWIN_ID_RE = re.compile(r"^[stncgbawvkh][0-9a-f]{8}$")
 _TWIN_PREFIX_VERB = {
     "s": "STREAM", "t": "RECORD", "n": "RINGS", "c": "CLOCK",
-    "g": "GEAR", "b": "BUDGET", "a": "ALARM",
+    "g": "GEAR", "b": "BUDGET", "a": "ALARM", "w": "BANK", "v": "VIEW",
+    "k": "KERNEL", "h": "HOOK",
 }
 
 def _bad_twin_id(id: str):
     """Return an "ERROR bad_id: ..." string if `id` doesn't match the twin
     id shape, else None. No daemon round-trip on mismatch."""
     if not _TWIN_ID_RE.match(id or ""):
-        return f"ERROR bad_id: {id!r} does not match ^[stncgba][0-9a-f]{{8}}$"
+        return f"ERROR bad_id: {id!r} does not match ^[stncgbawvkh][0-9a-f]{{8}}$"
     return None
 
 # Create MCP server
@@ -168,9 +181,66 @@ def dagdb_query(command: str) -> str:
         ALARM CORRUPT <id> <idx> <epsM> <epsS> <epsN> * (shm out: [u32 count][u32 40]
             header + 40-byte rows: f64 weight | u32 nClaims | u32 reserved0 |
             5x(u8 pocket, u8 row, u8 phantom, u8 pad) | 4 pad)
+        BANK OPEN <name> [<T> <fs> <f0> <H> <centers> <freqs> <sigmaFrac> [ALIASED]] (no
+            numbers ⇒ WaveBank.Spec.referenceNyquistSafe, the repaired bank; all seven
+            or none; a spec whose top harmonic reaches/exceeds Nyquist (fs/2) is
+            refused with ERROR bad_value unless ALIASED is appended) |
+        BANK GENERATE <id> <M> * (shm in: f32 C[K*M] row-major at offset 8; shm out:
+            [u32 T*M][u32 4] header + f32 W[T*M] row-major) |
+        BANK FIT <id> * (shm in: f32 x[T] at offset 8; shm out: [u32 K][u32 4]
+            header + f32 coefficients[K]) |
+        BANK NOISE <id> <seed> <n> * | BANK BENCH <id> <M> <reps> * |
+        BANK INFO <id> * | BANK CLOSE <id> | BANK LIST *
+        VIEW LOAD <path> [SHA <hex64>] | VIEW REFLEX <id> <S> * |
+        VIEW RUNG <id> <S> * | VIEW CEILING <id> <S> * |
+        VIEW FEATURES <id> <frame> <S> * (shm out: [u32 count=3*S][u32 4]
+            header + f32 standardized features) |
+        VIEW INFO <id> * | VIEW LIST * | VIEW CLOSE <id>
+
+    Tiled (step one, gate T5, docs/contracts/TILING_GATES_FROZEN.md — NOT a
+        twin registry: a router is never persisted, never WAL-logged, never
+        part of a snapshot; the tile directory on disk written by SAVE
+        TILED IS the durable state, and TILED OPEN only rebuilds an
+        in-memory view of it. Ids are "x%08x" from a handler-local counter
+        — a different shape from the twin registries' letter prefixes, and
+        not listed by dagdb_twin_list/closed by dagdb_twin_close):
+        SAVE TILED <dir> <b1,b2,...> (rank boundaries, ascending, no spaces;
+            splits the daemon's CURRENT engine) |
+        TILED OPEN <dir> [<K>] (K resident tiles, default 2, 1...64) |
+        TILED BFS <id> <globalId> <depth> [BACK] * (depth 0...12; shm out:
+            [u32 count][u32 16] header + rows u64 globalId, u32 depth, 4
+            pad) |
+        TILED SELECT <id> <truth> <lo> <hi> * (shm out: [u32 count][u32 8]
+            header + u64 ids, sorted) |
+        TILED STATUS <id> * (resident/loads/evicts/refused/last) |
+        TILED LIST * | TILED CLOSE <id>
+        Router errors reply "ERROR io: <detail>" (a torn tile body's
+        sha256 mismatch included); an unknown id is "ERROR not_found";
+        a malformed number is "ERROR out_of_range" or "ERROR bad_value".
+        Reader sessions may run BFS/SELECT/STATUS/LIST (*); OPEN/CLOSE/
+        SAVE TILED are forbidden there. Not yet built (step one only):
+        pre-fetch, ticking across tiles, the cold tier, the 10^11 run.
+
+    Fold (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md — a pure
+        computation over the daemon's CURRENT fabric lanes: neighbors, edge
+        weights, nodeValue-as-leak, rank; nothing persisted, no WAL, no
+        registry, no id — every verb below is read-only, RUN included (*
+        would mark all five; omitted since there's nothing else in the
+        family to contrast against)):
+        FOLD RUN <maxRank> <keepRank> <f1> <f2> [<f3>] [CHECK <l1,l2,...>]
+            (shm out: [u32 k*k][u32 4] header + f32 finalOperator[k*k]
+            row-major) | FOLD KEPT (shm out: [u32 k][u32 8] header + u64
+            keptIds[k]) | FOLD SOURCE <1|2|3> (shm out: [u32 k][u32 4]
+            header + f32 foldedSource[k]; 3 with no f3 given to RUN is a
+            vector of zeros) | FOLD TIER <level|final> <1|2|3> (shm out:
+            [u32 m][u32 8] header + f64 tierAnswer[m]; unknown level or
+            which=3 with no f3 is "ERROR not_found") | FOLD INFO (no shm
+            output). Any FOLD verb before the first FOLD RUN is "ERROR
+            not_found: no fold result yet".
 
     Twin id prefixes (per-registry counter, format "<letter>%08x"):
-        s stream · t record · n rings · c clock · g gear · b budget layout · a alarm set
+        s stream · t record · n rings · c clock · g gear · b budget layout ·
+        a alarm set · w wave bank · v derived-view set
 
     LUT presets: AND OR XOR MAJ IDENTITY CONST0 CONST1 VETO NOR NAND AND3 OR3 MAJ3.
     Distance metrics: jaccardNodes jaccardEdges rankL1 rankL2 typeL1 boundedGED wlL1 spectralL2."""
@@ -804,6 +874,39 @@ def dagdb_xconv_check(nA: int, nB: int, kA: int, kB: int, warmup: int) -> str:
     return query_daemon(f"XCONV CHECK {nA} {nB} {kA} {kB} {warmup}")
 
 @mcp.tool()
+def dagdb_xconv_sealed(id: str, n: int, warmup: int = 0) -> str:
+    """Read-only: the court's FROZEN sealed cross-convolution residual
+    (docs/contracts/KERNELS_GATES_FROZEN.md, gates K1-K3) against a loaded
+    kernel pair `id` (from dagdb_kernel_load) — window [warmup, n) on both
+    numerator and denominator, one-sided denominator max|yAB|+1e-300,
+    float64 end to end. This is NOT dagdb_xconv_check (the "patrol check"
+    above): that one compares over the full convolution length instead of
+    the record window, a symmetric denominator instead of one-sided, and
+    Float32 records/taps instead of Float64 — it stays as the standing
+    cheap check, unchanged; this tool is the contract's finding.
+
+    Caller must first write Float64 arrays a, b (each `n` samples) to
+    /tmp/dagdb_shm_file starting at byte offset 8: a[0..n), then b[0..n)
+    (rowSize 8, no gap between the two).
+
+    `warmup`: 0 (default) means "use the pair's own warmup" — derived from
+    TAU/SIGMA if the pair was loaded with them, else its declared WARMUP,
+    else the call fails (a pair loaded without either has no default
+    warmup and must be given one explicitly here). Any positive value here
+    OVERRIDES the pair's own warmup and is reported as "declared, not
+    derived" (derived=0).
+
+    Returns: "OK XCONV SEALED id=<id> n=<n> warmup=<v> derived=<0|1>
+    residual=<d> compared=<n-warmup>" or "ERROR bad_value: ..." (n < 2, or
+    no warmup available and none given), "ERROR out_of_range: ..." (shm
+    capacity, or warmup >= n), or "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    suffix = f" {warmup}" if warmup else ""
+    return query_daemon(f"XCONV SEALED {id} {n}{suffix}")
+
+@mcp.tool()
 def dagdb_budget_sealed() -> str:
     """Open the sealed allocator layout — the frozen tariff table from
     market/pregate_allocator_v2.json (4 pockets x 8 tiers, minTier [4, 1])
@@ -917,27 +1020,639 @@ def dagdb_alarm_corrupt(id: str, idx: int, eps_m: float, eps_s: float, eps_n: fl
         return err
     return query_daemon(f"ALARM CORRUPT {id} {idx} {eps_m} {eps_s} {eps_n}")
 
+# --------------------------------------------------------------------
+# VIEW (alarm-set derived views, spec line 4 second view family). One
+# loaded cortex v4 world per open id (view registry, prefix 'v'); REFLEX/
+# RUNG/CEILING/FEATURES read the sealed frame set — see
+# docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md gate V6 for the reply
+# shapes and the gated numbers they reproduce.
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_view_load(path: str, sha256: str = None) -> str:
+    """Load the sealed cortex v4 world fixture (view registry, prefix 'v')
+    — M frames x 8 stations x 64 samples (train/test), the 129x8 arrival
+    table tau, and the world constants. `path` is checked against the
+    daemon's guardPath (must be inside its data root). Pass `sha256` (the
+    64-hex-char pinned digest, e.g. CortexFixture.sealedSHA256) to fail
+    loudly on any mismatch rather than silently loading a different
+    fixture.
+
+    Returns: "OK VIEW LOAD id=v%08x train=6966 test=300 stations=8
+    samples=64 candidates=129 sha256=<hex>" or "ERROR io: <reason>"
+    (missing file, outside data root, sha256 mismatch, or a malformed npz
+    layout — an unexpected fixture is a finding, never a silent skip)."""
+    suffix = f" SHA {sha256}" if sha256 else ""
+    return query_daemon(f"VIEW LOAD {path}{suffix}")
+
+@mcp.tool()
+def dagdb_view_reflex(id: str, S: int) -> str:
+    """Read-only: the amended-letter reflex over the 300 sealed test
+    frames at station-subset size S (1..8) — per-candidate least-squares
+    fit against the S-station arrivals, tie rule at 1e-9 relative
+    tolerance.
+
+    Returns: "OK VIEW REFLEX id=<id> S=<S> reflex=<n> oracle=<n>
+    tie_min=<n> tie_median=<d> tie_max=<n> frames_with_tie=<n>
+    near_edge=<n>" (reflex/oracle/tie_*/frames_with_tie are gate V1-V3's
+    numbers; near_edge is printed only, the V1 honest-clause floor)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"VIEW REFLEX {id} {S}")
+
+@mcp.tool()
+def dagdb_view_rung(id: str, S: int) -> str:
+    """Read-only: the geometry-then-energy rung at station-subset size S —
+    reflex tied sets resolved by nearest standardized-feature class
+    centroid (Euclidean, exact ties keep the lowest index). Centroids are
+    recomputed from the 6966 train frames on every call.
+
+    Returns: "OK VIEW RUNG id=<id> S=<S> hits=<n> min_margin=<d>" (hits is
+    gate V4's number)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"VIEW RUNG {id} {S}")
+
+@mcp.tool()
+def dagdb_view_ceiling(id: str, S: int) -> str:
+    """Read-only: the arrival-geometry ceiling from tau alone at
+    station-subset size S — exact-twin pairs (< 1e-9) and identifiable
+    classes (unique + groups under the < 1.0 transitive-closure relation).
+
+    Returns: "OK VIEW CEILING id=<id> S=<S> identifiable=<n> of=129
+    ceiling=<%.6f> exact_twin_pairs=<n> unique=<n> groups=<n>" (gate V5's
+    numbers)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"VIEW CEILING {id} {S}")
+
+@mcp.tool()
+def dagdb_view_features(id: str, frame: int, S: int) -> str:
+    """Read-only: the 3*S front-aligned energy features (station-major:
+    per station in the S-subset, log front-window energy ratio / spectral
+    centroid / log second-window energy ratio) of test frame `frame`
+    (0..<300), standardized with the train set's mean/std at that S.
+
+    shm layout: [u32 count=3*S][u32 4] header at offset 0, then `count`
+    little-endian f32 values at offset 8.
+
+    Returns: "OK VIEW FEATURES id=<id> frame=<frame> S=<S> count=<3*S>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"VIEW FEATURES {id} {frame} {S}")
+
+@mcp.tool()
+def dagdb_view_info(id: str) -> str:
+    """Read-only: report a loaded view set's reference and fixture shape.
+
+    Returns: "OK VIEW INFO id=<id> path=<path> sha256=<hex> train=<n>
+    test=<n> stations=<n> samples=<n> candidates=<n>" or
+    "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"VIEW INFO {id}")
+
+# --------------------------------------------------------------------
+# Kernel: per-path kernel storage (spec line 6, second half). One loaded
+# (kA, kB) pair per open id (kernel registry, prefix 'k'), persisted BY
+# REFERENCE (path + sha256) — see docs/contracts/KERNELS_GATES_FROZEN.md
+# gates K3/K4. dagdb_xconv_sealed (above, beside dagdb_xconv_check) is the
+# court's residual over a loaded pair.
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_kernel_load(path: str, sha256: str = "", tau_a: float = 0.0, tau_b: float = 0.0,
+                       sigma: float = 0.0, warmup: int = 0) -> str:
+    """Load a per-path kernel pair (kernel registry, prefix 'k') — a JSON
+    file shaped like the sealed W1 kernels fixture: kA, kB (equal-length
+    Double arrays, the root->A / root->B impulse responses), fs, and
+    window_samples/ear_index_A/ear_index_B. `path` is checked against the
+    daemon's guardPath (must be inside its data root).
+
+    `sha256`: pass the 64-hex-char pinned digest to fail loudly on any
+    mismatch; empty (default) computes and uses the file's own hash
+    unchecked.
+
+    `tau_a`/`tau_b`/`sigma`: the pair's path delays (seconds, from the tree
+    metric — NOT read from the kernels file) and the source bank's
+    Gaussian envelope sigma (seconds). All three zero (default) means
+    "omit TAU/SIGMA" — the pair then has no derived warmup (K4) and
+    dagdb_xconv_sealed needs an explicit warmup. Give all three together
+    (any nonzero) to derive warmup = ceil((|tau_a-tau_b| + 3*sigma)*fs).
+
+    `warmup`: an explicit declared warmup (used only when TAU/SIGMA are
+    NOT given — TAU/SIGMA's derived warmup always wins when both are
+    present). 0 (default) means "none declared".
+
+    Returns: "OK KERNEL LOAD id=k%08x taps=<n> fs=<hz> window=<n>
+    ears=<A>/<B> warmup=<v|none> derived=<0|1> sha256=<hex>" or
+    "ERROR io: <reason>" (missing file, outside data root, sha256
+    mismatch, or a malformed/empty kernel array — an unexpected fixture is
+    a finding, never a silent skip)."""
+    suffix = ""
+    if sha256:
+        suffix += f" SHA {sha256}"
+    if tau_a or tau_b or sigma:
+        suffix += f" TAU {tau_a} {tau_b} SIGMA {sigma}"
+    if warmup:
+        suffix += f" WARMUP {warmup}"
+    return query_daemon(f"KERNEL LOAD {path}{suffix}")
+
+@mcp.tool()
+def dagdb_kernel_info(id: str) -> str:
+    """Read-only: report a loaded kernel pair's reference, shape, and
+    warmup resolution.
+
+    Returns: "OK KERNEL INFO id=<id> path=<path> sha256=<hex> taps=<n>
+    fs=<hz> window=<n> ears=<A>/<B> tau_a=<v|none> tau_b=<v|none>
+    sigma=<v|none> warmup=<v|none> derived=<0|1>" or
+    "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"KERNEL INFO {id}")
+
+# --------------------------------------------------------------------
+# Hook: the attention hook (gate H5, docs/contracts/HOOK_GATES_FROZEN.md)
+# — the sealed allocator court (AllocatorCourt.run) as a daemon-global
+# ticked process. One open hook per id (hook registry, prefix 'h'), bound
+# to an alarm set + budget layout (SEALED default) + frame budget + lag
+# delta + lagged policy, and optionally a master clock (one CLOCK ADVANCE
+# tick = one hook step; the hook then refuses dagdb_hook_step with
+# "ERROR forbidden: bound to clock <c>"; CLOCK CLOSE cascades to it like a
+# gear). Closing an alarm set or budget layout a live hook depends on is
+# refused the same way, naming the hook. LIST/CLOSE route through
+# dagdb_twin_list/dagdb_twin_close like every other registry.
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_hook_open(alarm_id: str, layout_id: str = "SEALED", budget: float = 0.0,
+                     delta: int = 3, policy: str = "allocator", clock_id: str = "") -> str:
+    """Open a new attention hook (hook registry, prefix 'h') — the sealed
+    allocator court as a daemon-global ticked process. Advances one frame
+    per dagdb_hook_step call (or one per CLOCK ADVANCE tick if bound),
+    reproducing AllocatorCourt.run's lagged-arm loop body frame by frame.
+
+    `alarm_id`: an id from dagdb_alarm_load. `layout_id`: "SEALED" (the
+    default) for SealedCourt.makeLayout(), or an id from
+    dagdb_budget_open/dagdb_budget_sealed. `budget`: the per-frame budget B
+    — must be finite and > 0; the Python-side default 0.0 exists only so
+    every other argument can have a default too, and always fails loudly
+    with "ERROR bad_value: ..." rather than silently opening a zero-budget
+    hook — always pass a real budget. `delta`: the lag (default 3, the
+    sealed Δ; must be >= 0). `policy`: "allocator" | "greedy" | "uniform"
+    (default "allocator"; the budget is constant per hook — a different
+    budget is a different hook, never a mid-run re-declaration).
+    `clock_id`: "" (default) leaves the hook unbound, stepped only by
+    dagdb_hook_step; a clock id binds it so CLOCK ADVANCE steps it once
+    per tick (after the clock's gears) and dagdb_hook_step then refuses.
+
+    Returns: "OK HOOK OPEN id=h%08x alarm=<id> layout=<id|SEALED> B=<b>
+    delta=<d> policy=<p> clock=<c|none> frames=<n>" (frames = the alarm
+    set's record count + delta) or "ERROR not_found: ..." (unknown alarm/
+    layout/clock), "ERROR bad_value: ..." (budget not finite or <= 0), or
+    "ERROR out_of_range: ..." (delta < 0)."""
+    err = _bad_twin_id(alarm_id)
+    if err:
+        return err
+    suffix = ""
+    if delta != 3:
+        suffix += f" DELTA {delta}"
+    if policy != "allocator":
+        suffix += f" POLICY {policy}"
+    if clock_id:
+        suffix += f" CLOCK {clock_id}"
+    return query_daemon(f"HOOK OPEN {alarm_id} {layout_id} {budget}{suffix}")
+
+@mcp.tool()
+def dagdb_hook_step(id: str, n: int) -> str:
+    """Advance a hook `n` frames, or until done, whichever comes first — a
+    step past the last frame is a no-op (stepped=0, done=1). Refused with
+    "ERROR forbidden: bound to clock <c>" if the hook is bound to a master
+    clock (step it via dagdb_clock_advance instead).
+
+    Returns: "OK HOOK STEP id=<id> t=<t> stepped=<taken> done=<0|1>
+    served=<s> misses=<m> cost=<c>" or "ERROR not_found: <id>" /
+    "ERROR out_of_range: n must be >= 1"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"HOOK STEP {id} {n}")
+
+@mcp.tool()
+def dagdb_hook_state(id: str) -> str:
+    """Read-only: a hook's live ArmResult snapshot, kept in sync frame by
+    frame as it steps — bit-for-bit equal to AllocatorCourt.run's batch
+    replay at every frame (gate H1).
+
+    Returns: "OK HOOK STATE id=<id> t=<t> done=<0|1> served=<s>
+    misses=<m> cost=<c> dummy=<n> dominated=<n> max_spend_ratio=<r>
+    warmup_cost=<c> burst=<served>/<missed>/<total>" or
+    "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"HOOK STATE {id}")
+
+@mcp.tool()
+def dagdb_hook_ledger(id: str, from_: int = 0, count: int = 0) -> str:
+    """Read-only: rows [from_, from_+count) of a hook's per-frame ledger
+    (gate H2) — DERIVED, never stored; rebuilt by re-stepping. Leaving both
+    `from_` and `count` at 0 (the default) returns every row.
+
+    shm layout: [u32 count][u32 40] header at offset 0, then `count`
+    40-byte rows at offset 8, each:
+        u32 t | i32 src | u8 judged | u8 outcome (0 none, 1 hit, 2 miss) |
+        i8 tier (-1 none) | i8 pocket (-1 none) | 4 pad (aligns the two f64
+        fields below to an 8-byte boundary) | f64 spend | f64
+        cumulativeCost | u8 countsTowardCost | 7 pad = 40 bytes/row.
+
+    Returns: "OK HOOK LEDGER id=<id> from=<f> count=<c> of=<total>" or
+    "ERROR not_found: <id>" / "ERROR out_of_range: ..." (bad range, or the
+    requested rows don't fit shm capacity)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    if from_ == 0 and count == 0:
+        return query_daemon(f"HOOK LEDGER {id}")
+    return query_daemon(f"HOOK LEDGER {id} {from_} {count}")
+
+@mcp.tool()
+def dagdb_hook_info(id: str) -> str:
+    """Read-only: a hook's fixed parameters plus its current position.
+
+    Returns: "OK HOOK INFO id=<id> alarm=<id> layout=<id|SEALED> B=<b>
+    delta=<d> policy=<p> clock=<c|none> frames=<n> t=<t> done=<0|1>" or
+    "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"HOOK INFO {id}")
+
+# --------------------------------------------------------------------
+# BANK (spec 8, the waveform mouth, the interface phase). One frozen bank of T×K atoms
+# per open id (bank registry, prefix 'w'); GENERATE is one matrix product
+# W = Φ·C, FIT is a least-squares solve for the coefficients that best
+# reproduce a target waveform in the bank's span.
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_bank_open(name: str, T: int = 0, fs: float = 0, f0: float = 0,
+                     H: int = 0, centers: int = 0, freqs: int = 0, sigma_frac: float = 0,
+                     aliased: bool = False) -> str:
+    """Open a new named waveform bank (bank registry, prefix 'w') — a frozen
+    T×K matrix of atoms (harmonic cos/sin columns plus Gabor atoms on a
+    center/frequency grid), each column unit-normalized.
+
+    All seven of T/fs/f0/H/centers/freqs/sigma_frac left at their default
+    (0) opens `WaveBank.Spec.referenceNyquistSafe`, the repaired bank
+    (T=4096, fs=3000, f0=60, H=24, centers=8, freqs=6, sigma_frac=0.02,
+    K=144). Otherwise pass every one: T samples, fs sample rate (Hz), f0
+    fundamental (Hz), H harmonic count, centers/freqs the Gabor grid
+    dimensions, sigma_frac the Gabor envelope width as a fraction of the
+    record length. K = 2*H + 2*centers*freqs is derived, not passed.
+
+    A spec whose top harmonic reaches or exceeds Nyquist (H*f0 >= fs/2) is
+    refused with "ERROR bad_value: ..." naming the first harmonic that
+    folds back, unless `aliased=True` — set it deliberately when you want
+    the sealed 160-atom CONTROL bank (H=32 at the reference rates: harmonics
+    26..32 alias exactly onto 24..18, fourteen of its atoms are dependent)
+    or any other spec you know aliases.
+
+    Returns: "OK BANK OPEN id=w%08x name=<name> T=<T> K=<K> atoms_bytes=<T*K*4>
+    rank=<int> cond=<d>" (rank = count of singular values above
+    sigma_max*1e-9; cond = sigma_max/sigma_min over all K singular values,
+    printed for diagnosis, not gated) or "ERROR bad_value: <reason>" if the
+    spec doesn't admit a bank (samples out of [2, 1<<20], any rate/frac
+    non-positive or non-finite, H < 1, atomCount out of [1, min(4096, T)])
+    or reaches Nyquist without `aliased=True`."""
+    if T == 0 and fs == 0 and f0 == 0 and H == 0 and centers == 0 and freqs == 0 and sigma_frac == 0:
+        return query_daemon(f"BANK OPEN {name}")
+    suffix = " ALIASED" if aliased else ""
+    return query_daemon(f"BANK OPEN {name} {T} {fs} {f0} {H} {centers} {freqs} {sigma_frac}{suffix}")
+
+@mcp.tool()
+def dagdb_bank_generate(id: str, M: int) -> str:
+    """Read-only (writes shm only, same class as RECORD REPLAY): generate M
+    waveform columns as one matrix product W = Φ·C. Caller must first write
+    Float32 coefficients C, K*M values row-major (C[k*M+m]), to
+    /tmp/dagdb_shm_file starting at byte offset 8.
+
+    shm out: [u32 T*M][u32 4] header, then Float32 W, T*M values row-major
+    (W[t*M+m]). Read with numpy.frombuffer(..., dtype=np.float32, count=T*M)
+    after skipping the 8-byte header.
+
+    Returns: "OK BANK GENERATE id=<id> T=<T> M=<M> samples=<T*M>
+    elapsed_ms=<f>" or "ERROR out_of_range: ..." naming which bound failed
+    (input 8+K*M*4 or output 8+T*M*4 exceeding shm capacity) or
+    "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"BANK GENERATE {id} {M}")
+
+@mcp.tool()
+def dagdb_bank_fit(id: str) -> str:
+    """Read-only: least-squares fit c* = argmin ‖x − Φc‖ for a target
+    waveform against the bank's atoms. Caller must first write Float32
+    target x, T values, to /tmp/dagdb_shm_file starting at byte offset 8.
+
+    shm out: [u32 K][u32 4] header, then Float32 coefficients, K values.
+
+    Returns: "OK BANK FIT id=<id> residual=<d> norm=<d> coefficients=<K>"
+    (residual = ‖x − Φc*‖₂ / ‖x‖₂, both norms in Double; norm = ‖x‖₂) or
+    "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"BANK FIT {id}")
+
+@mcp.tool()
+def dagdb_bank_noise(id: str, seed: int, n: int) -> str:
+    """Read-only: the out-of-bank noise law (spec 8 gate G3) — n
+    independent-ish Gaussian-noise probes, each fit against the bank, with
+    the residual's theoretical expectation sqrt(1 - K/T) for comparison.
+    `seed` (>= 0) advances a fixed PCG stream that many draws before
+    drawing; `n` (1..200) is the probe count.
+
+    Returns: "OK BANK NOISE id=<id> n=<n> expected=<d> mean=<d> min=<d>
+    max=<d>" or "ERROR out_of_range: ..." if seed < 0 or n outside
+    [1, 200], or "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"BANK NOISE {id} {seed} {n}")
+
+@mcp.tool()
+def dagdb_bank_bench(id: str, M: int, reps: int) -> str:
+    """Read-only: GENERATE throughput benchmark (spec 8 gate G6, printed,
+    not gated) — best of `reps` timed calls to generate M columns, after
+    one untimed warm-up call. M clamped to [1, 100000], reps to [1, 20].
+
+    Returns: "OK BANK BENCH id=<id> M=<M> reps=<reps> best_ms=<f>
+    samples_per_s=<f>" or "ERROR out_of_range: ..." if M or reps is
+    outside its range, or "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"BANK BENCH {id} {M} {reps}")
+
+@mcp.tool()
+def dagdb_bank_info(id: str) -> str:
+    """Read-only: report a bank's spec, derived atom count, and its
+    declaration (rank and condition number, recomputed on every call).
+
+    Returns: "OK BANK INFO id=<id> name=<name> T=<T> fs=<fs> f0=<f0>
+    H=<H> centers=<centers> freqs=<freqs> sigma_frac=<frac> K=<K>
+    rank=<int> cond=<d>" or "ERROR not_found: <id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"BANK INFO {id}")
+
+# --------------------------------------------------------------------
+# FOLD (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md) — the tier-ladder
+# fold (Kron/Schur elimination of a rank ring at a time, operator stored to
+# Float32 between folds, solves in Float64) over the daemon's CURRENT
+# fabric lanes. No registry, no id, no WAL — the handler keeps only the
+# last result; a FOLD RUN replaces it. Every verb is read-only, including
+# RUN (it never writes the fabric, only reads it and writes shm).
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_fold_run(max_rank: int, keep_rank: int, f1: int, f2: int, f3: int = -1, checkpoints: str = "") -> str:
+    """Fold the graph's CURRENT lanes (neighbors, edge weights,
+    nodeValue-as-leak, rank) from `max_rank` down to `keep_rank`, one rank
+    ring eliminated per fold via dense symmetric solve + Schur complement.
+    Replaces the daemon's one stored fold result (`lastFold`) — every other
+    FOLD verb reads back from this call, and errors "not_found" before the
+    first one.
+
+    Args:
+        max_rank: highest rank ring to start folding from.
+        keep_rank: the fold stops once only nodes at rank <= keep_rank
+            remain (must be >= 0 and < max_rank).
+        f1, f2: source node indices (row-major), each folded through the
+            ladder alongside the operator. Must be valid node indices.
+        f3: optional third source node index; -1 (default) means no f3 —
+            its folded/tier values come back as zero vectors.
+        checkpoints: comma-separated rank levels to snapshot mid-fold (e.g.
+            "19,15,11,7"), each strictly between keep_rank and max_rank.
+            Empty string (default) records only the final tier.
+
+    shm out: [u32 k*k][u32 4] header, then Float32 finalOperator, k*k
+    values row-major (k = kept node count).
+
+    Returns: "OK FOLD RUN kept=<k> folds=<n> bytes=<k*k*4> wall_ms=<f>" or
+    "ERROR out_of_range: ..." (bad keep_rank/max_rank ordering, f1/f2/f3
+    out of range, a checkpoint outside (keep_rank, max_rank), or the
+    result's k*k*4 bytes exceeding shm capacity — checked before the fold
+    runs)."""
+    checkpoints = checkpoints.strip()
+    # f3 must appear if CHECK does (the daemon grammar is positional: [<f3>]
+    # [CHECK ...]) — pass it explicitly whenever either is non-default;
+    # "-1" round-trips through the parser exactly like omitting it.
+    parts = [str(max_rank), str(keep_rank), str(f1), str(f2)]
+    if f3 != -1 or checkpoints:
+        parts.append(str(f3))
+    if checkpoints:
+        parts += ["CHECK", checkpoints]
+    return query_daemon("FOLD RUN " + " ".join(parts))
+
+@mcp.tool()
+def dagdb_fold_kept() -> str:
+    """Read-only: the kept node ids from the last FOLD RUN.
+
+    shm out: [u32 k][u32 8] header, then u64 keptIds, k values, row-major
+    node index.
+
+    Returns: "OK FOLD KEPT kept=<k>" or "ERROR not_found: no fold result yet"."""
+    return query_daemon("FOLD KEPT")
+
+@mcp.tool()
+def dagdb_fold_source(which: int) -> str:
+    """Read-only: the folded source vector (f1=1, f2=2, f3=3) from the last
+    FOLD RUN, at the kept set's final size. `which=3` with no f3 given to
+    RUN returns a vector of zeros — the library folds a zero right-hand
+    side through the ladder rather than special-casing it.
+
+    shm out: [u32 k][u32 4] header, then Float32 foldedSource, k values.
+
+    Returns: "OK FOLD SOURCE which=<i> kept=<k>" or "ERROR not_found: no
+    fold result yet"."""
+    return query_daemon(f"FOLD SOURCE {which}")
+
+@mcp.tool()
+def dagdb_fold_tier(level: str, which: int) -> str:
+    """Read-only: one checkpoint tier's solved answer (f1=1, f2=2, f3=3)
+    from the last FOLD RUN. `level` is "final" or one of the numeric
+    checkpoint levels passed to FOLD RUN's `checkpoints`.
+
+    shm out: [u32 m][u32 8] header, then Float64 tierAnswer, m values (m =
+    the kept-set size at that checkpoint).
+
+    Returns: "OK FOLD TIER level=<level> which=<i> count=<m>" or
+    "ERROR not_found: ..." if `level` wasn't checkpointed, `which=3` with no
+    f3 given to RUN, or no fold result yet."""
+    return query_daemon(f"FOLD TIER {level} {which}")
+
+@mcp.tool()
+def dagdb_fold_info() -> str:
+    """Read-only: a summary of the last FOLD RUN — no shm output.
+
+    Returns: "OK FOLD INFO kept=<k> folds=<n> tiers=<comma-separated keys,
+    numeric descending then final> bytes=<k*k*4> wall_ms=<f>" or
+    "ERROR not_found: no fold result yet"."""
+    return query_daemon("FOLD INFO")
+
+# --------------------------------------------------------------------
+# Tiled (step one, gate T5, docs/contracts/TILING_GATES_FROZEN.md).
+# Cross-tile query routers over tile directories split from the daemon's
+# CURRENT engine by rank range. Deliberately NOT a twin registry: a router
+# is never persisted, never WAL-logged, never part of a snapshot — the
+# tile directory on disk IS the durable state; TILED OPEN only rebuilds an
+# in-memory view of it (reads manifest.json, loads no tile bodies yet).
+# Ids are "x%08x" from a handler-local counter (a different shape from the
+# twin registries' single-letter prefixes) — dagdb_twin_list/dagdb_twin_close
+# do not reach them; use dagdb_query("TILED LIST") / dagdb_tiled_close
+# instead. Not yet built: pre-fetch, ticking across tiles, the cold tier,
+# thermal pauses, the 10^11 run (docs/contracts/TILING_GATES_FROZEN.md's
+# "Not promised" list).
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_save_tiled(dir: str, boundaries: str) -> str:
+    """Split the daemon's CURRENT graph (engine + grid, as they stand right
+    now) into tile directories under `dir`, one per rank range, plus a
+    graph manifest. Read-only over the live graph — nothing in the running
+    engine changes.
+
+    Args:
+        dir: output directory (guarded by DAGDB_DATA_ROOT like every other
+            path-taking verb). The tile count is `len(boundaries) + 1`.
+        boundaries: comma-separated ascending rank boundaries, no spaces,
+            e.g. "5,11,17" for 4 tiles. At least one boundary is required.
+
+    Returns: "OK SAVE TILED dir=<dir> tiles=<n> nodes=<N> crossings=<c>" or
+    "ERROR bad_value: ..." (empty/unsorted/duplicate boundaries) or
+    "ERROR io: ..." (path/write failure)."""
+    return query_daemon(f"SAVE TILED {dir} {boundaries}")
+
+@mcp.tool()
+def dagdb_tiled_open(dir: str, k: int = 2) -> str:
+    """Open a cross-tile query router over a directory `dagdb_save_tiled`
+    already wrote (reads `<dir>/manifest.json`; loads no tile bodies yet —
+    those load lazily on the first query that touches them).
+
+    Args:
+        dir: the tile directory (same path passed to `dagdb_save_tiled`).
+        k: max resident tiles (LRU eviction beyond this), 1...64, default 2.
+
+    Returns: "OK TILED OPEN id=x%08x tiles=<n> nodes=<N> resident_max=<K>"
+    or "ERROR out_of_range: K ..." or "ERROR io: ..." (missing/corrupt
+    manifest)."""
+    return query_daemon(f"TILED OPEN {dir} {k}")
+
+@mcp.tool()
+def dagdb_tiled_bfs(id: str, global_id: int, depth: int, back: bool = False) -> str:
+    """Cross-tile BFS (undirected, default) or ancestry (`back=True`,
+    inputs-only) from a global node id, level-synchronous across tile
+    boundaries — loads whatever tiles the frontier touches, evicting the
+    least-recently-used tile past the router's K.
+
+    Args:
+        id: router id from `dagdb_tiled_open`.
+        global_id: the packed GlobalNodeID (raw u64: tile in the high 24
+            bits, local node id in the low 40) — NOT a plain engine index.
+        depth: 0...12 (§6.1's cap; use `dagdb_tiled_select` for wider
+            rank-range sweeps instead of a deep BFS).
+        back: True for backward-only (inputs) expansion, matching
+            ANCESTRY/BFS_DEPTHS BACKWARD's convention.
+
+    shm out: [u32 count][u32 16] header, then 16-byte rows (u64 globalId,
+    u32 depth, 4 bytes pad).
+
+    Returns: "OK TILED BFS id=<id> seed=<global_id> depth=<d> back=<0|1>
+    count=<n> loads=<n> evicts=<n>" or "ERROR not_found: ..." (unknown
+    router id) or "ERROR io: ..." (a router error — depth cap exceeded, or
+    a torn tile body's sha256 mismatch, recorded in `dagdb_tiled_status`'s
+    refused count too)."""
+    suffix = " BACK" if back else ""
+    return query_daemon(f"TILED BFS {id} {global_id} {depth}{suffix}")
+
+@mcp.tool()
+def dagdb_tiled_select(id: str, truth: int, rank_lo: int, rank_hi: int) -> str:
+    """Cross-tile truth/rank-range select: every tile whose rank span could
+    overlap `[rank_lo, rank_hi]` is loaded and queried against its own
+    truth/rank secondary index.
+
+    shm out: [u32 count][u32 8] header, then u64 global ids, sorted
+    ascending.
+
+    Returns: "OK TILED SELECT id=<id> truth=<t> lo=<lo> hi=<hi> count=<n>"
+    or "ERROR not_found: ..." or "ERROR io: ..."."""
+    return query_daemon(f"TILED SELECT {id} {truth} {rank_lo} {rank_hi}")
+
+@mcp.tool()
+def dagdb_tiled_status(id: str) -> str:
+    """One router's residency/load/evict/refusal counters.
+
+    Returns: "OK TILED STATUS id=<id> resident=<n>/<K> loads=<n>
+    evicts=<n> refused=<n> last=<error|none>" or "ERROR not_found: ...".
+    `dagdb_status`'s own STATUS line carries `tiled_open=<n>` (routers are
+    NOT counted in that line's `twin_open`, since they aren't a twin
+    registry)."""
+    return query_daemon(f"TILED STATUS {id}")
+
+@mcp.tool()
+def dagdb_tiled_list() -> str:
+    """Every open router: id, source directory, tile count, node count,
+    resident_max.
+
+    Returns: "OK TILED LIST count=<n> [id@dir=... tiles=... nodes=...
+    resident_max=... ...]"."""
+    return query_daemon("TILED LIST")
+
+@mcp.tool()
+def dagdb_tiled_close(id: str) -> str:
+    """Close a router. Nothing to flush — routers aren't persisted (the
+    tile directory on disk is already the durable state).
+
+    Returns: "OK TILED CLOSE id=<id> open=<n>" or "ERROR not_found: ...".
+    """
+    return query_daemon(f"TILED CLOSE {id}")
+
 @mcp.tool()
 def dagdb_twin_list(kind: str) -> str:
     """List open ids in one twin registry, selected by its id-prefix
     letter: s stream, t record, n rings, c clock, g gear, b budget layout,
-    a alarm set.
+    a alarm set, w wave bank, v derived-view set, k kernel pair, h
+    attention hook.
 
     Returns: "OK <VERB> LIST count=<n> [id id ...]" or
-    "ERROR bad_id: unknown kind ..." if `kind` isn't one of stncgba."""
+    "ERROR bad_id: unknown kind ..." if `kind` isn't one of stncgbawvkh."""
     verb = _TWIN_PREFIX_VERB.get(kind)
     if verb is None:
-        return f"ERROR bad_id: unknown kind {kind!r} (expected one of s t n c g b a)"
+        return f"ERROR bad_id: unknown kind {kind!r} (expected one of s t n c g b a w v k h)"
     return query_daemon(f"{verb} LIST")
 
 @mcp.tool()
 def dagdb_twin_close(id: str) -> str:
     """Close any twin registry entry, routed to the right verb by the id's
     prefix letter (s->STREAM, t->RECORD, n->RINGS, c->CLOCK, g->GEAR,
-    b->BUDGET, a->ALARM). Closing a clock cascades to its gears.
+    b->BUDGET, a->ALARM, w->BANK, v->VIEW, k->KERNEL, h->HOOK). Closing a
+    clock cascades to its gears AND any hooks bound to it; closing an
+    alarm set or budget layout a live hook depends on is refused with
+    "ERROR forbidden: ..." naming the hook.
 
-    Returns: "OK <VERB> CLOSE id=<id>" (plus gears_closed=<n> for a clock),
-    or "ERROR bad_id: ..." if `id` doesn't match the twin id shape."""
+    Returns: "OK <VERB> CLOSE id=<id>" (plus gears_closed=<n>/
+    hooks_closed=<n> for a clock), or "ERROR bad_id: ..." if `id` doesn't
+    match the twin id shape."""
     err = _bad_twin_id(id)
     if err:
         return err

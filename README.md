@@ -31,11 +31,23 @@ WAL, snapshot-on-read, ancestry and similarity primitives. Summer
 truth-table record (snapshot v6, new WAL opcodes) and seven twin
 primitives — deterministic replayable streams, a sealed knapsack
 allocator, a cross-ear identity check, a geared recording odometer, a
-rational-gear master clock. Since the interface phase (merged 2026-09-06) those seven
+rational-gear master clock — and, since 2026-09-10, a waveform bank
+(generate = one matrix product, residual and rank printed), derived
+views over a sealed alarm-set record (reflex, energy rung, geometry
+ceiling) reproduced exactly against the twin lane's reference numbers,
+and the exact tier ladder as a library and a daemon verb (fold API),
+and an attention hook that spends the sealed budget frame by frame on
+the engine's clock. Since the interface phase (merged 2026-09-06) those seven
 primitives, plus a sealed alarm-stream type, are reachable over the
 daemon socket (DSL) and MCP, not just in-process (`ARCHITECTURE.md`
-§13); since 2026-09-09 the daemon can reload its last snapshot at
-startup (`DAGDB_STARTUP_LOAD`).
+§13), per-path kernels with the court's cross-convolution residual
+(the old patrol check is deprecated); since 2026-09-09 the daemon can
+reload its last snapshot at startup (`DAGDB_STARTUP_LOAD`); and since
+2026-09-10, tiling step one splits a graph into on-disk tile files
+with a load/evict router answering cross-tile BFS/ancestry/select
+exactly like the single engine (`SAVE TILED`, `TILED
+OPEN/BFS/SELECT/STATUS/LIST/CLOSE` — deliberately not a twin verb
+family).
 
 **Ship-storm 2026-04-21.** Six items landed on the engine in a single
 day, all tests green:
@@ -59,8 +71,8 @@ day, all tests green:
   `capture_latest` is live.
 
 **Tests.** 446 Swift test cases green as of 2026-09-09 (9 skip without
-the out-of-repo sealed fixture), full suite about 50 s. Python adapter tests are currently not runnable
-from the worktree layout (collection error). See
+the out-of-repo sealed fixture), full suite about 50 s. The 16 Python adapter tests pass
+(`python3 -m pytest plugins/loom` from `dagdb/`, 2026-09-10). See
 [`CURRENT_STATE.md`](CURRENT_STATE.md) for the live picture.
 
 **Persistence policy (standing rule).** All persistent DagDB state on
@@ -429,34 +441,9 @@ swift test --filter DagDBSecondaryIndexTests
 
 ---
 
-## Known limitation — rank-mode TICK and `maxRank`
-
-The rank kernel buckets nodes by rank with an upper bound: a node enters its
-bucket only if its rank is **below** the engine's `maxRank`, and rank-mode
-`TICK` strides over exactly those ranks. A node whose rank is at or above
-`maxRank` is therefore not computed in rank mode. Sync mode dispatches over all
-nodes and is unaffected.
-
-No verb refuses this today: `SET_RANK` validates the node index but not the
-rank value, and the bulk rank commit states in its own comment that it skips
-validation. So a graph whose ranks exceed the configured `maxRank` is ticked
-without an error and without a counter naming what was left out.
-
-Every example and test in this release **that ticks** is inside the bound. Two
-fixtures sit above it and are unaffected, because they are query paths that do
-not use the rank kernel: the breadth-first-search usage doc and the rank-index
-test. No published number moves. If you set ranks yourself, or restore a
-snapshot written under a larger `maxRank`, check your ranks against the bound
-until this is fixed.
-
-The fix in progress makes rank mode **compute** every rank present rather than
-refuse — the bound is a sizing hint, not a safety limit, and refusing would
-leave a graph restored under a smaller bound dead in rank mode until a restart.
-This note comes out with it.
-
 ## License
 
-Apache 2.0. See `LICENSE` and `NOTICE`.
+GPL-3.0. See `LICENSE`.
 
 ## Humble disclaimer
 

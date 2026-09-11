@@ -148,7 +148,7 @@ final class TwinClockCommandTests: XCTestCase {
         XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g2 1/5"), "OK GEAR OPEN id=g00000002 clock=c00000001 name=g2 ratio=1/5")
 
         let close = f.handler.handle("CLOCK CLOSE c00000001")
-        XCTAssertEqual(close, "OK CLOCK CLOSE id=c00000001 gears_closed=2", close)
+        XCTAssertEqual(close, "OK CLOCK CLOSE id=c00000001 gears_closed=2 hooks_closed=0", close)
 
         XCTAssertTrue(f.handler.handle("GEAR STATE g00000001").hasPrefix("ERROR not_found"))
         XCTAssertTrue(f.handler.handle("GEAR STATE g00000002").hasPrefix("ERROR not_found"))

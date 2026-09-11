@@ -83,7 +83,11 @@ public enum AllocatorCourt {
         return (nil, 0)
     }
 
-    private static func newArmBucket() -> ArmResult {
+    /// `internal`, not `private`: `AttentionHook` (twin spec line 6, the
+    /// incremental hook) reproduces this court's per-frame loop one frame
+    /// at a time and calls this exact function so its arithmetic can never
+    /// drift from the court's — never change what it computes.
+    static func newArmBucket() -> ArmResult {
         ArmResult(
             perClass: ["quiet": Tally(), "liar": Tally(), "deep": Tally(), "drift": Tally()],
             perEar: ["A": Tally(), "B": Tally(), "C": Tally()])
@@ -94,7 +98,10 @@ public enum AllocatorCourt {
     /// maxSpendRatio, cost, dummy, dominated, served/misses, perClass (by
     /// raw class), perEar (when an ear is present), servedTrialIds, burst
     /// (when the trial's pocket is the concentration pocket).
-    private static func recordOutcome(
+    ///
+    /// `internal`, not `private`: shared verbatim with `AttentionHook`
+    /// (see `newArmBucket`'s comment) — never change its arithmetic.
+    static func recordOutcome(
         _ arm: inout ArmResult, _ trial: AlarmRecord, hit: Bool, spend: Double, tierBought: Int?, budget: Double
     ) {
         let ratio = budget > 0 ? spend / budget : 0.0

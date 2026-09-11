@@ -43,7 +43,7 @@ From a live event-stream source, indexed into DagDB.
 
 | Metric | Value | Source |
 |---|---|---|
-| Events ingested | **694** (nodes 0–693) | `vpt-to-dag_pass1-green-numbers` drop, 2026-04-21 |
+| Events ingested | **694** (nodes 0–693) | internal ingest report, 2026-04-21 |
 | Aggregate wall time | ~140 ms | same |
 | Rate | ~4.6–5.2 k events/sec | same |
 | Schema invariants holding | 5 of 5 (rank monotonicity, 6-bound, no self-loops, no duplicate edges, bounded inputs) | on-ingest validator |

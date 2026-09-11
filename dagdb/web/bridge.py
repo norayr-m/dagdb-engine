@@ -45,10 +45,32 @@ READ_ONLY_TWIN = {
     ("RINGS", "RECALL"), ("RINGS", "INFO"), ("RINGS", "LIST"),
     ("CLOCK", "STATE"), ("CLOCK", "LIST"),
     ("GEAR", "STATE"),
-    ("XCONV", "CHECK"),
+    ("XCONV", "CHECK"), ("XCONV", "SEALED"),
     ("BUDGET", "ALLOCATE"), ("BUDGET", "INFO"), ("BUDGET", "LIST"),
     ("ALARM", "INFO"), ("ALARM", "LIST"), ("ALARM", "FRAME"),
     ("ALARM", "COURT"), ("ALARM", "SUCCESSOR"), ("ALARM", "CORRUPT"),
+    ("BANK", "GENERATE"), ("BANK", "FIT"), ("BANK", "NOISE"),
+    ("BANK", "BENCH"), ("BANK", "INFO"), ("BANK", "LIST"),
+    ("VIEW", "REFLEX"), ("VIEW", "RUNG"), ("VIEW", "CEILING"),
+    ("VIEW", "FEATURES"), ("VIEW", "INFO"), ("VIEW", "LIST"),
+    ("KERNEL", "INFO"), ("KERNEL", "LIST"),
+    # FOLD (gate F4): pure computation over the daemon's CURRENT lanes,
+    # nothing persisted — ALL five verbs are read-only, RUN included
+    # (mirrors TwinCommand.isReadOnly).
+    ("FOLD", "RUN"), ("FOLD", "KEPT"), ("FOLD", "SOURCE"),
+    ("FOLD", "TIER"), ("FOLD", "INFO"),
+    # HOOK (gate H5): STATE/LEDGER/INFO/LIST look at a hook without
+    # mutating it; OPEN/STEP/CLOSE stay off this allowlist (mirrors
+    # TwinCommand.isReadOnly).
+    ("HOOK", "STATE"), ("HOOK", "LEDGER"), ("HOOK", "INFO"), ("HOOK", "LIST"),
+    # TILED (gate T5, docs/contracts/TILING_GATES_FROZEN.md): NOT a twin
+    # verb — routers aren't a twin registry (TiledGraphRouter's own header
+    # comment) — but they land in this same set because `_command_allowed`
+    # below is a generic (verb, subverb) two-token check, not twin-specific.
+    # BFS/SELECT/STATUS/LIST are read-only (mirrors the daemon's reader-
+    # session split); OPEN/CLOSE mutate the router registry and SAVE TILED
+    # writes to disk, so all three stay off this allowlist.
+    ("TILED", "BFS"), ("TILED", "SELECT"), ("TILED", "STATUS"), ("TILED", "LIST"),
 }
 ALLOW_WRITE = os.environ.get("DAGDB_WS_ALLOW_WRITE", "0") == "1"
 _default_origins = "http://localhost,http://127.0.0.1,https://localhost,null"

@@ -127,5 +127,10 @@ public enum TwinOp: Equatable {
     case gearOpen(id: String, clockId: String, name: String, num: UInt64, den: UInt64)
     case layoutOpen(id: String, cost: [[Double]], minTier: [Int])
     case alarmLoad(id: String, path: String, sha256: String)
+    case bankOpen(id: String, name: String, spec: WaveBank.Spec)
+    case viewLoad(id: String, path: String, sha256: String)
+    case kernelLoad(id: String, path: String, sha256: String, tauA: Double?, tauB: Double?, sigmaSource: Double?, declaredWarmup: Int?)
+    case hookOpen(id: String, params: AttentionHook.Params)
+    case hookStep(id: String, count: Int)
     case close(id: String)
 }

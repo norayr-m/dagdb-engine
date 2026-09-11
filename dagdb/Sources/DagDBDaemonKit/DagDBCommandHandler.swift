@@ -30,6 +30,26 @@ public final class DagDBCommandHandler {
     /// connection (primary path and reader sessions alike). See
     /// DagDBCommandHandler+Twin.swift for the verb dispatcher.
     public let twin: TwinState
+    /// Resolved shm capacity in bytes — `shmBytes` if the caller supplied
+    /// one (a test fixture sizing its buffer to a control object rather
+    /// than to `nodeCount`), else the historical `8 + nodeCount *
+    /// resultRowSize` formula. Backs `shmCapacityBytes` in +Twin.swift.
+    let configuredShmCapacityBytes: Int
+    /// Last FOLD RUN result (gate F4) — daemon-global like every twin
+    /// registry, but NOT a twin registry entry: nothing is minted, nothing
+    /// is persisted. Not part of snapshots — it is entirely recomputable
+    /// from the fabric's neighbor/edge-weight/rank/nodeValue lanes by
+    /// running FOLD RUN again.
+    public var lastFold: LadderFold.Result?
+    /// TILED router registry (gate T5, docs/contracts/TILING_GATES_FROZEN.md)
+    /// — daemon-held like `lastFold`, but deliberately NOT a `TwinState`
+    /// registry: a router is never persisted, never WAL-logged, and never
+    /// part of a snapshot. The tile directory on disk written by `SAVE
+    /// TILED` IS the durable state; `TILED OPEN` only rebuilds an
+    /// in-memory view of it (reads `manifest.json`, loads nothing yet).
+    /// See `DagDBCommandHandler+Tiled.swift`.
+    var tiledRouters: [String: TiledRouterEntry] = [:]
+    var tiledRouterCounter: UInt32 = 0
 
     public init(
         engine: DagDBEngine,
@@ -46,7 +66,8 @@ public final class DagDBCommandHandler {
         resultRowSize: Int = 24,
         dataRoot: String?,
         dagdbEnv: String?,
-        twin: TwinState = TwinState()
+        twin: TwinState = TwinState(),
+        shmBytes: Int? = nil
     ) {
         self.engine = engine
         self.grid = grid
@@ -63,6 +84,8 @@ public final class DagDBCommandHandler {
         self.dataRoot = dataRoot
         self.dagdbEnv = dagdbEnv
         self.twin = twin
+        self.configuredShmCapacityBytes = shmBytes ?? (8 + nodeCount * resultRowSize)
+        self.lastFold = nil
     }
 
     func guardPath(_ p: String) -> String? {
@@ -120,12 +143,42 @@ public final class DagDBCommandHandler {
 
     // MARK: - Command dispatch
 
+    /// R2 — the operation says how much it did
+    /// (docs/contracts/RANK_BOUND_GATES_FROZEN.md, AMENDMENT 1).
+    ///
+    /// `nodes_computed` is the total node-evaluations the command
+    /// dispatched: the per-tick node slots times the tick count. It is
+    /// printed always. When the rank levels actually dispatched exceed the
+    /// configured bound, the reply also carries `ranks=` and `bound=`, so
+    /// a graph restored under a smaller bound announces itself on the wire
+    /// at the first tick rather than scrolling past in a log. (STATUS
+    /// carries the same news without ticking; VALIDATE names the nodes.)
+    private func rankWorkSuffix(nodesComputed: Int, rankDispatched: Bool) -> String {
+        engine.ensureRankTopology()
+        var s = " nodes_computed=\(nodesComputed)"
+        if engine.effectiveRankCount > maxRank {
+            // Rank mode reports the levels it dispatched. Sync mode does not
+            // dispatch by rank at all, so `ranks=` would imply a bounded
+            // dispatch that did not happen; it reports the same news as a
+            // fact about the GRAPH instead, in STATUS's vocabulary.
+            s += rankDispatched
+                ? " ranks=\(engine.effectiveRankCount) bound=\(maxRank)"
+                : " rank_max=\(engine.highestRankPresent) bound=\(maxRank)"
+        }
+        return s
+    }
+
     public func handle(_ input: String) -> String {
         let cmd = DSLParser.parse(input)
 
         switch cmd {
         case .status:
-            return "OK STATUS nodes=\(nodeCount) ticks=\(tickCount) gpu=\(engine.device.name) grid=\(width)x\(height) maxRank=\(maxRank) twin_open=\(twin.totalOpen)"
+            // `ranks=` and `rank_max=` sit beside the configured bound so a
+            // health check can compare two printed numbers and catch a stale
+            // bound WITHOUT ticking (R4 + AMENDMENT 2). Every field STATUS
+            // printed before is still printed, in the same relative order.
+            engine.ensureRankTopology()
+            return "OK STATUS nodes=\(nodeCount) ticks=\(tickCount) gpu=\(engine.device.name) grid=\(width)x\(height) maxRank=\(maxRank) ranks=\(engine.effectiveRankCount) rank_max=\(engine.highestRankPresent) twin_open=\(twin.totalOpen) tiled_open=\(tiledRouters.count)"
 
         case .tick(let count):
             let t0 = CFAbsoluteTimeGetCurrent()
@@ -135,6 +188,7 @@ public final class DagDBCommandHandler {
             }
             let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
             return "OK TICK \(count) elapsed=\(String(format: "%.2f", elapsed))ms total=\(tickCount)"
+                + rankWorkSuffix(nodesComputed: engine.rankDispatchNodeCount() * count, rankDispatched: true)
 
         case .tickSync(let count):
             let t0 = CFAbsoluteTimeGetCurrent()
@@ -144,6 +198,7 @@ public final class DagDBCommandHandler {
             }
             let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
             return "OK TICK_SYNC \(count) elapsed=\(String(format: "%.2f", elapsed))ms total=\(tickCount)"
+                + rankWorkSuffix(nodesComputed: nodeCount * count, rankDispatched: false)
 
         case .eval(let predicate, _, _):
             engine.tick(tickNumber: tickCount)
@@ -234,6 +289,13 @@ public final class DagDBCommandHandler {
 
         case .setRank(let node, let value):
             guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            // R3 · the door. No valid DAG on N nodes holds a rank of N or
+            // more, and a typo there would turn the rank loop into a denial
+            // of service. A rank in [maxRank, nodeCount) is ACCEPTED and
+            // computed — the bound is a sizing hint, not a limit.
+            guard value < UInt64(nodeCount) else {
+                return "ERROR out_of_range: rank \(value) not in 0..<\(nodeCount)"
+            }
             if let wal = walAppender {
                 do { _ = try wal.setRank(node: UInt32(node), value: value) }
                 catch { return "ERROR wal: append: \(error)" }
@@ -555,7 +617,16 @@ public final class DagDBCommandHandler {
             // injected ranks preserve the monotonicity invariant for any
             // existing edges — the bulk commit skips per-insert validation
             // for speed. Follow up with VALIDATE if paranoid.
+            //
+            // R3 · the door. The one thing it no longer skips is the range:
+            // the WHOLE vector is checked before a single rank is written,
+            // so a bad entry leaves every rank exactly as it was, and the
+            // refusal names the first offending node. Ranks in
+            // [maxRank, nodeCount) pass — they are computed, not refused.
             let src = shmBase.advanced(by: 8).bindMemory(to: UInt64.self, capacity: nodeCount)
+            for i in 0..<nodeCount where src[i] >= UInt64(nodeCount) {
+                return "ERROR out_of_range: node \(i) rank \(src[i]) not in 0..<\(nodeCount)"
+            }
             let dst = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: nodeCount)
             for i in 0..<nodeCount { dst[i] = src[i] }
             truthRankIndex.markDirty()
@@ -834,6 +905,9 @@ public final class DagDBCommandHandler {
         case .twin(let t):
             return handleTwin(t, sessionId: nil)
 
+        case .saveTiled, .tiledOpen, .tiledBFS, .tiledSelect, .tiledStatus, .tiledList, .tiledClose:
+            return handleTiled(cmd, sessionId: nil)
+
         case .unknown(let raw):
             return "ERROR unknown_command: \(raw)"
         }
@@ -987,6 +1061,14 @@ public final class DagDBCommandHandler {
                 return "ERROR bfs: reader: \(error)"
             }
 
+        case .tiledBFS, .tiledSelect, .tiledStatus, .tiledList:
+            // Routers are daemon-global like twin registries (see
+            // `tiledRouters`'s doc comment) — a reader session may run the
+            // read-only TILED verbs against the same handler-owned routers
+            // the primary path uses. OPEN/CLOSE/SAVE TILED stay forbidden
+            // below (mutate the registry / the filesystem).
+            return handleTiled(cmd, sessionId: sessionId)
+
         // All writes and nested sessions rejected.
         case .tick, .tickSync, .save, .load, .setTruth, .setRank, .setLUT,
              .setWeight, .setValue,
@@ -996,7 +1078,8 @@ public final class DagDBCommandHandler {
              .backupInit, .backupAppend, .backupRestore, .backupCompact, .backupInfo,
              .setRanksBulk, .setLutsBulk, .setNeighborsBulk,
              .openReader, .closeReader, .listReaders, .reader,
-             .similarDecisions, .composeLUT:
+             .similarDecisions, .composeLUT,
+             .saveTiled, .tiledOpen, .tiledClose:
             return "ERROR forbidden: command not allowed in reader session (read-only)"
 
         case .eval:

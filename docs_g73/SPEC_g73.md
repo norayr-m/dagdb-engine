@@ -1,6 +1,6 @@
 # SPEC — G73 fsync/durability hardening (frozen 2026-08-01, polar day)
 
-Scope (from queen's G73 + dag's 2026-05-12 adversarial pinning, unchanged):
+Scope (frozen 2026-05-12 after adversarial review, unchanged):
 1. **WAL batch knob.** WAL fsyncs every record today (keep as DEFAULT).
    Add opt-in group-commit: batch by (N records | T ms), whichever first;
    crash loses at most the unsynced tail — bound EXPLICIT and tested.
