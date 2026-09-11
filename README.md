@@ -442,13 +442,17 @@ rank value, and the bulk rank commit states in its own comment that it skips
 validation. So a graph whose ranks exceed the configured `maxRank` is ticked
 without an error and without a counter naming what was left out.
 
-Every example and every test in this release is inside `maxRank`, so the
-released behaviour matches its documentation for them. If you set ranks
-yourself, or restore a snapshot written under a larger `maxRank`, check that
-your ranks are below the bound until this is fixed.
+Every example and test in this release **that ticks** is inside the bound. Two
+fixtures sit above it and are unaffected, because they are query paths that do
+not use the rank kernel: the breadth-first-search usage doc and the rank-index
+test. No published number moves. If you set ranks yourself, or restore a
+snapshot written under a larger `maxRank`, check your ranks against the bound
+until this is fixed.
 
-A refusal at the tick — rather than a silent skip — is in progress; this note
-comes out with it.
+The fix in progress makes rank mode **compute** every rank present rather than
+refuse — the bound is a sizing hint, not a safety limit, and refusing would
+leave a graph restored under a smaller bound dead in rank mode until a restart.
+This note comes out with it.
 
 ## License
 

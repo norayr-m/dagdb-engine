@@ -13,7 +13,7 @@ let state = DagDBState(width: 32, height: 32)
 let engine = try DagDBEngine(grid: grid, state: state, maxRank: 200)
 
 // ... ingest protein contact graph into engine buffers ...
-// single-node-per-residue: node i = residue i at rank (maxRank - i)
+// single-node-per-residue: node i = residue i at rank (maxRank - 1 - i)
 // one edge per contact (p, q) with p < q: src = p, dst = q
 
 let r = try DagDBBFS.bfsDepthsUndirected(
@@ -71,7 +71,7 @@ depths = np.frombuffer(buf[8:8 + node_count*4], dtype=np.int32)
 ## Ingestion pattern (single-node-per-residue)
 
 Each residue is one DagDB node. Rank assignment:
-`rank(node_i) = maxRank - seqIndex(i)`. Every contact `(p, q)` with
+`rank(node_i) = maxRank - 1 - seqIndex(i)`  (the -1 keeps index 0 below the bound, not on it). Every contact `(p, q)` with
 `p < q` becomes one directed edge from node `p` to node `q`.
 
 Python pseudo-code using the new `SET_RANKS_BULK` fast path:
