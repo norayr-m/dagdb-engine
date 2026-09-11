@@ -2,7 +2,7 @@
 
 6-bounded ranked DAG database engine. Swift + Metal GPU compute on Apple Silicon.
 
-[→ DagDB Overview (24 slides)](https://norayr-m.github.io/dagdb-engine/site/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/dagdb-engine/site/sql-architecture.html) | [→ **Bio-Twin Deck (12 slides)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/dagdb-engine/site/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/dagdb-engine/site/podcast.html) | [→ **Bio-Twin Podcast (6 min)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | [→ Grid Demo](https://norayr-m.github.io/dagdb-engine/site/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/dagdb-engine/site/citydrt.html) | [→ **Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html)
+[→ DagDB Overview (24 slides)](https://norayr-m.github.io/dagdb-engine/site/) | [→ SQL Architecture (26 slides)](https://norayr-m.github.io/dagdb-engine/site/sql-architecture.html) | [→ **Bio-Twin Deck (12 slides)**](https://norayr-m.github.io/dagdb-engine/dagdb/docs/biotwin-slides.html) | [→ Interview Podcast (8 min)](https://norayr-m.github.io/dagdb-engine/site/podcast-interview.html) | [→ Full Podcast (30 min)](https://norayr-m.github.io/dagdb-engine/site/podcast.html) | [→ **Bio-Twin Podcast (6 min)**](https://norayr-m.github.io/dagdb-engine/dagdb/docs/biotwin-podcast.html) | [→ Grid Demo](https://norayr-m.github.io/dagdb-engine/site/grid-demo.html) | [→ City Demo](https://norayr-m.github.io/dagdb-engine/site/citydrt.html) | [→ **Live Explorer**](https://norayr-m.github.io/dagdb-engine/dagdb/examples/liver/explorer.html)
 
 ## What It Does
 
@@ -18,7 +18,7 @@ Every node connects to at most **6 directed edges**. Each node has a programmabl
 
 | | | |
 |--|--|--|
-| 🎞️ [**Bio-Twin Slide Deck**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-slides.html) | 🎙️ [**Podcast (6m 20s)**](https://norayr-m.github.io/dagdb-engine/docs/biotwin-podcast.html) | 🧪 [**Live Explorer**](https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html) |
+| 🎞️ [**Bio-Twin Slide Deck**](https://norayr-m.github.io/dagdb-engine/dagdb/docs/biotwin-slides.html) | 🎙️ [**Podcast (6m 20s)**](https://norayr-m.github.io/dagdb-engine/dagdb/docs/biotwin-podcast.html) | 🧪 [**Live Explorer**](https://norayr-m.github.io/dagdb-engine/dagdb/examples/liver/explorer.html) |
 
 ---
 

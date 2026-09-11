@@ -2,6 +2,10 @@
 
 Five minutes from cold repo to running daemon + a first query.
 
+> New here? Read [**Home**](Home.md) first if you want the
+> conceptual tour — *what DagDB is, what problems it fits, what it
+> isn't*. This page assumes you already know you want to run it.
+
 ---
 
 ## Build
@@ -28,10 +32,13 @@ Optional — enable the write-ahead log:
 DAGDB_WAL=~/.dagdb/live.wal .build/release/dagdb-daemon --grid 1024
 ```
 
-Optional — autosnapshot on graceful shutdown:
+Optional — autosnapshot on graceful shutdown, and load it back on the
+next start (both opt-in; without the second one a restart comes up
+empty until you `LOAD`):
 
 ```
-DAGDB_AUTOSAVE=~/.dagdb/autosave.dags .build/release/dagdb-daemon --grid 1024
+DAGDB_AUTOSAVE=~/.dagdb/autosave.dags DAGDB_STARTUP_LOAD=~/.dagdb/autosave.dags \
+  .build/release/dagdb-daemon --grid 1024
 ```
 
 See [`data-and-persistence.md`](data-and-persistence.md) for why
@@ -115,9 +122,9 @@ curl -s -X POST http://localhost:8787/dagdb/dagdb_status \
 
 ```
 cd dagdb
-swift test                                        # 98 Swift tests, ~2.8 s
+swift test                                        # 165 Swift tests, ~42 s
 python3 plugins/biology/rank_policies.py          # self-test
-python3 -m pytest plugins/loom/test_adapter.py -q # 16 pytest tests
+# python3 -m pytest plugins/loom/test_adapter.py  # currently broken at collection
 ```
 
 ## Where to go next

@@ -1,6 +1,6 @@
 # BFS primitive — usage cheat sheet
 
-> Amateur engineering project. Shipped 2026-04-20, updated for u32
+> Amateur engineering project. Shipped 2026-04-20, widened to u64
 > rank + MVCC on 2026-04-21.
 
 ## From Swift (library)
@@ -81,20 +81,20 @@ import numpy as np
 from dagdb.plugins.biology.rank_policies import SequencePositionPolicy
 
 N = len(residues)
-max_rank = N                    # u32 now — up to 4 294 967 295
+max_rank = N                    # u64 — up to 1.8 × 10¹⁹
 
 # 1. Compute rank vector via the plugin Protocol
 policy = SequencePositionPolicy()
 ranks = policy.assign_ranks(
     node_count=N, max_rank=max_rank,
     seq_indices=np.arange(N),
-)
+).astype(np.uint64)
 
-# 2. Write ranks to shm at offset 8, then bulk-commit in one round-trip
+# 2. Write u64 ranks to shm at offset 8, then bulk-commit in one round-trip
 import mmap
 with open("/tmp/dagdb_shm_file", "r+b") as f:
-    mm = mmap.mmap(f.fileno(), 8 + N * 4)
-    mm[8 : 8 + N * 4] = ranks.tobytes()
+    mm = mmap.mmap(f.fileno(), 8 + N * 8)
+    mm[8 : 8 + N * 8] = ranks.tobytes()
     mm.close()
 
 dagdb_set_ranks_bulk()          # daemon memcpys into rankBuf
@@ -154,4 +154,4 @@ SIMILAR_DECISIONS TO <node> DEPTH 2 K 5 AMONG TRUTH 2
 
 ---
 
-*dag · e150ed22 · amateur engineering, errors likely, no competitive claims*
+*Amateur engineering, errors likely, no competitive claims.*

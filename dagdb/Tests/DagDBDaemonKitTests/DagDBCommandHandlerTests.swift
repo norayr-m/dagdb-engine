@@ -216,3 +216,30 @@ final class DagDBCommandHandlerTests: XCTestCase {
         _ = h // keep alive
     }
 }
+
+// MARK: - E1 weight commands (2026-08-22)
+
+extension DagDBCommandHandlerTests {
+
+    func testSetWeightAndValueCommands() throws {
+        let h = try makeHandler(side: 4)
+        let n = h.engine.nodeCount
+
+        // SET <node> WEIGHT <dir> <float>
+        var r = h.handle("SET 5 WEIGHT 3 0.25")
+        XCTAssertTrue(r.hasPrefix("OK SET"), r)
+        let w = h.engine.edgeWeightsBuf.contents().bindMemory(to: Float.self, capacity: n * 6)
+        XCTAssertEqual(w[5 * 6 + 3], 0.25)
+
+        // SET <node> VALUE <float>
+        r = h.handle("SET 6 VALUE -2.5")
+        XCTAssertTrue(r.hasPrefix("OK SET"), r)
+        let v = h.engine.nodeValueBuf.contents().bindMemory(to: Float.self, capacity: n)
+        XCTAssertEqual(v[6], -2.5)
+
+        // Bounds discipline.
+        XCTAssertTrue(h.handle("SET \(n) VALUE 1.0").hasPrefix("ERROR out_of_range"))
+        XCTAssertTrue(h.handle("SET 2 WEIGHT 6 1.0").hasPrefix("ERROR out_of_range"))
+        XCTAssertTrue(h.handle("SET 2 WEIGHT 0 inf").hasPrefix("ERROR bad_value"))
+    }
+}

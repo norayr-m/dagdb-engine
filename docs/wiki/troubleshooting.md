@@ -232,8 +232,10 @@ restart.
 # One-shot save:
 echo "SAVE /path/outside/the/repo/snap.dags" | nc -U /tmp/dagdb.sock
 
-# Or enable autosave on the daemon's next start:
-DAGDB_AUTOSAVE=/path/outside/the/repo/auto.dags ./dagdb-daemon --grid 1024
+# Or enable autosave on the daemon's next start (and load it back at
+# startup — without DAGDB_STARTUP_LOAD a restart starts empty):
+DAGDB_AUTOSAVE=/path/outside/the/repo/auto.dags \
+DAGDB_STARTUP_LOAD=/path/outside/the/repo/auto.dags ./dagdb-daemon --grid 1024
 
 # Or WAL for continuous durability:
 DAGDB_WAL=/path/outside/the/repo/live.wal ./dagdb-daemon --grid 1024

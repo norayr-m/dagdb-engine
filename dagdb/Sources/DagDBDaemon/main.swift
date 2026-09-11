@@ -10,6 +10,10 @@ import Foundation
 import DagDB
 import DagDBDaemonKit
 
+// Line-buffer stdout: under launchd or a redirect, Foundation's print() is
+// fully buffered and a hard kill loses the startup lines (2026-09-09).
+setlinebuf(stdout)
+
 print("══════════════════════════════════════════════════════════")
 print("  DagDB Daemon v0.1 — GPU Graph Engine Server")
 print("══════════════════════════════════════════════════════════")
@@ -79,6 +83,12 @@ do {
     for i in 0..<(nodeCount * 6) { nbPtr[i] = -1 }
 }
 
+// ── Twin-spec DSL state (interface phase, 2026-09) ──
+// Daemon-global — every connection shares this one instance. Built before
+// WAL replay so `.streamOpen`..`.close` records (opcodes 0x20-0x2B) have
+// somewhere to land.
+let twinState = TwinState()
+
 // ── Write-ahead log ──
 // Opt-in via DAGDB_WAL env var. When set, every mutation (setTruth/setRank/
 // setLUT) is appended to the log and fsync'd before the engine buffer is
@@ -112,30 +122,6 @@ let walFsyncPolicy: DagDBWAL.FsyncPolicy = {
 assert(ProcessInfo.processInfo.environment["DAGDB_ENV"] != "prod"
        || walFsyncPolicy == .everyRecord,
        "prod WAL fsync policy must be everyRecord")
-
-var walAppender: DagDBWAL.Appender? = nil
-if let p = walPath {
-    do {
-        // Replay any existing log first, before opening appender for new writes.
-        if FileManager.default.fileExists(atPath: p) {
-            let r = try DagDBWAL.replay(engine: engine, nodeCount: nodeCount, path: p)
-            print("  WAL: replayed \(r.recordsAfterCheckpoint) records past epoch \(r.checkpointEpoch)")
-            if let off = r.truncatedAtOffset {
-                print("  WAL: dropped truncated tail at offset \(off)")
-            }
-        }
-        walAppender = try DagDBWAL.Appender(path: p, nodeCount: nodeCount,
-                                            policy: walFsyncPolicy)
-        switch walFsyncPolicy {
-        case .everyRecord:
-            print("  WAL: appending to \(p) (fsync: everyRecord)")
-        case .grouped(let n, let ms):
-            print("  WAL: appending to \(p) (fsync: grouped n=\(n) ms=\(ms))")
-        }
-    } catch {
-        print("  WAL: init failed: \(error) — continuing without WAL")
-    }
-}
 
 // ── Shared memory for results ──
 // Layout: [4 bytes: row count] [4 bytes: row size] [data rows...]
@@ -196,7 +182,7 @@ print("  Shared memory: \(shmSize) bytes at \(shmPath)")
 //
 // Phase 2 of dev/test/prod env split. See docs/dev-test-prod-memo-2026-05-01.md.
 //
-// Grace-period default per dag's deferred decision: missing DAGDB_ENV warns
+// Grace-period default per a deferred decision: missing DAGDB_ENV warns
 // rather than hard-fails, so existing deployments keep working until plist
 // updates land everywhere. Tighten to required after the migration window.
 
@@ -251,6 +237,52 @@ if let env = dagdbEnv { print("  Env: \(env)") }
 if let r = dataRoot { print("  Data root: \(r)") }
 
 
+// ── Startup recovery + write-ahead log appender ──
+// Opt-in snapshot load (DAGDB_STARTUP_LOAD, roadmap item 4, 2026-09-09)
+// BEFORE WAL replay, then the appender for new writes. The order and the
+// reasons live in DagDBStartup.recover; main.swift and the tests share it.
+// A configured-but-unreadable snapshot is fatal: starting empty over a WAL
+// whose checkpoint assumes that state would silently diverge.
+let startupSnapshotPath: String? = {
+    if let env = ProcessInfo.processInfo.environment["DAGDB_STARTUP_LOAD"], !env.isEmpty {
+        return env
+    }
+    return nil
+}()
+let startup: DagDBStartup.Result
+do {
+    startup = try DagDBStartup.recover(
+        engine: engine, nodeCount: nodeCount, width: width, height: height,
+        dagdbEnv: dagdbEnv, dataRoot: dataRoot,
+        twin: twinState, truthRankIndex: truthRankIndex,
+        snapshotPath: startupSnapshotPath, walPath: walPath
+    )
+} catch {
+    print("  FATAL: \(error)")
+    exit(2)
+}
+
+var walAppender: DagDBWAL.Appender? = nil
+if let p = walPath {
+    if let e = startup.replayError {
+        // Pre-existing behaviour kept: a log we cannot replay is not appended to.
+        print("  WAL: replay failed: \(e) — continuing without WAL")
+    } else {
+        do {
+            walAppender = try DagDBWAL.Appender(path: p, nodeCount: nodeCount,
+                                                policy: walFsyncPolicy)
+            switch walFsyncPolicy {
+            case .everyRecord:
+                print("  WAL: appending to \(p) (fsync: everyRecord)")
+            case .grouped(let n, let ms):
+                print("  WAL: appending to \(p) (fsync: grouped n=\(n) ms=\(ms))")
+            }
+        } catch {
+            print("  WAL: init failed: \(error) — continuing without WAL")
+        }
+    }
+}
+
 // ── Command handler ──
 // The DSL dispatch lives in DagDBDaemonKit so it can be tested against a real
 // engine without a socket or mmap'd shared memory (Fable review T1). This shim
@@ -263,14 +295,15 @@ let handler = DagDBCommandHandler(
     width: width,
     height: height,
     maxRank: maxRank,
-    tickCount: 0,
+    tickCount: startup.tickCount,
     walAppender: walAppender,
     sessionManager: sessionManager,
     truthRankIndex: truthRankIndex,
     shmBase: shmBase,
     resultRowSize: resultRowSize,
     dataRoot: dataRoot,
-    dagdbEnv: dagdbEnv
+    dagdbEnv: dagdbEnv,
+    twin: twinState
 )
 
 // ── Socket server ──
@@ -304,17 +337,9 @@ let autoSnapshotPath: String? = {
     // grouped-commit daemon loses nothing on a graceful shutdown.
     handler.walAppender?.barrier()
     if let path = autoSnapshotPath {
-        do {
-            let r = try DagDBSnapshot.save(
-                engine: engine, nodeCount: nodeCount,
-                gridW: width, gridH: height,
-                tickCount: handler.tickCount, path: path,
-                compressed: false
-            )
-            print("  Auto-snapshot: \(r.bytesWritten) bytes to \(path) (\(String(format: "%.1f", r.elapsedMs))ms)")
-        } catch {
-            print("  Auto-snapshot failed: \(error)")
-        }
+        // Snapshot + WAL checkpoint, same as SAVE — the checkpoint is what
+        // keeps startup recovery from replaying the tail a second time.
+        print("  Auto-snapshot: \(handler.durableSnapshot(path: path))")
     }
     exit(0)
 }

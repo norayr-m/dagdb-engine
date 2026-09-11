@@ -20,6 +20,8 @@ public enum DSLCommand {
     case nodes(rank: Int?, predicate: Predicate?)
     case traverse(fromNode: Int, depth: Int)
     case setTruth(node: Int, value: UInt8)
+    case setWeight(node: Int, dir: Int, value: Float)   // SET <node> WEIGHT <dir> <f> (E1)
+    case setValue(node: Int, value: Float)              // SET <node> VALUE <f> (E1)
     case setRank(node: Int, value: UInt64)
     case setLUT(node: Int, preset: String)
     case connect(from: Int, to: Int)
@@ -84,6 +86,10 @@ public enum DSLCommand {
     /// a common input vector — the engine just performs the bitwise op
     /// on the 64-bit LUT integers.  Result composes the truth tables.
     case composeLUT(op: String, src1: Int, src2: Int?, dst: Int)
+    /// Twin-spec DSL: one of the nine verb families (STREAM, HEADER, RECORD,
+    /// RINGS, CLOCK, GEAR, XCONV, BUDGET, ALARM) parsed by DSLParser+Twin.
+    /// See TwinCommand for the full grammar (interface phase, 2026-09).
+    case twin(TwinCommand)
     case unknown(String)
 }
 
@@ -391,6 +397,14 @@ public enum DSLParser {
                 return .setRank(node: node, value: val)
             case "LUT":
                 return .setLUT(node: node, preset: tokens[3])
+            case "WEIGHT":
+                // SET <node> WEIGHT <dir 0..5> <float>
+                guard tokens.count >= 5, let dir = Int(tokens[3]),
+                      let val = Float(tokens[4]) else { return .unknown(input) }
+                return .setWeight(node: node, dir: dir, value: val)
+            case "VALUE":
+                guard let val = Float(tokens[3]) else { return .unknown(input) }
+                return .setValue(node: node, value: val)
             default:
                 return .unknown(input)
             }
@@ -435,6 +449,10 @@ public enum DSLParser {
                 return .unknown(input)
             }
             return .getTruth(node: node)
+
+        case "STREAM", "HEADER", "RECORD", "RINGS", "CLOCK", "GEAR", "XCONV", "BUDGET", "ALARM":
+            // Twin-spec DSL (interface phase, 2026-09) — see DSLParser+Twin.swift for the grammar.
+            return parseTwin(rawTokens: rawTokens, tokens: tokens, input: input)
 
         default:
             return .unknown(input)

@@ -116,7 +116,7 @@ from dagdb.plugins.loom.adapter import (
     save_ctx,
 )
 
-CTX_PATH = "/Users/you/jarvis_workspace/dagdb_ingest_ctx.json"
+CTX_PATH = "<workspace>/dagdb_ingest_ctx.json"
 
 def on_stop_hook(event: dict) -> None:
     ctx = load_ctx(CTX_PATH) or IngestContext()
@@ -203,6 +203,6 @@ dagdb/plugins/
 Ingest context and backfill debug outputs live outside the repo
 by convention:
 
-- `~/jarvis_workspace/dagdb_ingest_ctx.json` — Loom ingest state.
+- `<workspace>/dagdb_ingest_ctx.json` — Loom ingest state.
 - `dagdb/plugins/loom/_backfill_out/` — gitignored backfill debug
   artefacts.

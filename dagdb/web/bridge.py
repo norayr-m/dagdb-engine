@@ -33,6 +33,23 @@ READ_ONLY_VERBS = {
     "ANCESTRY", "SIMILAR_DECISIONS", "SELECT", "DISTANCE", "VALIDATE",
     "LIST_READERS", "OPEN_READER", "CLOSE_READER", "READER",
 }
+# Twin-spec verbs (interface phase, 2026-09) are two-token commands (VERB SUBVERB ...) — a
+# single-token allowlist can't express "STREAM STATE read-only, STREAM
+# OPEN not". This mirrors TwinCommand.isReadOnly (§0.13: twin registries
+# are daemon-global, so a mutating twin verb is never safe to expose here
+# even though it isn't gated by a READER session).
+READ_ONLY_TWIN = {
+    ("STREAM", "STATE"), ("STREAM", "LIST"),
+    ("HEADER", "CHECK"),
+    ("RECORD", "REPLAY"), ("RECORD", "VERIFY"), ("RECORD", "INFO"), ("RECORD", "LIST"),
+    ("RINGS", "RECALL"), ("RINGS", "INFO"), ("RINGS", "LIST"),
+    ("CLOCK", "STATE"), ("CLOCK", "LIST"),
+    ("GEAR", "STATE"),
+    ("XCONV", "CHECK"),
+    ("BUDGET", "ALLOCATE"), ("BUDGET", "INFO"), ("BUDGET", "LIST"),
+    ("ALARM", "INFO"), ("ALARM", "LIST"), ("ALARM", "FRAME"),
+    ("ALARM", "COURT"), ("ALARM", "SUCCESSOR"), ("ALARM", "CORRUPT"),
+}
 ALLOW_WRITE = os.environ.get("DAGDB_WS_ALLOW_WRITE", "0") == "1"
 _default_origins = "http://localhost,http://127.0.0.1,https://localhost,null"
 ALLOW_ORIGINS = {
@@ -55,8 +72,10 @@ def _origin_allowed(origin) -> bool:
 def _command_allowed(cmd: str) -> bool:
     if ALLOW_WRITE:
         return True
-    verb = cmd.split(None, 1)[0].upper() if cmd else ""
-    return verb in READ_ONLY_VERBS
+    tokens = cmd.split(None, 2)
+    verb = tokens[0].upper() if tokens else ""
+    subverb = tokens[1].upper() if len(tokens) > 1 else ""
+    return verb in READ_ONLY_VERBS or (verb, subverb) in READ_ONLY_TWIN
 
 def query_daemon(cmd: str) -> str:
     """Send a command to the daemon and return the response."""

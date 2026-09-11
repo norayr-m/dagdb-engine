@@ -29,6 +29,7 @@ public final class DagDBEngine {
     public let lut6HighBuf: MTLBuffer       // UInt32 per node
     public let activationBuf: MTLBuffer     // Int16 per node
     public let edgeWeightsBuf: MTLBuffer    // Float per (node * 6 + dir)
+    public let nodeValueBuf: MTLBuffer      // Float per node (solver state, E1)
     public let nodeTypeBuf: MTLBuffer       // UInt8 per node
 
     // Graph structure (from HexGrid)
@@ -117,7 +118,8 @@ public final class DagDBEngine {
               let b4 = device.makeBuffer(bytes: state.lut6High, length: nodeCount * 4, options: shared),
               let b5 = device.makeBuffer(bytes: state.activation, length: nodeCount * 2, options: shared),
               let b6 = device.makeBuffer(bytes: state.edgeWeights, length: nodeCount * 6 * 4, options: shared),
-              let b7 = device.makeBuffer(bytes: state.nodeType, length: nodeCount, options: shared) else {
+              let b7 = device.makeBuffer(bytes: state.nodeType, length: nodeCount, options: shared),
+              let b8 = device.makeBuffer(bytes: state.nodeValue, length: nodeCount * 4, options: shared) else {
             throw EngineError.bufferAllocationFailed
         }
         self.truthStateBuf = b1
@@ -127,6 +129,7 @@ public final class DagDBEngine {
         self.activationBuf = b5
         self.edgeWeightsBuf = b6
         self.nodeTypeBuf = b7
+        self.nodeValueBuf = b8
 
         // Allocate is_register flag buffer (one byte per node, default 0).
         // Populated by addBackEdge / clearBackEdges; reused across ticks.

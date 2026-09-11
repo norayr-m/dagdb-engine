@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "DagDB", targets: ["DagDB"]),
         .executable(name: "dagdb-cli", targets: ["DagDBCLI"]),
         .executable(name: "dagdb-daemon", targets: ["DagDBDaemon"]),
+        .executable(name: "dagdb-twin-demo", targets: ["TwinDemo"]),
     ],
     targets: [
         .target(
@@ -24,6 +25,16 @@ let package = Package(
             path: "Sources/DagDBDaemonKit"
         ),
         .executableTarget(
+            name: "E3Ladder",
+            dependencies: ["DagDB"],
+            path: "Sources/E3Ladder"
+        ),
+        .executableTarget(
+            name: "E2Runner",
+            dependencies: ["DagDB"],
+            path: "Sources/E2Runner"
+        ),
+        .executableTarget(
             name: "DagDBCLI",
             dependencies: ["DagDB"],
             path: "Sources/DagDBCLI"
@@ -32,6 +43,13 @@ let package = Package(
             name: "DagDBDaemon",
             dependencies: ["DagDB", "DagDBDaemonKit"],
             path: "Sources/DagDBDaemon"
+        ),
+        // Runnable narrative over the seven twin primitives merged for the
+        // twin spec — see examples/twin_primitives/README.md.
+        .executableTarget(
+            name: "TwinDemo",
+            dependencies: ["DagDB"],
+            path: "Sources/TwinDemo"
         ),
         .testTarget(
             name: "DagDBTests",

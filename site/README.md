@@ -7,8 +7,8 @@ tests, docs, and the top-level README.
 These assets used to live at `github.com/norayr-m/DagDB` as a
 separate repository. They were folded in on 2026-04-22 so one
 repository holds both the engine and the presentation material
-it references. Old `norayr-m.github.io/DagDB/*` URLs redirect
-here (or to archived copies).
+it references. The old `norayr-m/DagDB` repository has been removed; its
+`norayr-m.github.io/DagDB/*` URLs no longer resolve — the material lives here.
 
 ## What is this?
 
@@ -48,7 +48,7 @@ Specification, architecture, and resolved design questions. Press Space to narra
 
 ## Status
 
-Engine landing: [`../README.md`](../README.md) — u64 rank, snapshot v3, MVCC snapshot-on-read, bfsDepths, rankPolicy, SET_RANKS_BULK, Loom adapter. 98 Swift + 16 Python tests green.
+Engine landing: [`../README.md`](../README.md) — u64 rank, snapshot v5 (env-origin trailer), back-edge, MVCC snapshot-on-read, bfsDepths, rankPolicy, SET_RANKS_BULK (u64), Loom adapter. 165 Swift tests green as of 2026-05-11. See [`../CURRENT_STATE.md`](../CURRENT_STATE.md) for the live picture.
 
 This subdirectory is curation + narration; the engine lives in [`../dagdb/`](../dagdb/).
 

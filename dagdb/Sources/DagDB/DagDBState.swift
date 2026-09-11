@@ -36,6 +36,13 @@ public struct DagDBState {
     /// weights[node * 6 + dir] = edge weight to neighbor in that direction
     public var edgeWeights: [Float]
 
+    /// Continuous node value (Float per node) — solver state for the
+    /// weighted/linear layer (E1, 2026-08-22). Distinct from `activation`
+    /// (Int16, legacy continuous mode): solvers accumulate in Float64 and
+    /// store Float32 here. Persisted in the snapshot v6 WGTS section and
+    /// writable via the WAL `setNodeValue` opcode.
+    public var nodeValue: [Float]
+
     /// Node type marker: 0=real, 1=virtual (hub split), 2=ghost (skip-connection padding)
     public var nodeType: [UInt8]
 
@@ -62,6 +69,7 @@ public struct DagDBState {
         self.lut6High = [UInt32](repeating: 0, count: n)
         self.activation = [Int16](repeating: 0, count: n)
         self.edgeWeights = [Float](repeating: 1.0, count: n * 6)
+        self.nodeValue = [Float](repeating: 0.0, count: n)
         self.nodeType = [UInt8](repeating: 0, count: n)
         self.backEdgeSrcs = []
         self.backEdgeDsts = []

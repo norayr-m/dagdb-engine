@@ -26,8 +26,10 @@
 ///        The back-edge section is always uncompressed; the `flags`
 ///        compressed bit refers only to the v3 body.
 ///
-/// Save always writes v4. Load accepts v1, v2, v3 (back-edges → empty
-/// list) and v4. Rank widens on read for v1 and v2.
+/// Save always writes the newest version (v7). Load accepts v1..v7; rank
+/// widens on read for v1 and v2, and every section introduced after v4
+/// (env trailer, WGTS lanes, TWIN state) is absent on older files and
+/// simply skipped — never a load failure.
 ///
 /// N = 10M at v3 → 420 MB raw. With zlib the body typically drops to
 /// 20-30 % because the neighbors table is mostly -1 padding.
@@ -53,11 +55,35 @@ public enum DagDBSnapshot {
     /// env-split, 2026-05-02. LOAD verifies the env code matches the daemon's
     /// env if both are set; cross-env loads rejected with envMismatch.
     public static let versionV5: UInt32 = 5
-    public static let version: UInt32 = versionV5
+    /// v6 = v5 + a WGTS lane section between the back-edge section and the
+    /// ENVS trailer (E1, 2026-08-22): magic "WGTS" (4) + lane flags u8
+    /// (bit0 edgeWeights, bit1 activation, bit2 nodeValue) + the present
+    /// lanes, uncompressed, in flag-bit order. A lane is written only when
+    /// it differs from its default (weights all 1.0, activation all 0,
+    /// nodeValue all 0), so Boolean-mode snapshots pay 5 bytes, not 26N.
+    public static let versionV6: UInt32 = 6
+    /// v7 = v6 + a TWIN section between the WGTS lane section and the ENVS
+    /// trailer (interface phase, 2026-09): magic "TWIN" (4) + u32 byteLength (4,
+    /// little-endian) + JSON (`JSONEncoder` `.sortedKeys`) of
+    /// `TwinState.Snapshot` — the seven twin-spec registries (named
+    /// streams, slice records, geared rings, master clocks/gears, budget
+    /// layouts, alarm sets by reference). Always uncompressed. Length 0
+    /// when `twin` is nil at save time. Loading a v7 file with `twin: nil`
+    /// still validates the section's magic/length but does not decode or
+    /// apply it. A v1..v6 file carries no TWIN section; loading one resets
+    /// the passed `twin` to empty, matching a fresh daemon's twin state.
+    public static let versionV7: UInt32 = 7
+    public static let version: UInt32 = versionV7
     public static let headerSize: Int = 32
 
     /// "ENVS" magic for the v5 env-origin trailer.
     public static let envTrailerMagic: [UInt8] = [0x45, 0x4e, 0x56, 0x53]
+
+    /// "WGTS" magic for the v6 lane section.
+    public static let laneSectionMagic: [UInt8] = [0x57, 0x47, 0x54, 0x53]
+
+    /// "TWIN" magic for the v7 twin-state section.
+    public static let twinSectionMagic: [UInt8] = [0x54, 0x57, 0x49, 0x4e]
 
     /// Env-origin stamp embedded in v5 snapshots. `unspecified` means the
     /// daemon writing/reading didn't have DAGDB_ENV set (legacy / unguarded).
@@ -175,7 +201,8 @@ public enum DagDBSnapshot {
         tickCount: UInt32,
         path: String,
         compressed: Bool = false,
-        daemonEnv: SnapshotEnv = .unspecified
+        daemonEnv: SnapshotEnv = .unspecified,
+        twin: TwinState? = nil
     ) throws -> (bytesWritten: Int, uncompressedBodyBytes: Int, elapsedMs: Double) {
         let t0 = Date()
 
@@ -254,6 +281,52 @@ public enum DagDBSnapshot {
         }
         handle.write(beSection)
 
+        // v6 WGTS lane section — after the back-edge section, before the
+        // ENVS trailer. Non-default lanes only (see versionV6 doc).
+        var laneSection = Data()
+        laneSection.append(contentsOf: laneSectionMagic)
+        let wPtr = engine.edgeWeightsBuf.contents().bindMemory(to: Float.self, capacity: nodeCount * 6)
+        let aPtr = engine.activationBuf.contents().bindMemory(to: Int16.self, capacity: nodeCount)
+        let vPtr = engine.nodeValueBuf.contents().bindMemory(to: Float.self, capacity: nodeCount)
+        var laneFlags: UInt8 = 0
+        for i in 0..<(nodeCount * 6) where wPtr[i] != 1.0 { laneFlags |= 0x01; break }
+        for i in 0..<nodeCount where aPtr[i] != 0 { laneFlags |= 0x02; break }
+        for i in 0..<nodeCount where vPtr[i] != 0.0 { laneFlags |= 0x04; break }
+        laneSection.append(laneFlags)
+        handle.write(laneSection)
+        var laneBytes = laneSection.count
+        if laneFlags & 0x01 != 0 {
+            handle.write(Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: wPtr),
+                              count: nodeCount * 6 * 4, deallocator: .none))
+            laneBytes += nodeCount * 6 * 4
+        }
+        if laneFlags & 0x02 != 0 {
+            handle.write(Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: aPtr),
+                              count: nodeCount * 2, deallocator: .none))
+            laneBytes += nodeCount * 2
+        }
+        if laneFlags & 0x04 != 0 {
+            handle.write(Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: vPtr),
+                              count: nodeCount * 4, deallocator: .none))
+            laneBytes += nodeCount * 4
+        }
+
+        // v7 TWIN section — between the WGTS lane section and the ENVS
+        // trailer. magic "TWIN" (4) + u32 byteLength (4) + JSON
+        // (`.sortedKeys`) of `TwinState.Snapshot`. Length 0 when `twin`
+        // is nil — most daemon runs never open a twin registry.
+        var twinSection = Data()
+        twinSection.append(contentsOf: twinSectionMagic)
+        var twinJSON = Data()
+        if let twin = twin {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            twinJSON = try encoder.encode(twin.export())
+        }
+        appendU32(&twinSection, UInt32(twinJSON.count))
+        twinSection.append(twinJSON)
+        handle.write(twinSection)
+
         // v5 env-origin trailer — 5 bytes appended at end of file:
         // magic "ENVS" (4) + env code u8 (1).
         var envTrailer = Data()
@@ -317,7 +390,7 @@ public enum DagDBSnapshot {
             if dfd >= 0 { _ = fcntl(dfd, F_FULLFSYNC); close(dfd) }
         }
 
-        let total = headerSize + bodyBytes + beSection.count + envTrailer.count
+        let total = headerSize + bodyBytes + beSection.count + laneBytes + twinSection.count + envTrailer.count
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return (total, uncompressedBodySize, elapsed)
     }
@@ -350,7 +423,8 @@ public enum DagDBSnapshot {
         path: String,
         validate: Bool = true,
         daemonEnv: SnapshotEnv = .unspecified,
-        verifyManifest: Bool = true
+        verifyManifest: Bool = true,
+        twin: TwinState? = nil
     ) throws -> LoadResult {
         let t0 = Date()
 
@@ -386,7 +460,8 @@ public enum DagDBSnapshot {
         guard m == magic else { throw SnapError.invalidMagic }
         let ver = readU32(data, 4)
         guard ver == versionV1 || ver == versionV2 || ver == versionV3
-                || ver == versionV4 || ver == versionV5 else {
+                || ver == versionV4 || ver == versionV5 || ver == versionV6
+                || ver == versionV7 else {
             throw SnapError.unsupportedVersion(ver)
         }
         let fileNC    = Int(readU32(data, 8))
@@ -404,13 +479,14 @@ public enum DagDBSnapshot {
         }
 
         // Rank width per version: v1 = 1 byte (u8), v2 = 4 (u32),
-        // v3/v4/v5 = 8 (u64). v4 added a back-edge trailer; v5 added
-        // an env-origin trailer on top of v4.
+        // v3/v4/v5/v6/v7 = 8 (u64). v4 added a back-edge trailer; v5 added
+        // an env-origin trailer on top of v4; v6 added a WGTS lane section;
+        // v7 added a TWIN section.
         let rankBytesPerNode: Int
         switch ver {
         case versionV1: rankBytesPerNode = 1
         case versionV2: rankBytesPerNode = 4
-        case versionV3, versionV4, versionV5: rankBytesPerNode = 8
+        case versionV3, versionV4, versionV5, versionV6, versionV7: rankBytesPerNode = 8
         default:        rankBytesPerNode = 1  // unreachable (guarded above)
         }
         // body = rank + truth(1) + type(1) + lut_low(4) + lut_high(4) + neighbors(24)
@@ -472,7 +548,7 @@ public enum DagDBSnapshot {
                 let srcU32 = base.advanced(by: off).assumingMemoryBound(to: UInt32.self)
                 for i in 0..<nodeCount { dstU64[i] = UInt64(srcU32[i]) }
                 off += nodeCount * 4
-            default:  // v3 / v4 / v5
+            default:  // v3 / v4 / v5 / v6 / v7
                 memcpy(engine.rankBuf.contents(), base.advanced(by: off), nodeCount * 8)
                 off += nodeCount * 8
             }
@@ -492,7 +568,19 @@ public enum DagDBSnapshot {
         for i in 0..<nodeCount { regPtr[i] = 0 }
 
         var totalRead = headerSize + (flags.contains(.compressed) ? bodyBytes : uncompressedBodySize)
-        if ver == versionV4 || ver == versionV5 {
+
+        // Weight/value lanes: reset to defaults on EVERY load path, so a
+        // pre-v6 snapshot (or a v6 file with absent lanes) never leaves
+        // stale lane state from the running session (E1). v6 files with
+        // present lanes overwrite these defaults below.
+        let wDefPtr = engine.edgeWeightsBuf.contents().bindMemory(to: Float.self, capacity: nodeCount * 6)
+        for i in 0..<(nodeCount * 6) { wDefPtr[i] = 1.0 }
+        let aDefPtr = engine.activationBuf.contents().bindMemory(to: Int16.self, capacity: nodeCount)
+        for i in 0..<nodeCount { aDefPtr[i] = 0 }
+        let vDefPtr = engine.nodeValueBuf.contents().bindMemory(to: Float.self, capacity: nodeCount)
+        for i in 0..<nodeCount { vDefPtr[i] = 0.0 }
+
+        if ver >= versionV4 {
             let beSectionStart = totalRead
             guard data.count >= beSectionStart + 4 else {
                 throw SnapError.ioFailure("v\(ver) file is missing the back-edge count")
@@ -525,16 +613,97 @@ public enum DagDBSnapshot {
             totalRead += beSectionSize
         }
 
-        // v5 env-origin trailer — 5 bytes at end of file: magic "ENVS" + env code u8.
-        // Only present in v5 files. Cross-env loads rejected.
-        if ver == versionV5 {
+        // v6+ WGTS lane section — between the back-edge section and the
+        // TWIN section. magic "WGTS" (4) + lane flags u8 + present lanes.
+        if ver >= versionV6 {
+            let laneStart = totalRead
+            guard data.count >= laneStart + 5 else {
+                throw SnapError.ioFailure("v6 file is missing the WGTS lane section")
+            }
+            let laneMagic = [UInt8](data[laneStart..<laneStart + 4])
+            guard laneMagic == laneSectionMagic else {
+                throw SnapError.ioFailure("v6 lane-section magic mismatch: got 0x\(laneMagic.map { String(format: "%02x", $0) }.joined()), expected 'WGTS' (0x57475453)")
+            }
+            let laneFlags = data[laneStart + 4]
+            var off6 = laneStart + 5
+            if laneFlags & 0x01 != 0 {
+                let sz = nodeCount * 6 * 4
+                guard data.count >= off6 + sz else {
+                    throw SnapError.ioFailure("v6 file truncated mid-edge-weight lane")
+                }
+                data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    memcpy(engine.edgeWeightsBuf.contents(), raw.baseAddress!.advanced(by: off6), sz)
+                }
+                off6 += sz
+            }
+            if laneFlags & 0x02 != 0 {
+                let sz = nodeCount * 2
+                guard data.count >= off6 + sz else {
+                    throw SnapError.ioFailure("v6 file truncated mid-activation lane")
+                }
+                data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    memcpy(engine.activationBuf.contents(), raw.baseAddress!.advanced(by: off6), sz)
+                }
+                off6 += sz
+            }
+            if laneFlags & 0x04 != 0 {
+                let sz = nodeCount * 4
+                guard data.count >= off6 + sz else {
+                    throw SnapError.ioFailure("v6 file truncated mid-node-value lane")
+                }
+                data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    memcpy(engine.nodeValueBuf.contents(), raw.baseAddress!.advanced(by: off6), sz)
+                }
+                off6 += sz
+            }
+            totalRead = off6
+        }
+
+        // v7 TWIN section — between the WGTS lane section and the ENVS
+        // trailer. magic "TWIN" (4) + u32 byteLength (4) + JSON payload.
+        // v1..v6 files carry no section at all: the passed `twin` (if any)
+        // is simply reset to empty, matching a fresh daemon.
+        if ver >= versionV7 {
+            let twinStart = totalRead
+            guard data.count >= twinStart + 8 else {
+                throw SnapError.ioFailure("v7 file truncated mid-twin-section")
+            }
+            let twinMagic = [UInt8](data[twinStart..<twinStart + 4])
+            guard twinMagic == twinSectionMagic else {
+                throw SnapError.ioFailure("v7 twin-section magic mismatch: got 0x\(twinMagic.map { String(format: "%02x", $0) }.joined()), expected 'TWIN' (0x5457494e)")
+            }
+            let twinLen = Int(readU32(data, twinStart + 4))
+            guard data.count >= twinStart + 8 + twinLen else {
+                throw SnapError.ioFailure("v7 file truncated mid-twin-section")
+            }
+            if let twin = twin {
+                if twinLen == 0 {
+                    twin.reset()
+                } else {
+                    let twinData = data.subdata(in: (twinStart + 8)..<(twinStart + 8 + twinLen))
+                    do {
+                        let snap = try JSONDecoder().decode(TwinState.Snapshot.self, from: twinData)
+                        try twin.restore(snap)
+                    } catch {
+                        throw SnapError.ioFailure("v7 twin section undecodable: \(error)")
+                    }
+                }
+            }
+            totalRead = twinStart + 8 + twinLen
+        } else {
+            twin?.reset()
+        }
+
+        // v5+ env-origin trailer — 5 bytes at end of file: magic "ENVS" + env code u8.
+        // Present in v5, v6, and v7 files. Cross-env loads rejected.
+        if ver >= versionV5 {
             let trailerStart = totalRead
             guard data.count >= trailerStart + 5 else {
-                throw SnapError.ioFailure("v5 file is missing the env-origin trailer (need 5 bytes, have \(data.count - trailerStart))")
+                throw SnapError.ioFailure("v\(ver) file is missing the env-origin trailer (need 5 bytes, have \(data.count - trailerStart))")
             }
             let trailerMagic = [UInt8](data[trailerStart..<trailerStart + 4])
             guard trailerMagic == envTrailerMagic else {
-                throw SnapError.ioFailure("v5 env-trailer magic mismatch: got 0x\(trailerMagic.map { String(format: "%02x", $0) }.joined()), expected 'ENVS' (0x454e5653)")
+                throw SnapError.ioFailure("v\(ver) env-trailer magic mismatch: got 0x\(trailerMagic.map { String(format: "%02x", $0) }.joined()), expected 'ENVS' (0x454e5653)")
             }
             let envCode = data[trailerStart + 4]
             let fileEnv = SnapshotEnv(rawValue: envCode) ?? .unspecified

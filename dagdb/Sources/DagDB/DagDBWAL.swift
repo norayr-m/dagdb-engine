@@ -15,6 +15,27 @@
 ///     0x03 SET_LUT           u32 node + u64 lut                 → length = 12
 ///     0x10 CONNECT_BACK      u32 src  + u32 dst                 → length = 8
 ///     0x11 CLEAR_BACK_EDGES  u32 dst                            → length = 4
+///
+///     Twin registry ops (interface phase, 2026-09) — one opcode per `TwinOp` case, payload
+///     encoded/decoded by `TwinWALCodec` (strings u16-len + UTF-8; u64/u32
+///     little-endian; f64/f32 as bitPattern; arrays u32-count prefixed):
+///     0x20 TWIN_STREAM_OPEN    TwinOp.streamOpen
+///     0x21 TWIN_STREAM_STATE   TwinOp.streamState
+///     0x22 TWIN_RECORD_OPEN    TwinOp.recordOpen
+///     0x23 TWIN_RECORD_SLICE   TwinOp.recordSlice
+///     0x24 TWIN_RINGS_OPEN     TwinOp.ringsOpen
+///     0x25 TWIN_RINGS_WRITE    TwinOp.ringsWrite
+///     0x26 TWIN_CLOCK_OPEN     TwinOp.clockOpen
+///     0x27 TWIN_CLOCK_ADVANCE  TwinOp.clockAdvance
+///     0x28 TWIN_GEAR_OPEN      TwinOp.gearOpen
+///     0x29 TWIN_LAYOUT_OPEN    TwinOp.layoutOpen
+///     0x2A TWIN_ALARM_LOAD     TwinOp.alarmLoad
+///     0x2B TWIN_CLOSE          TwinOp.close
+///     A twin op with a malformed payload (bad length, bad UTF-8) is
+///     skipped on replay, never fatal. `replay(twin:)` with `twin == nil`
+///     skips all twin-range opcodes entirely (the record is still walked,
+///     just not applied).
+///
 ///     0xF0 CHECKPOINT        u64 epoch                          → length = 8
 ///
 /// A CHECKPOINT marks the boundary at which the engine state was snapshotted
@@ -37,8 +58,25 @@ public enum DagDBWAL {
         case setTruth        = 0x01
         case setRank         = 0x02
         case setLUT          = 0x03
+        case setEdgeWeight   = 0x04  // u32 node + u8 dir + f32 value = 9 B (E1)
+        case setActivation   = 0x05  // u32 node + i16 value = 6 B (E1)
+        case setNodeValue    = 0x06  // u32 node + f32 value = 8 B (E1)
         case connectBack     = 0x10
         case clearBackEdges  = 0x11
+        // Twin registry ops (interface phase, 2026-09) — payload via TwinWALCodec, one per
+        // TwinOp case. Kept contiguous so replay can range-match them.
+        case twinStreamOpen   = 0x20  // TwinOp.streamOpen
+        case twinStreamState  = 0x21  // TwinOp.streamState
+        case twinRecordOpen   = 0x22  // TwinOp.recordOpen
+        case twinRecordSlice  = 0x23  // TwinOp.recordSlice
+        case twinRingsOpen    = 0x24  // TwinOp.ringsOpen
+        case twinRingsWrite   = 0x25  // TwinOp.ringsWrite
+        case twinClockOpen    = 0x26  // TwinOp.clockOpen
+        case twinClockAdvance = 0x27  // TwinOp.clockAdvance
+        case twinGearOpen     = 0x28  // TwinOp.gearOpen
+        case twinLayoutOpen   = 0x29  // TwinOp.layoutOpen
+        case twinAlarmLoad    = 0x2A  // TwinOp.alarmLoad
+        case twinClose        = 0x2B  // TwinOp.close
         case checkpoint      = 0xF0
     }
 
@@ -260,6 +298,33 @@ public enum DagDBWAL {
         }
 
         @discardableResult
+        public func setEdgeWeight(node: UInt32, dir: UInt8, value: Float) throws -> Int {
+            var d = Data()
+            appendU32(&d, node)
+            d.append(dir)
+            appendU32(&d, value.bitPattern)
+            return try append(opcode: .setEdgeWeight, payload: d)
+        }
+
+        @discardableResult
+        public func setActivation(node: UInt32, value: Int16) throws -> Int {
+            var d = Data()
+            appendU32(&d, node)
+            let u = UInt16(bitPattern: value)
+            d.append(UInt8(u & 0xFF))
+            d.append(UInt8(u >> 8))
+            return try append(opcode: .setActivation, payload: d)
+        }
+
+        @discardableResult
+        public func setNodeValue(node: UInt32, value: Float) throws -> Int {
+            var d = Data()
+            appendU32(&d, node)
+            appendU32(&d, value.bitPattern)
+            return try append(opcode: .setNodeValue, payload: d)
+        }
+
+        @discardableResult
         public func setLUT(node: UInt32, lut: UInt64) throws -> Int {
             var d = Data()
             appendU32(&d, node)
@@ -298,7 +363,8 @@ public enum DagDBWAL {
     public static func replay(
         engine: DagDBEngine,
         nodeCount: Int,
-        path: String
+        path: String,
+        twin: TwinState? = nil
     ) throws -> ReplayResult {
         let t0 = Date()
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
@@ -394,6 +460,40 @@ public enum DagDBWAL {
                         high[node] = UInt32((lut >> 32) & 0xFFFFFFFF)
                         applied += 1; afterCheckpoint += 1
                     }
+                case Opcode.setEdgeWeight.rawValue:
+                    // u32 node + u8 dir + f32 value = 9 bytes.
+                    guard payloadLen == 9 else { off += recordTotal; continue }
+                    let node = Int(readU32(data, off + 5))
+                    let dir = Int(data[off + 9])
+                    let bits = readU32(data, off + 10)
+                    if node >= 0 && node < nodeCount && dir >= 0 && dir < 6 {
+                        let p = engine.edgeWeightsBuf.contents()
+                            .bindMemory(to: Float.self, capacity: nodeCount * 6)
+                        p[node * 6 + dir] = Float(bitPattern: bits)
+                        applied += 1; afterCheckpoint += 1
+                    }
+                case Opcode.setActivation.rawValue:
+                    // u32 node + i16 value (LE) = 6 bytes.
+                    guard payloadLen == 6 else { off += recordTotal; continue }
+                    let node = Int(readU32(data, off + 5))
+                    let raw = UInt16(data[off + 9]) | (UInt16(data[off + 10]) << 8)
+                    if node >= 0 && node < nodeCount {
+                        let p = engine.activationBuf.contents()
+                            .bindMemory(to: Int16.self, capacity: nodeCount)
+                        p[node] = Int16(bitPattern: raw)
+                        applied += 1; afterCheckpoint += 1
+                    }
+                case Opcode.setNodeValue.rawValue:
+                    // u32 node + f32 value = 8 bytes.
+                    guard payloadLen == 8 else { off += recordTotal; continue }
+                    let node = Int(readU32(data, off + 5))
+                    let bits = readU32(data, off + 9)
+                    if node >= 0 && node < nodeCount {
+                        let p = engine.nodeValueBuf.contents()
+                            .bindMemory(to: Float.self, capacity: nodeCount)
+                        p[node] = Float(bitPattern: bits)
+                        applied += 1; afterCheckpoint += 1
+                    }
                 case Opcode.connectBack.rawValue:
                     guard payloadLen == 8 else { off += recordTotal; continue }
                     let src = readU32(data, off + 5)
@@ -414,6 +514,26 @@ public enum DagDBWAL {
                     if Int(dst) < nodeCount {
                         engine.clearBackEdges(toNode: dst)
                         applied += 1; afterCheckpoint += 1
+                    }
+                case Opcode.twinStreamOpen.rawValue...Opcode.twinClose.rawValue:
+                    // Twin registry ops (interface phase, 2026-09). `twin == nil` means the
+                    // caller isn't restoring twin state at all — walk past
+                    // the record without applying or counting it. A
+                    // malformed payload (bad length/UTF-8) decodes to nil
+                    // and is skipped the same way. An `apply` error (e.g.
+                    // a bad id or already-open id) is likewise skipped,
+                    // never fatal — the rest of the log must still replay.
+                    if let twin = twin {
+                        let payloadStart = off + 5
+                        let payload = data.subdata(in: payloadStart..<(payloadStart + payloadLen))
+                        if let decoded = TwinWALCodec.decode(opcode: opRaw, payload: payload) {
+                            do {
+                                try twin.apply(decoded)
+                                applied += 1; afterCheckpoint += 1
+                            } catch {
+                                // apply error — skip, not fatal.
+                            }
+                        }
                     }
                 case Opcode.checkpoint.rawValue:
                     break  // no-op at replay

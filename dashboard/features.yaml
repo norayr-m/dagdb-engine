@@ -66,6 +66,64 @@ sections:
       - { id: dsl-backup,       title: "DSL: BACKUP INIT/APPEND/RESTORE/COMPACT/INFO", status: done, evidence: "5 daemon commands + 5 MCP tools" }
       - { id: dsl-distance,     title: "DSL: DISTANCE <metric> <lo>-<hi> <lo>-<hi>", status: done, evidence: "all 8 metrics via rank-range subgraphs; dagdb_distance MCP tool" }
       - { id: mcp-restart,      title: "Live MCP process picks up new tools", status: planned, evidence: "— running daemon/MCP need restart to see new commands" }
+      - { id: python-plugin-tests, title: "Python plugin tests (plugins/loom)", status: blocked, evidence: "CURRENT_STATE.md: collection fails from worktree layout, module path; do not cite a green count" }
+
+  - name: Performance (tick recovery, 2026-07)
+    features:
+      - { id: compacted-dispatch, title: "Per-(rank,color) compacted dispatch (default)", status: done, evidence: "dagdb/Sources/DagDB/DagDBEngine.swift (rebuildCompaction, compactedListBuf); docs/perf_recovery/results.md — ~1.75-2x over legacy on the 16-rank cell, N=5 re-measure 2026-08-01" }
+      - { id: tick-sync,        title: "TICK_SYNC double-buffered synchronous mode", status: done, evidence: "dagdb/Sources/DagDB/DagDBEngine.swift + DSLParser.swift + DagDBCommandHandler.swift; DagDBTickPerfTests; docs/perf_recovery/results.md — ~0.30 ms/tick at 1M nodes, ~3.5 GCUPS, bit-for-bit vs CPU reference" }
+      - { id: rank-topology-invalidation, title: "Rank-topology invalidation (dirty-flag)", status: done, evidence: "dagdb/Sources/DagDB/DagDBEngine.swift: rankTopologyDirty + markRankTopologyDirty(); rebuild is lazy, on next tick only" }
+
+  - name: Durability (G73, 2026-07)
+    features:
+      - { id: g73-fsync-policy, title: "WAL group-commit fsync policy", status: done, evidence: "dagdb/Sources/DagDB/DagDBWAL.swift: Appender.FsyncPolicy (.everyRecord default / .grouped(n,ms)); prod hard-pinned to everyRecord + F_FULLFSYNC in main.swift" }
+      - { id: g73-snapshot-manifest, title: "Snapshot SHA-256 manifest", status: done, evidence: "dagdb/Sources/DagDB/DagDBSnapshot.swift: <snap>.sha256 written after atomic rename, verified before load; SnapError.manifestMismatch" }
+      - { id: g73-torn-tail, title: "Torn-tail audit", status: done, evidence: "docs/g73/RESULTS.md step 1; DagDBWALTests testTornTailFixtureDeterministic — replay already tolerant, no code change needed, pinned by test" }
+      - { id: g73-kill9-probe, title: "kill-9 stress probe", status: done, evidence: "dagdb/examples/g73_fsync_stress/{probe.sh,driver.py,README.md}; docs/g73/RESULTS.md — 10/10 clean, 0 observed loss within bound" }
+
+  - name: Weight lanes (E1, 2026-08-22)
+    features:
+      - { id: e1-edge-weight-lane, title: "Edge-weight lane", status: done, evidence: "dagdb/Sources/DagDB/DagDBState.swift edgeWeights (Float x6/node); DagDBWeightLaneTests" }
+      - { id: e1-activation-lane, title: "Activation lane", status: done, evidence: "DagDBWAL.Opcode.setActivation = 0x05 (u32 node + i16 value); DagDBWeightLaneTests" }
+      - { id: e1-nodevalue-lane, title: "Float nodeValue lane", status: done, evidence: "DagDBState.swift nodeValue (Float/node, Float64 accumulate); DagDBWAL.Opcode.setNodeValue = 0x06" }
+      - { id: e1-snapshot-v6, title: "Snapshot v6 WGTS section", status: done, evidence: "DagDBSnapshot.swift + DagDBSnapshotTests: WGTS lane block, written only when non-default" }
+      - { id: e1-wal-opcodes, title: "WAL opcodes 0x04/0x05/0x06", status: done, evidence: "dagdb/Sources/DagDB/DagDBWAL.swift: setEdgeWeight=0x04, setActivation=0x05, setNodeValue=0x06" }
+      - { id: e1-daemon-set, title: "Daemon SET <n> WEIGHT / SET <n> VALUE", status: done, evidence: "dagdb/Sources/DagDBDaemonKit/DSLParser.swift (WEIGHT/VALUE cases); log-first, bounds-checked, finite-only" }
+
+  - name: Ladder / solver
+    features:
+      - { id: e2-runner,        title: "E2Runner (frozen-schedule smoother on engine)", status: done, evidence: "dagdb/Sources/E2Runner/main.swift; per CONTRACT_E2_FROZEN.md; E2v2 8/8, bridge bit-for-bit" }
+      - { id: e3-ladder,        title: "E3Ladder (exact tier ladder, fp32 per-rung storage, Accelerate Float64 folds)", status: done, evidence: "dagdb/Sources/E3Ladder/main.swift (imports Accelerate, LAPACK dense solve); ROADMAP.md — 927x compression at 1e-7 over 19 folds, E3v3 court 30/30" }
+
+  - name: Twin primitives (2026-08-30)
+    features:
+      - { id: twin-named-stream, title: "NamedStream (PCG64, numpy state bridge)", status: done, evidence: "dagdb/Sources/DagDB/NamedStream.swift + NamedStreamTests.swift" }
+      - { id: twin-stream-header, title: "StreamHeader (t-zero admission, seven quantities, arithmetic refusals)", status: done, evidence: "dagdb/Sources/DagDB/StreamHeader.swift + StreamHeaderTests.swift" }
+      - { id: twin-stream-record, title: "StreamRecord (bit-exact slice replay)", status: done, evidence: "dagdb/Sources/DagDB/StreamRecord.swift + StreamRecordTests.swift" }
+      - { id: twin-budget-layout, title: "BudgetLayout (knapsack: claim merge, min-cost tie, lexicographic residual)", status: done, evidence: "dagdb/Sources/DagDB/BudgetLayout.swift + BudgetLayoutTests.swift" }
+      - { id: twin-cross-conv, title: "CrossConvolutionCheck (pass/scream/flash)", status: done, evidence: "dagdb/Sources/DagDB/CrossConvolutionCheck.swift + CrossConvolutionCheckTests.swift" }
+      - { id: twin-geared-rings, title: "GearedRings (6:1 odometer, signed extremum recall)", status: done, evidence: "dagdb/Sources/DagDB/GearedRings.swift — sealed shape gear 6, 6 rings, 32 cells (192 numbers), six orders of lag; GearedRingsTests.swift" }
+      - { id: twin-master-clock, title: "MasterClock + PhaseGear (rational gears, integer drift-free)", status: done, evidence: "dagdb/Sources/DagDB/MasterClock.swift (MasterClock, GearRatio, PhaseGear); MasterClockTests.swift" }
+      - { id: twin-dsl-exposure, title: "DSL/daemon exposure of twin primitives", status: done, evidence: "TwinCommand.swift + DSLParser+Twin.swift + DagDBCommandHandler+Twin{Streams,Clocks,Budget,Alarm}.swift (9 verb families, log-first WAL pattern); TwinStreamCommandTests/TwinClockCommandTests/TwinBudgetCommandTests/TwinAlarmCommandTests" }
+
+  - name: Twin interface phase (2026-09-06)
+    features:
+      - { id: twin-codable,      title: "State-bearing inits + Codable on all seven primitives", status: done, evidence: "NamedStream/StreamHeader/StreamRecord/BudgetLayout/CrossConvolutionCheck/GearedRings/MasterClock+GearRatio+PhaseGear; TwinCodableStreamTests.swift + TwinCodableClockRingsTests.swift" }
+      - { id: twin-registry,     title: "TwinRegistry + TwinState (daemon-global typed-id registries)", status: done, evidence: "dagdb/Sources/DagDB/TwinRegistry.swift + TwinState.swift; TwinRegistryTests.swift" }
+      - { id: twin-wal-opcodes,  title: "WAL opcodes 0x20-0x2B for twin ops", status: done, evidence: "dagdb/Sources/DagDB/TwinWAL.swift (TwinWALCodec) + DagDBWAL.swift Opcode cases; DagDBWALTwinTests.swift" }
+      - { id: snapshot-v7-twin,  title: "Snapshot v7 TWIN section", status: done, evidence: "dagdb/Sources/DagDB/DagDBSnapshot.swift (versionV7, twinSectionMagic); DagDBSnapshotTwinTests.swift" }
+      - { id: startup-snapshot-load, title: "Startup snapshot load before WAL replay (DAGDB_STARTUP_LOAD, opt-in); autosave checkpoints the WAL", status: done, evidence: "dagdb/Sources/DagDBDaemonKit/DagDBStartup.swift; DagDBCommandHandler.durableSnapshot; StartupRecoveryTests.swift (7); examples/twin_primitives/socket_smoke.sh 23/23 (2026-09-09)" }
+      - { id: alarm-record,      title: "AlarmRecord + SealedCourt + AlarmFixture (twin spec line 4)", status: done, evidence: "dagdb/Sources/DagDB/AlarmRecord.swift + SealedCourt.swift + AlarmFixture.swift; AlarmRecordTests.swift + AlarmFixtureTests.swift" }
+      - { id: corruption-model,  title: "CorruptionModel (eps-m/eps-s/eps-n exact enumeration)", status: done, evidence: "dagdb/Sources/DagDB/CorruptionModel.swift; CorruptionModelTests.swift" }
+      - { id: sealed-gate-allocator, title: "Sealed gate 1 — allocator-court replay bit-for-bit", status: done, evidence: "dagdb/Sources/DagDB/AllocatorCourt.swift; SealedGateTests.swift testGate1AllocatorCourtBitForBit (fixture-gated); docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md" }
+      - { id: sealed-gate-successor, title: "Sealed gate 2 — successor dyadic ε lattice bit-for-bit", status: done, evidence: "dagdb/Sources/DagDB/SuccessorCourt.swift; SealedGateTests.swift testGate2SuccessorDyadicLatticeBitForBit (never skips); docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md" }
+      - { id: mcp-twin-tools,    title: "MCP twin verb wrappers + dagdb_query catalog", status: done, evidence: "dagdb/mcp_server.py: 26 @mcp.tool() twin wrappers (dagdb_stream_*, dagdb_record_*, dagdb_rings_*, dagdb_clock_*, dagdb_gear_*, dagdb_xconv_check, dagdb_budget_*, dagdb_alarm_*, dagdb_twin_list, dagdb_twin_close); dagdb_query Twin: block" }
+      - { id: bridge-twin-allowlist, title: "Web bridge two-token read-only twin allowlist", status: done, evidence: "dagdb/web/bridge.py: READ_ONLY_TWIN set of (verb, subverb) pairs, checked in _command_allowed alongside READ_ONLY_VERBS" }
+
+  - name: Nested-LUT microcircuits (2026-07)
+    features:
+      - { id: lut-mult4,        title: "Nested-LUT microcircuit compilation (mult4 exact)", status: done, evidence: "dagdb/Tests/DagDBTests/DagDBMicrocircuitTests.swift" }
+      - { id: lut-bulk-install,  title: "SET_LUTS_BULK / SET_NEIGHBORS_BULK", status: done, evidence: "dagdb/Sources/DagDBDaemonKit/DSLParser.swift + DagDBCommandHandler.swift; DagDBBulkInstallTests.swift" }
 
 acid:
   A:

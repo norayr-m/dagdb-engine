@@ -172,11 +172,13 @@ Three reference demos shipped under `examples/`:
    ticks; the verifier `examples/ac3_australia/verify.py` exits 0
    when DagDB matches the reference cell-by-cell.
 
-Test suite landed at **120 Swift tests green** (was 104; +16 for the
-back-edge work — engine state and CPU latch, GPU rank-skip integration,
-two-phase chained-aliasing semantics, validation rejection paths on
-both `CONNECT BACK` and `CONNECT`, WAL replay including
-`CHECKPOINT`-survival, snapshot v3 → v4 round-trip).
+At the back-edge landing the suite stood at **120 Swift tests
+green** (was 104; +16 for the back-edge work — engine state and
+CPU latch, GPU rank-skip integration, two-phase chained-aliasing
+semantics, validation rejection paths on both `CONNECT BACK` and
+`CONNECT`, WAL replay including `CHECKPOINT`-survival, snapshot
+v3 → v4 round-trip). Suite stands at **165 green** as of
+2026-05-11 — see [`../../CURRENT_STATE.md`](../../CURRENT_STATE.md).
 
 ---
 
@@ -229,3 +231,8 @@ both `CONNECT BACK` and `CONNECT`, WAL replay including
   combinational fan-in check; only callers that have already
   validated (or are loading from a previously-validated WAL/snapshot)
   should use it.
+
+The architectural rationale and the Carnot-mirror framing that led
+here are in internal design notes (2026-04-29), not in this
+repository. Public-surface description:
+**synchronous DagDB**.

@@ -3,7 +3,7 @@
 ## Architecture / failure surfaces
 - Appender gains a policy enum: .everyRecord (default) / .grouped(n,ms).
   Grouped path: records appended to the OS file immediately (write()),
-  fsync deferred to the earlier of n-records/т-timer/explicit barrier
+  fsync deferred to the earlier of n-records/t-timer/explicit barrier
   (snapshot start, daemon shutdown, env switch = forced sync points).
 - Failure surfaces named: (a) timer thread vs appender race → single
   serial queue owns both; (b) torn last record after crash → replay

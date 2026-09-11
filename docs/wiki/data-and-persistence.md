@@ -69,9 +69,10 @@ these envs:
 |---|---|---|
 | `DAGDB_DATA_ROOT` | `~/dag_databases` | `guardPath()` rejects any client-supplied path outside this root. Single source of truth for DB storage on this machine. |
 | `DAGDB_WAL` | `~/dag_databases/live.wal` | Appends mutation WAL on every `SET`/`CONNECT`/`LOAD`. Replayed on next daemon start. |
-| `DAGDB_AUTOSAVE` | `~/dag_databases/auto.dags` | Writes a `.dags` snapshot on SIGTERM / graceful exit. Loaded on next daemon start. |
+| `DAGDB_AUTOSAVE` | `~/dag_databases/auto.dags` | Writes a `.dags` snapshot on SIGTERM / graceful exit and checkpoints the WAL after it. NOT loaded by itself — pair it with `DAGDB_STARTUP_LOAD`. |
+| `DAGDB_STARTUP_LOAD` | `~/dag_databases/auto.dags` | (2026-09-09, opt-in) Loads this snapshot at startup, before WAL replay, so a restart after `SAVE`/autosave needs no operator `LOAD`. Missing file = start empty; unreadable or outside the data root = the daemon refuses to start (exit 2). Point it at the file the last `SAVE`/autosave wrote. |
 
-All three point inside `~/dag_databases/`. Change them in the plist
+All of them point inside `~/dag_databases/`. Change them in the plist
 and `launchctl unload && launchctl load` to pick up new values.
 
 ### Launchd plists (outside the repo)
@@ -88,7 +89,7 @@ Plugin runtime writes (user-configurable; defaults below):
 
 | File | Used by | Default |
 |---|---|---|
-| `~/jarvis_workspace/dagdb_ingest_ctx.json` | Loom ingest-context persistence (the T4 adapter). | Home dir, outside repo. |
+| `<workspace>/dagdb_ingest_ctx.json` | Loom ingest-context persistence (the T4 adapter). | Home dir, outside repo. |
 | `dagdb/plugins/loom/_backfill_out/` | Backfill debug output. | **Gitignored.** |
 
 ---
@@ -174,7 +175,9 @@ echo "BACKUP RESTORE /Users/you/dag_databases/loom_chain/" \
 
 Continuous durability is already on via the plist's `DAGDB_WAL` and
 `DAGDB_AUTOSAVE`. You don't need to issue `SAVE` unless you want a
-named snapshot.
+named snapshot. For the state to come back on the next start without an
+operator `LOAD`, the daemon also needs `DAGDB_STARTUP_LOAD` set to the
+autosave path (opt-in since 2026-09-09).
 
 ### Verifying before push
 

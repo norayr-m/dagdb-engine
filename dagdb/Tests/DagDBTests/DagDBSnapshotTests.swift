@@ -4,7 +4,7 @@ import XCTest
 final class DagDBSnapshotTests: XCTestCase {
 
     /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when princes run swift test concurrently in the shared dagdb dir).
+    /// when several branches run swift test concurrently in one working dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {
@@ -77,8 +77,11 @@ final class DagDBSnapshotTests: XCTestCase {
             gridW: gw, gridH: gh, tickCount: 42, path: path
         )
         // v4 back-edge trailer: 4 B count (0 here) + 8 B per back-edge.
-        // v5 env trailer: 4 B "ENVS" magic + 1 B env code = 5 B.
-        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 5)
+        // v6 WGTS lane section header: 4 B magic + 1 B flags = 5 B (default
+        // lanes → no lane bodies). v7 TWIN section: 4 B magic + 4 B length
+        // = 8 B (no twin passed → empty payload). v5 env trailer: 4 B
+        // "ENVS" + 1 B env = 5 B.
+        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 5 + 8 + 5)
         XCTAssertEqual(saved.uncompressedBodyBytes, eng1.nodeCount * 42)
 
         // Fresh engine — all zeros initially
@@ -426,8 +429,10 @@ final class DagDBSnapshotTests: XCTestCase {
             engine: eng1, nodeCount: eng1.nodeCount,
             gridW: gw, gridH: gh, tickCount: 7, path: path
         )
-        // Header (32) + body (42N) + back-edge count (4) + 2 entries (16) + v5 env trailer (5).
-        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 16 + 5)
+        // Header (32) + body (42N) + back-edge count (4) + 2 entries (16)
+        // + v6 WGTS header (5, default lanes) + v7 TWIN section (8, empty
+        // payload) + v5 env trailer (5).
+        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 16 + 5 + 8 + 5)
 
         let (eng2, _, _) = try makeEngine(side: 8)
         XCTAssertEqual(eng2.backEdgeCount, 0)

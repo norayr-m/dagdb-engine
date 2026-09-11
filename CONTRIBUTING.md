@@ -21,9 +21,11 @@ Contributions are welcome in the same spirit.
 ## Style
 
 - **Swift.** `swift build` + `swift test` under `dagdb/` must stay
-  green. 98 Swift tests today, ≤ 3 s total runtime. Python plugin
+  green. 446 Swift tests today (9 skip without the out-of-repo sealed
+  fixture), full suite ~50 s. Python plugin
   tests (`plugins/biology` self-test, `plugins/loom/test_adapter.py`)
-  must also stay green; 16 in the adapter suite.
+  are currently broken at collection; do not block on them, but if
+  you touch the plugins, repair the path layout while you're there.
 - **Comments.** None unless the reason is non-obvious. Don't explain
   what the code does; well-named identifiers do that.
 - **No emojis** in code or docs unless the existing file already uses

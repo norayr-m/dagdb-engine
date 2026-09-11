@@ -18,11 +18,24 @@ Tools:
   dagdb_hex               — ASCII hex table view
   dagdb_show              — full ASCII visualization
 
+  Twin (the interface phase — twin-spec primitives, daemon-global registries):
+  dagdb_stream_open/next/state/close       — named PCG stream generator
+  dagdb_header_check                       — comb-record admissibility check
+  dagdb_record_open/slice/replay/verify    — replayable draw-slice ledger
+  dagdb_rings_open/write/recall            — geared ring-buffer recall
+  dagdb_clock_open/advance/state           — master tick clock
+  dagdb_gear_open/state                    — phase gear driven by a clock
+  dagdb_xconv_check                        — cross-convolution residual check
+  dagdb_budget_sealed/open/allocate        — sealed/custom budget-layout allocator
+  dagdb_alarm_load/frame/court/successor/corrupt — alarm-stream fixture + courts
+  dagdb_twin_list/dagdb_twin_close         — cross-registry list/close by id prefix
+
 Usage: python3 mcp_server.py
 Requires: pip install mcp
 Daemon must be running: ./dagdb start --data sample_db/
 """
 
+import re
 import socket
 import json
 import sys
@@ -68,6 +81,25 @@ def query_daemon(cmd: str) -> str:
     except Exception as e:
         return f"ERROR: {e}"
 
+# Twin registries (interface phase, 2026-09). Ids are minted by the daemon as "<letter>%08x"
+# from a per-registry counter (§0.14): s stream, t record, n rings, c
+# clock, g gear, b budget layout, a alarm set. Wrappers below validate any
+# id argument against this shape client-side, before touching the socket —
+# a malformed id can never be a legitimate reply from any registry, so
+# there is nothing to gain by round-tripping it to the daemon.
+_TWIN_ID_RE = re.compile(r"^[stncgba][0-9a-f]{8}$")
+_TWIN_PREFIX_VERB = {
+    "s": "STREAM", "t": "RECORD", "n": "RINGS", "c": "CLOCK",
+    "g": "GEAR", "b": "BUDGET", "a": "ALARM",
+}
+
+def _bad_twin_id(id: str):
+    """Return an "ERROR bad_id: ..." string if `id` doesn't match the twin
+    id shape, else None. No daemon round-trip on mismatch."""
+    if not _TWIN_ID_RE.match(id or ""):
+        return f"ERROR bad_id: {id!r} does not match ^[stncgba][0-9a-f]{{8}}$"
+    return None
+
 # Create MCP server
 mcp = FastMCP("dagdb", instructions="""
 DagDB is a 6-bounded ranked DAG database running on Apple Silicon GPU.
@@ -108,6 +140,37 @@ def dagdb_query(command: str) -> str:
             EXPORT MORTON <dir> | IMPORT MORTON <dir> |
             BACKUP INIT|APPEND|RESTORE|COMPACT|INFO <dir>
     MVCC: OPEN_READER | READER <id> <inner read-only cmd> | CLOSE_READER <id> | LIST_READERS
+
+    Twin (twin-spec primitives, the interface phase; ids are "<letter>%08x" from a
+        per-registry counter; registries are daemon-global (§0.13) — a
+        READER session may run only the verbs marked * below, everything
+        else replies "ERROR forbidden:"):
+        STREAM OPEN <name> <stateHi> <stateLo> <incHi> <incLo> |
+        STREAM NEXT <id> <n> | STREAM STATE <id> * | STREAM CLOSE <id> | STREAM LIST *
+        HEADER CHECK <band> <tau> <comb> <echo> <record> <step> <floor> *
+        RECORD OPEN <name> <7 header numbers> <stateHi> <stateLo> <incHi> <incLo> |
+        RECORD SLICE <id> <count> | RECORD REPLAY <id> <index> * |
+        RECORD VERIFY <id> * | RECORD INFO <id> * | RECORD CLOSE <id> | RECORD LIST *
+        RINGS OPEN [<gear> <rings> <cells>] |
+        RINGS WRITE <id> <v1> [<v2> ...] | RINGS RECALL <id> <lag> * |
+        RINGS INFO <id> * | RINGS CLOSE <id> | RINGS LIST *
+        CLOCK OPEN | CLOCK ADVANCE <id> [<n>] [VALUE <f>] | CLOCK STATE <id> * |
+        CLOCK CLOSE <id> (cascades to its gears) | CLOCK LIST *
+        GEAR OPEN <clockId> <name> <num>/<den> | GEAR STATE <id> * | GEAR CLOSE <id>
+        XCONV CHECK <nA> <nB> <kA> <kB> <warmup> * (shm in: f32 a,b,kA,kB at offset 8)
+        BUDGET OPEN <nPockets> <nTiers> <nClasses> (shm in: f64 cost row-major +
+            u32 minTier at offset 8) |
+        BUDGET SEALED | BUDGET ALLOCATE <id> <budget> <pocket>:<class> ... * |
+        BUDGET INFO <id> * | BUDGET CLOSE <id> | BUDGET LIST *
+        ALARM LOAD <path> [SHA <hex64>] | ALARM INFO <id> * | ALARM LIST * |
+        ALARM CLOSE <id> | ALARM FRAME <id> <idx> * | ALARM COURT <id> <budget> * |
+        ALARM SUCCESSOR <id> <budget> <epsM> <epsS> <epsN> * |
+        ALARM CORRUPT <id> <idx> <epsM> <epsS> <epsN> * (shm out: [u32 count][u32 40]
+            header + 40-byte rows: f64 weight | u32 nClaims | u32 reserved0 |
+            5x(u8 pocket, u8 row, u8 phantom, u8 pad) | 4 pad)
+
+    Twin id prefixes (per-registry counter, format "<letter>%08x"):
+        s stream · t record · n rings · c clock · g gear · b budget layout · a alarm set
 
     LUT presets: AND OR XOR MAJ IDENTITY CONST0 CONST1 VETO NOR NAND AND3 OR3 MAJ3.
     Distance metrics: jaccardNodes jaccardEdges rankL1 rankL2 typeL1 boundedGED wlL1 spectralL2."""
@@ -405,7 +468,12 @@ def dagdb_reader_query(session_id: str, command: str) -> str:
     """Run a read-only DSL command against a reader session's snapshot engine.
 
     Allowed inner commands: GRAPH INFO, NODES, TRAVERSE, BFS_DEPTHS,
-    DISTANCE, VALIDATE, STATUS. Writes are rejected.
+    DISTANCE, VALIDATE, STATUS, and the read-only twin verbs STREAM
+    STATE/LIST, HEADER CHECK, RECORD REPLAY/VERIFY/INFO/LIST, RINGS
+    RECALL/INFO/LIST, CLOCK STATE/LIST, GEAR STATE, XCONV CHECK, BUDGET
+    ALLOCATE/INFO/LIST, ALARM INFO/LIST/FRAME/COURT/SUCCESSOR/CORRUPT.
+    Writes are rejected — including every twin verb that opens, mutates,
+    or closes a registry (twin registries are daemon-global, §0.13).
 
     Example:
         dagdb_reader_query("r5f4e1234", "BFS_DEPTHS FROM 42")
@@ -487,6 +555,394 @@ def dagdb_bfs_depths(seed: int, backward: bool = False) -> str:
     post-processing."""
     suffix = " BACKWARD" if backward else ""
     return query_daemon(f"BFS_DEPTHS FROM {seed}{suffix}")
+
+# --------------------------------------------------------------------
+# Twin primitives (interface phase, 2026-09). See dagdb_query's "Twin:" block for the full
+# grammar and the id-prefix map. Every wrapper below is one query_daemon
+# call; id arguments are validated client-side first (see _bad_twin_id).
+# --------------------------------------------------------------------
+
+@mcp.tool()
+def dagdb_stream_open(name: str, state_hi: int, state_lo: int, inc_hi: int, inc_lo: int) -> str:
+    """Open a new named PCG-style stream generator in the daemon-global
+    stream registry (prefix 's'). state_hi/state_lo form the 128-bit PCG
+    state, inc_hi/inc_lo the 128-bit increment — decimal or 0x-hex u64s
+    (pass Python ints; 0x literals work directly).
+
+    Returns: "OK STREAM OPEN id=s%08x name=<name> draws=0"."""
+    return query_daemon(f"STREAM OPEN {name} {state_hi} {state_lo} {inc_hi} {inc_lo}")
+
+@mcp.tool()
+def dagdb_stream_next(id: str, n: int) -> str:
+    """Draw the next n u64 words from a stream. Mutates the stream's state
+    (not a read-only verb) and WAL-logs the post-draw state so replay is
+    O(1) — it restores the boundary already reached, it does not redraw.
+
+    shm layout: [u32 n][u32 8] header at offset 0, then uint64[n] at
+    offset 8. Read with numpy.frombuffer(..., dtype=np.uint64, count=n)
+    after skipping the 8-byte header (see docs/wiki/mcp.md's read_shm
+    template).
+
+    Returns: "OK STREAM NEXT id=<id> n=<n> draws=<total> state=0x..:0x.. shm_bytes=8n"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"STREAM NEXT {id} {n}")
+
+@mcp.tool()
+def dagdb_stream_state(id: str) -> str:
+    """Read-only: report a stream's name, cumulative draw count, and
+    128-bit state without drawing.
+
+    Returns: "OK STREAM STATE id=<id> name=<name> draws=<n> state=0x..:0x..".
+    """
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"STREAM STATE {id}")
+
+@mcp.tool()
+def dagdb_stream_close(id: str) -> str:
+    """Close a stream and release its registry slot.
+
+    Returns: "OK STREAM CLOSE id=<id>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"STREAM CLOSE {id}")
+
+@mcp.tool()
+def dagdb_header_check(band: float, tau: float, comb: float, echo: float,
+                        record: float, step: float, floor: float) -> str:
+    """Read-only admissibility check for a StreamHeader (signal band Hz,
+    tau window sec, comb rate Hz, first-echo sec, record-window sec, step
+    sec, clock-sync floor sec) against the same constraints RECORD OPEN
+    enforces — check before spending a RECORD OPEN call. All seven
+    arguments must be finite or the daemon replies "ERROR bad_value".
+
+    Returns: "OK HEADER CHECK admissible=1" or
+             "FAIL HEADER CHECK violations=<k> <tag>;<tag>;..." (tags are
+             nonPositiveQuantity(<q>), signalWiderThanWindow,
+             combBelowNyquist, recordOutlivesEcho, stepAboveNyquist)."""
+    return query_daemon(f"HEADER CHECK {band} {tau} {comb} {echo} {record} {step} {floor}")
+
+@mcp.tool()
+def dagdb_record_open(name: str, band: float, tau: float, comb: float, echo: float,
+                       record: float, step: float, floor: float,
+                       state_hi: int, state_lo: int, inc_hi: int, inc_lo: int) -> str:
+    """Open a replayable draw-slice ledger (record registry, prefix 't'):
+    a StreamHeader (the seven fields above, same admissibility rule as
+    dagdb_header_check) plus a generator NamedStream (state_hi/state_lo/
+    inc_hi/inc_lo, same 128-bit PCG fields as dagdb_stream_open). An
+    inadmissible header is rejected before any state is created.
+
+    Returns: "OK RECORD OPEN id=t%08x name=<name> slices=0" or
+             "ERROR schema: inadmissible header: <tag>;<tag>;..."."""
+    return query_daemon(
+        f"RECORD OPEN {name} {band} {tau} {comb} {echo} {record} {step} {floor} "
+        f"{state_hi} {state_lo} {inc_hi} {inc_lo}"
+    )
+
+@mcp.tool()
+def dagdb_record_slice(id: str, count: int) -> str:
+    """Draw `count` more words from the record's generator and append them
+    as a new slice. Mutates the record; the WAL logs only `count` (the
+    slice is O(1) to replay by redrawing from the logged generator
+    boundary, not stored verbatim). No shm — the reply line is the full
+    result.
+
+    Returns: "OK RECORD SLICE id=<id> index=<slice index> count=<count> slices=<total>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"RECORD SLICE {id} {count}")
+
+@mcp.tool()
+def dagdb_record_replay(id: str, index: int) -> str:
+    """Read-only: replay slice `index` of a record by redrawing from its
+    logged generator boundary, and compare against the stored payload.
+
+    shm layout: [u32 count][u32 8] header at offset 0, then uint64[count]
+    at offset 8 — the replayed payload, same numpy template as
+    dagdb_stream_next.
+
+    Returns: "OK RECORD REPLAY id=<id> index=<index> count=<n> match=1
+    shm_bytes=8n" (match is 1 iff the replay equals the stored slice)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"RECORD REPLAY {id} {index}")
+
+@mcp.tool()
+def dagdb_record_verify(id: str) -> str:
+    """Read-only: replay every slice in a record and report any that
+    don't reproduce their stored payload bit-for-bit.
+
+    Returns: "OK RECORD VERIFY id=<id> failing=0" or
+             "OK RECORD VERIFY id=<id> failing=<k> failing_indices=i,j,...".
+    """
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"RECORD VERIFY {id}")
+
+@mcp.tool()
+def dagdb_rings_open(gear: int = 6, rings: int = 6, cells: int = 32) -> str:
+    """Open a geared ring buffer (rings registry, prefix 'n'): `rings`
+    concentric rings of `cells` cells each, advanced one cell per `gear`
+    ticks. Defaults (6, 6, 32) match the daemon's own default when no
+    arguments are given.
+
+    Returns: "OK RINGS OPEN id=n%08x gear=<g> rings=<r> cells=<c> capacity=<r*c>"."""
+    return query_daemon(f"RINGS OPEN {gear} {rings} {cells}")
+
+@mcp.tool()
+def dagdb_rings_write(id: str, values: list) -> str:
+    """Write consecutive Float32 values into a ring buffer, one write per
+    tick, oldest cell recycled as the ring wraps. Chunks `values` at 400
+    per DSL line (the socket contract caps input at 4 KB per command) and
+    returns only the reply from the last chunk — the intermediate replies
+    are all "OK RINGS WRITE ..." with an updated `now`; only the final
+    state matters to the caller.
+
+    Returns: the last chunk's "OK RINGS WRITE id=<id> now=<tick> ..." reply,
+    or "ERROR bad_value: values must be non-empty" if `values` is empty."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    if not values:
+        return "ERROR bad_value: values must be non-empty"
+    last = ""
+    for i in range(0, len(values), 400):
+        chunk = values[i:i + 400]
+        vs = " ".join(repr(float(v)) for v in chunk)
+        last = query_daemon(f"RINGS WRITE {id} {vs}")
+    return last
+
+@mcp.tool()
+def dagdb_rings_recall(id: str, lag: int) -> str:
+    """Read-only: recall the value written `lag` ticks ago from a ring
+    buffer (0 = the most recent write).
+
+    Returns: "OK RINGS RECALL id=<id> value=<f> tick=<t> ring=<r> span=<s>"
+    or "OK RINGS RECALL id=<id> value=none" if that lag was never written
+    (cell not yet occupied)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"RINGS RECALL {id} {lag}")
+
+@mcp.tool()
+def dagdb_clock_open() -> str:
+    """Open a new master tick clock (clock registry, prefix 'c') at tick 0.
+    Gears (dagdb_gear_open) attach to a clock and advance in phase with it.
+
+    Returns: "OK CLOCK OPEN id=c%08x tick=0"."""
+    return query_daemon("CLOCK OPEN")
+
+@mcp.tool()
+def dagdb_clock_advance(id: str, n: int = 1, value: float = None) -> str:
+    """Advance a clock by n ticks (default 1). On each tick, every gear
+    attached to this clock is advanced in step (masterTick, and `value` if
+    given — gears with a latch record the tick/value where their phase
+    accumulator fires).
+
+    Returns: "OK CLOCK ADVANCE id=<id> tick=<new tick>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    suffix = f" VALUE {value}" if value is not None else ""
+    return query_daemon(f"CLOCK ADVANCE {id} {n}{suffix}")
+
+@mcp.tool()
+def dagdb_clock_state(id: str) -> str:
+    """Read-only: report a clock's current tick.
+
+    Returns: "OK CLOCK STATE id=<id> tick=<t>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"CLOCK STATE {id}")
+
+@mcp.tool()
+def dagdb_gear_open(clock_id: str, name: str, num: int, den: int) -> str:
+    """Attach a phase gear (gear registry, prefix 'g') to clock `clock_id`
+    with reduced ratio num/den — the gear fires once every den ticks of
+    the clock, num times per den (e.g. 3/7 fires 3 times every 7 ticks).
+    Closing the clock cascades and closes every gear attached to it.
+
+    Returns: "OK GEAR OPEN id=g%08x clock=<clock_id> name=<name> ratio=<p>/<q>"
+    or "ERROR not_found: <clock_id>" if the clock doesn't exist."""
+    err = _bad_twin_id(clock_id)
+    if err:
+        return err
+    return query_daemon(f"GEAR OPEN {clock_id} {name} {num}/{den}")
+
+@mcp.tool()
+def dagdb_gear_state(id: str) -> str:
+    """Read-only: report a gear's fire count and current phase, and the
+    last latched (tick, value) if it has a latch.
+
+    Returns: "OK GEAR STATE id=<id> fires=<n> phase=<a>/<q>
+    latched_tick=<t|none> latched_value=<v|none>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"GEAR STATE {id}")
+
+@mcp.tool()
+def dagdb_xconv_check(nA: int, nB: int, kA: int, kB: int, warmup: int) -> str:
+    """Read-only. Caller must first write Float32 arrays a, b, kA, kB to
+    /tmp/dagdb_shm_file starting at byte offset 8 (a has nA samples, b has
+    nB, kernel kA has kA taps, kernel kB has kB taps — lengths must match
+    the counts passed here) before calling this tool. Checks that
+    convolving a with kernel kA and b with kernel kB agree (after
+    discarding the first `warmup` samples) — the smoother-reproducing-
+    across-the-bridge check from the summer's E2v2 work.
+
+    Returns: "OK XCONV CHECK residual=<d> compared=<n>"."""
+    return query_daemon(f"XCONV CHECK {nA} {nB} {kA} {kB} {warmup}")
+
+@mcp.tool()
+def dagdb_budget_sealed() -> str:
+    """Open the sealed allocator layout — the frozen tariff table from
+    market/pregate_allocator_v2.json (4 pockets x 8 tiers, minTier [4, 1])
+    used by the twin spec's allocator court — as a budget layout (budget
+    layout registry, prefix 'b'). No shm input; the table is compiled in.
+
+    Returns: "OK BUDGET SEALED id=b%08x pockets=4 tiers=8 classes=2"."""
+    return query_daemon("BUDGET SEALED")
+
+@mcp.tool()
+def dagdb_budget_open(n_pockets: int, n_tiers: int, n_classes: int) -> str:
+    """Open a custom budget layout. Caller must first write to
+    /tmp/dagdb_shm_file starting at byte offset 8: Float64 `cost`,
+    row-major [n_pockets][n_tiers], followed by UInt32 `minTier`,
+    length n_classes (the minimum tier index a claim of that class must
+    reach to count as served). Ragged, non-finite, or out-of-range input
+    is rejected with "ERROR bad_value".
+
+    Returns: "OK BUDGET OPEN id=b%08x pockets=<p> tiers=<t> classes=<c>"."""
+    return query_daemon(f"BUDGET OPEN {n_pockets} {n_tiers} {n_classes}")
+
+@mcp.tool()
+def dagdb_budget_allocate(id: str, budget: float, claims: list) -> str:
+    """Read-only: given a layout `id` (from dagdb_budget_sealed or
+    dagdb_budget_open) and a budget, decide which claims are served.
+    `claims` is a list of (pocket, class_index) integer pairs, sent as
+    "<pocket>:<class> ..." tokens.
+
+    Returns: "OK BUDGET ALLOCATE id=<id> budget=<b> value=<v> cost=<c>
+    served=<k> purchases=<pocket:tier,...>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    claim_str = " ".join(f"{int(pocket)}:{int(class_index)}" for pocket, class_index in claims)
+    return query_daemon(f"BUDGET ALLOCATE {id} {budget} {claim_str}")
+
+@mcp.tool()
+def dagdb_alarm_load(path: str, sha256: str = None) -> str:
+    """Load an alarm-stream fixture (alarm registry, prefix 'a') — the
+    JSON dict of AlarmRecord entries (quiet/liar/deep/drift + the cal0
+    control) described in §0 of the twin-spec plan. `path` is checked
+    against the daemon's guardPath (must be inside its data root). Pass
+    `sha256` (the 64-hex-char pinned digest, e.g.
+    AlarmFixture.sealedSHA256) to fail loudly on any mismatch rather than
+    silently loading a different fixture.
+
+    Returns: "OK ALARM LOAD id=a%08x records=<n> control=<0|1> sha256=<hex>
+    quiet=<n> liar=<n> deep=<n> drift=<n> ears=A<a>/B<b>/C<c>" or
+    "ERROR io: <reason>" (missing file, outside data root, or sha256
+    mismatch — an unexpected fixture is a finding, never a silent skip,
+    per §0.16)."""
+    suffix = f" SHA {sha256}" if sha256 else ""
+    return query_daemon(f"ALARM LOAD {path}{suffix}")
+
+@mcp.tool()
+def dagdb_alarm_frame(id: str, idx: int) -> str:
+    """Read-only: report one alarm record's culprit classification.
+
+    Returns: "OK ALARM FRAME id=<id> idx=<idx> class=<quiet|liar|deep|drift>
+    ear=<A|B|C|none> label=<label|none> pocket=<p|none> burst=<0|1>"."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"ALARM FRAME {id} {idx}")
+
+@mcp.tool()
+def dagdb_alarm_court(id: str, budget: float) -> str:
+    """Read-only: replay the allocator court over the full alarm stream at
+    one budget point — allocator/uniform/greedy/oracle arms, each frame
+    src = t - delta with warmup/tail handling per AllocatorCourt.run.
+
+    Returns: "OK ALARM COURT id=<id> budget=<b> misses=<m> served=<s>
+    cost=<c> burst=<served>/<missed>/<total> max_spend_ratio=<r> ..." (the
+    gate-1 table fields; see docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md for the
+    sealed numbers this reproduces bit-for-bit)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"ALARM COURT {id} {budget}")
+
+@mcp.tool()
+def dagdb_alarm_successor(id: str, budget: float, eps_m: float, eps_s: float, eps_n: float) -> str:
+    """Read-only: the successor object's counting-hand totals over the
+    corruption-model ε lattice (epsM = liar-ear-swap knob, epsS =
+    drift-goes-unread knob, epsN = phantom-claim knob) at one budget point.
+
+    Returns: "OK ALARM SUCCESSOR id=<id> budget=<b> misses_alloc=<m1>
+    misses_greedy=<m2> cost_alloc=<c1> cost_greedy=<c2> ..." (the gate-2
+    table fields; exactness depends on loop-order fidelity, §0.10)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"ALARM SUCCESSOR {id} {budget} {eps_m} {eps_s} {eps_n}")
+
+@mcp.tool()
+def dagdb_alarm_corrupt(id: str, idx: int, eps_m: float, eps_s: float, eps_n: float) -> str:
+    """Read-only: enumerate every (true-branch x phantom-subset) outcome
+    for one alarm record under the corruption model — CorruptionModel.
+    enumerateOutcomes(for:), weights summing to 1.0 exactly.
+
+    shm layout: [u32 count][u32 40] header at offset 0, then `count`
+    40-byte rows at offset 8, each:
+        f64 weight | u32 nClaims | u32 reserved0 |
+        5 x (u8 pocket, u8 row, u8 phantom, u8 pad) | 4 pad
+    (row is 0=L, 1=D; unused claim slots beyond nClaims are zero-filled).
+
+    Returns: "OK ALARM CORRUPT id=<id> idx=<idx> outcomes=<count>
+    weight_sum=<w>" (w is exactly 1.0 over the full enumeration)."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    return query_daemon(f"ALARM CORRUPT {id} {idx} {eps_m} {eps_s} {eps_n}")
+
+@mcp.tool()
+def dagdb_twin_list(kind: str) -> str:
+    """List open ids in one twin registry, selected by its id-prefix
+    letter: s stream, t record, n rings, c clock, g gear, b budget layout,
+    a alarm set.
+
+    Returns: "OK <VERB> LIST count=<n> [id id ...]" or
+    "ERROR bad_id: unknown kind ..." if `kind` isn't one of stncgba."""
+    verb = _TWIN_PREFIX_VERB.get(kind)
+    if verb is None:
+        return f"ERROR bad_id: unknown kind {kind!r} (expected one of s t n c g b a)"
+    return query_daemon(f"{verb} LIST")
+
+@mcp.tool()
+def dagdb_twin_close(id: str) -> str:
+    """Close any twin registry entry, routed to the right verb by the id's
+    prefix letter (s->STREAM, t->RECORD, n->RINGS, c->CLOCK, g->GEAR,
+    b->BUDGET, a->ALARM). Closing a clock cascades to its gears.
+
+    Returns: "OK <VERB> CLOSE id=<id>" (plus gears_closed=<n> for a clock),
+    or "ERROR bad_id: ..." if `id` doesn't match the twin id shape."""
+    err = _bad_twin_id(id)
+    if err:
+        return err
+    verb = _TWIN_PREFIX_VERB[id[0]]
+    return query_daemon(f"{verb} CLOSE {id}")
 
 if __name__ == "__main__":
     # Verify daemon is running

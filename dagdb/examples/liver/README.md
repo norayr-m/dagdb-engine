@@ -144,7 +144,7 @@ open ~/diagram_output/liver_architecture.png
 
 ## Interactive explorer (HTML + MCP)
 
-**🌐 Live**: https://norayr-m.github.io/dagdb-engine/examples/liver/explorer.html
+**🌐 Live**: https://norayr-m.github.io/dagdb-engine/dagdb/examples/liver/explorer.html
 
 `explorer.html` is a single-page app that visualizes the liver graph live
 and lets you inject toxins / run ticks / recover by clicking buttons.

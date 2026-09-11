@@ -29,7 +29,8 @@ OPEN_READER
 
 On open, the daemon `memcpy`s the six primary buffers into a
 fresh `DagDBEngine`. Session owns that independent copy. Cost:
-≈ 38 bytes × nodeCount RAM (≈ 38 MB for a 1 M-node graph).
+≈ 42 bytes × nodeCount RAM (≈ 42 MB for a 1 M-node graph) since
+the u64 rank widen on 2026-04-21.
 
 ```
 READER <id> <inner read-only command>
@@ -173,16 +174,16 @@ timestamp prefix changes every second.
 `OPEN_READER` allocates one full snapshot:
 
 ```
-rank:      nodeCount * 4 B
+rank:      nodeCount * 8 B    (u64 since T1b 2026-04-21)
 truth:     nodeCount * 1 B
 nodeType:  nodeCount * 1 B
 lut6Low:   nodeCount * 4 B
 lut6High:  nodeCount * 4 B
 neighbors: nodeCount * 24 B
-         = nodeCount * 38 B total
+         = nodeCount * 42 B total
 ```
 
-For a 1 M-node graph, ≈ 38 MB per session. On the default
+For a 1 M-node graph, ≈ 42 MB per session. On the default
 `--grid 1024` daemon, 10 simultaneous sessions cost ≈ 380 MB.
 Manageable on UMA; budget it if you open many.
 

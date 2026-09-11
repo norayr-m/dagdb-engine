@@ -26,6 +26,10 @@ public final class DagDBCommandHandler {
     let resultRowSize: Int
     let dataRoot: String?
     let dagdbEnv: String?
+    /// Twin-spec DSL state (interface phase, 2026-09) — daemon-global, shared by every
+    /// connection (primary path and reader sessions alike). See
+    /// DagDBCommandHandler+Twin.swift for the verb dispatcher.
+    public let twin: TwinState
 
     public init(
         engine: DagDBEngine,
@@ -41,7 +45,8 @@ public final class DagDBCommandHandler {
         shmBase: UnsafeMutableRawPointer,
         resultRowSize: Int = 24,
         dataRoot: String?,
-        dagdbEnv: String?
+        dagdbEnv: String?,
+        twin: TwinState = TwinState()
     ) {
         self.engine = engine
         self.grid = grid
@@ -57,6 +62,7 @@ public final class DagDBCommandHandler {
         self.resultRowSize = resultRowSize
         self.dataRoot = dataRoot
         self.dagdbEnv = dagdbEnv
+        self.twin = twin
     }
 
     func guardPath(_ p: String) -> String? {
@@ -74,6 +80,44 @@ public final class DagDBCommandHandler {
         return nil
     }
 
+    /// Write a snapshot and then a WAL checkpoint, in that order. Used by
+    /// the `SAVE` verb (after `guardPath`) and by the daemon's autosave on
+    /// graceful shutdown. The checkpoint must follow every durable snapshot:
+    /// startup recovery (`DagDBStartup.recover`) loads the snapshot and then
+    /// replays only records past the last checkpoint, and twin records such
+    /// as `RECORD SLICE`, `RINGS WRITE`, `CLOCK ADVANCE` are not idempotent —
+    /// a snapshot without its checkpoint would replay them twice.
+    public func durableSnapshot(path: String, compressed: Bool = false) -> String {
+        // G73 forced barrier: flush any deferred WAL tail so the snapshot
+        // is taken over a fully-durable log (a crash mid-snapshot then
+        // recovers via WAL replay with no group-commit loss window).
+        walAppender?.barrier()
+        do {
+            let r = try DagDBSnapshot.save(
+                engine: engine,
+                nodeCount: nodeCount,
+                gridW: width,
+                gridH: height,
+                tickCount: tickCount,
+                path: path,
+                compressed: compressed,
+                daemonEnv: DagDBSnapshot.SnapshotEnv.from(envString: dagdbEnv),
+                twin: twin
+            )
+            // After a durable snapshot, mark the WAL with a checkpoint so
+            // subsequent replays skip records already captured in the file.
+            if let wal = walAppender {
+                _ = try? wal.checkpoint(epoch: UInt64(tickCount))
+            }
+            let ratio = compressed
+                ? String(format: " ratio=%.1f%%", Double(r.bytesWritten) * 100.0 / Double(32 + r.uncompressedBodyBytes))
+                : ""
+            return "OK SAVE bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms\(ratio) path=\(path)\(compressed ? " (compressed)" : "")"
+        } catch {
+            return "ERROR io: save: \(error)"
+        }
+    }
+
     // MARK: - Command dispatch
 
     public func handle(_ input: String) -> String {
@@ -81,7 +125,7 @@ public final class DagDBCommandHandler {
 
         switch cmd {
         case .status:
-            return "OK STATUS nodes=\(nodeCount) ticks=\(tickCount) gpu=\(engine.device.name) grid=\(width)x\(height) maxRank=\(maxRank)"
+            return "OK STATUS nodes=\(nodeCount) ticks=\(tickCount) gpu=\(engine.device.name) grid=\(width)x\(height) maxRank=\(maxRank) twin_open=\(twin.totalOpen)"
 
         case .tick(let count):
             let t0 = CFAbsoluteTimeGetCurrent()
@@ -164,6 +208,29 @@ public final class DagDBCommandHandler {
             truthRankIndex.markDirty()
             engine.markRankTopologyDirty()
             return "OK SET node=\(node) truth=\(value)"
+
+        case .setWeight(let node, let dir, let value):
+            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            guard dir >= 0 && dir < 6 else { return "ERROR out_of_range: dir \(dir) not in 0..5" }
+            guard value.isFinite else { return "ERROR bad_value: weight must be finite" }
+            if let wal = walAppender {
+                do { _ = try wal.setEdgeWeight(node: UInt32(node), dir: UInt8(dir), value: value) }
+                catch { return "ERROR wal: append: \(error)" }
+            }
+            engine.edgeWeightsBuf.contents()
+                .bindMemory(to: Float.self, capacity: nodeCount * 6)[node * 6 + dir] = value
+            return "OK SET node=\(node) weight[\(dir)]=\(value)"
+
+        case .setValue(let node, let value):
+            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            guard value.isFinite else { return "ERROR bad_value: value must be finite" }
+            if let wal = walAppender {
+                do { _ = try wal.setNodeValue(node: UInt32(node), value: value) }
+                catch { return "ERROR wal: append: \(error)" }
+            }
+            engine.nodeValueBuf.contents()
+                .bindMemory(to: Float.self, capacity: nodeCount)[node] = value
+            return "OK SET node=\(node) value=\(value)"
 
         case .setRank(let node, let value):
             guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
@@ -312,33 +379,7 @@ public final class DagDBCommandHandler {
 
         case .save(let path, let compressed):
             if let err = guardPath(path) { return err }
-            // G73 forced barrier: flush any deferred WAL tail so the snapshot
-            // is taken over a fully-durable log (a crash mid-snapshot then
-            // recovers via WAL replay with no group-commit loss window).
-            walAppender?.barrier()
-            do {
-                let r = try DagDBSnapshot.save(
-                    engine: engine,
-                    nodeCount: nodeCount,
-                    gridW: width,
-                    gridH: height,
-                    tickCount: tickCount,
-                    path: path,
-                    compressed: compressed,
-                    daemonEnv: DagDBSnapshot.SnapshotEnv.from(envString: dagdbEnv)
-                )
-                // After a durable snapshot, mark the WAL with a checkpoint so
-                // subsequent replays skip records already captured in the file.
-                if let wal = walAppender {
-                    _ = try? wal.checkpoint(epoch: UInt64(tickCount))
-                }
-                let ratio = compressed
-                    ? String(format: " ratio=%.1f%%", Double(r.bytesWritten) * 100.0 / Double(32 + r.uncompressedBodyBytes))
-                    : ""
-                return "OK SAVE bytes=\(r.bytesWritten) elapsed=\(String(format: "%.1f", r.elapsedMs))ms\(ratio) path=\(path)\(compressed ? " (compressed)" : "")"
-            } catch {
-                return "ERROR io: save: \(error)"
-            }
+            return durableSnapshot(path: path, compressed: compressed)
 
         case .load(let path):
             if let err = guardPath(path) { return err }
@@ -349,7 +390,8 @@ public final class DagDBCommandHandler {
                     gridW: width,
                     gridH: height,
                     path: path,
-                    daemonEnv: DagDBSnapshot.SnapshotEnv.from(envString: dagdbEnv)
+                    daemonEnv: DagDBSnapshot.SnapshotEnv.from(envString: dagdbEnv),
+                    twin: twin
                 )
                 tickCount = r.fileTicks
                 truthRankIndex.markDirty()
@@ -789,6 +831,9 @@ public final class DagDBCommandHandler {
             let filterDesc = truthFilter.map { "truth=\($0)" } ?? "all"
             return "OK SIMILAR_DECISIONS to=\(seed) depth=\(depth) k=\(k) filter=\(filterDesc) candidates=\(candidates.count) returned=\(topK.count) elapsed=\(String(format: "%.1f", elapsed))ms shm_bytes=\(topK.count * 8)"
 
+        case .twin(let t):
+            return handleTwin(t, sessionId: nil)
+
         case .unknown(let raw):
             return "ERROR unknown_command: \(raw)"
         }
@@ -944,6 +989,7 @@ public final class DagDBCommandHandler {
 
         // All writes and nested sessions rejected.
         case .tick, .tickSync, .save, .load, .setTruth, .setRank, .setLUT,
+             .setWeight, .setValue,
              .clearEdges, .connect, .connectBack, .clearBackEdges,
              .exportMorton, .importMorton,
              .saveJSON, .loadJSON, .saveCSV, .loadCSV,
@@ -958,6 +1004,15 @@ public final class DagDBCommandHandler {
             // Technically it only mutates the snapshot, not the primary, so
             // it's safe — but semantically a reader shouldn't tick. Reject.
             return "ERROR forbidden: EVAL not allowed in reader session (ticks mutate)"
+
+        case .twin(let t):
+            // Twin registries are daemon-global (§0.13) — a reader session
+            // may only run the read-only twin verbs, dispatched against the
+            // same handler-owned twin state as the primary path.
+            guard t.isReadOnly else {
+                return "ERROR forbidden: twin verb mutates daemon-global twin state; not allowed in reader session"
+            }
+            return handleTwin(t, sessionId: sessionId)
 
         case .unknown(let raw):
             return "ERROR unknown_command: reader inner: \(raw)"

@@ -26,7 +26,16 @@ Three trees in one repo:
 
 Between 2026-04-19 and 2026-04-21 the database layer was extended
 with a rank-widening + MVCC + secondary-index pass — u32→u64 rank,
-WAL, snapshot-on-read, ancestry and similarity primitives.
+WAL, snapshot-on-read, ancestry and similarity primitives. Summer
+2026 added a parallel `Float32` weight/value lane beside the
+truth-table record (snapshot v6, new WAL opcodes) and seven twin
+primitives — deterministic replayable streams, a sealed knapsack
+allocator, a cross-ear identity check, a geared recording odometer, a
+rational-gear master clock. Since the interface phase (merged 2026-09-06) those seven
+primitives, plus a sealed alarm-stream type, are reachable over the
+daemon socket (DSL) and MCP, not just in-process (`ARCHITECTURE.md`
+§13); since 2026-09-09 the daemon can reload its last snapshot at
+startup (`DAGDB_STARTUP_LOAD`).
 
 **Ship-storm 2026-04-21.** Six items landed on the engine in a single
 day, all tests green:
@@ -38,8 +47,8 @@ day, all tests green:
   accepts v1 (u8) and v2 (u32) and widens on read.
 - **`rankPolicy` Protocol + three defaults** (T2) —
   sequence-position / chain-band / topological-sort.
-- **`SET_RANKS_BULK`** (T3) — shm-fed u32 vector rewrite, bypasses
-  per-edge validation.
+- **`SET_RANKS_BULK`** (T3) — shm-fed u64 vector rewrite (was
+  u32 at landing; widened with T1b), bypasses per-edge validation.
 - **MVCC snapshot-on-read** (T7) — `OPEN_READER` / `READER id …`
   sessions memcpy a stable engine copy; writers unblocked.
 - **`bfsDepths` primitive + `BFS_DEPTHS FROM <seed>` DSL** —
@@ -49,8 +58,10 @@ day, all tests green:
   events/sec. Adapter conforms to the Protocol. Dual-write through
   `capture_latest` is live.
 
-**Tests.** 98 Swift test cases + 16 Python adapter tests green as of
-2026-04-21. No skips, no xfails. Counts cited separately on purpose.
+**Tests.** 446 Swift test cases green as of 2026-09-09 (9 skip without
+the out-of-repo sealed fixture), full suite about 50 s. Python adapter tests are currently not runnable
+from the worktree layout (collection error). See
+[`CURRENT_STATE.md`](CURRENT_STATE.md) for the live picture.
 
 **Persistence policy (standing rule).** All persistent DagDB state on
 this machine lives under `~/dag_databases/`. The daemon enforces this
@@ -64,6 +75,10 @@ for the contract.
 **The wiki** is at [`docs/wiki/`](docs/wiki/README.md). Start with
 [`data-and-persistence.md`](docs/wiki/data-and-persistence.md) if
 you want to know where every byte lives before you run anything.
+
+Roadmap: [`ROADMAP.md`](ROADMAP.md) · Plan: [`PROJECT_PLAN.md`](PROJECT_PLAN.md)
+· Capabilities: [`CAPABILITIES.md`](CAPABILITIES.md) · Demo:
+[`examples/twin_primitives/`](examples/twin_primitives/)
 
 ---
 
@@ -86,6 +101,7 @@ Durability envs (point these inside `~/dag_databases/`):
 DAGDB_DATA_ROOT=$HOME/dag_databases \
 DAGDB_WAL=$HOME/dag_databases/live.wal \
 DAGDB_AUTOSAVE=$HOME/dag_databases/auto.dags \
+DAGDB_STARTUP_LOAD=$HOME/dag_databases/auto.dags \
   .build/release/dagdb-daemon --grid 1024
 ```
 
@@ -153,7 +169,7 @@ _submit_insert(record)                   # your socket / MCP call
 ctx = apply_ingest(record, ctx)
 ```
 
-Ingest context lives at `~/jarvis_workspace/dagdb_ingest_ctx.json` by
+Ingest context lives at `<workspace>/dagdb_ingest_ctx.json` by
 convention. See `dagdb/plugins/loom/backfill.py` for the one-shot
 JSONL → DagDB ingester used for historical loads.
 
@@ -291,7 +307,7 @@ legacy substring matchers still hit.
     │                                distance, BFS, MVCC, index
     ├── Sources/DagDBCLI/           dagdb CLI
     ├── Sources/DagDBDaemon/        dagdb-daemon + socket + DSL
-    ├── Tests/DagDBTests/           98 tests, ~2.8 s
+    ├── Tests/DagDBTests/           446 tests, ~50 s
     ├── mcp_server.py               Python MCP server (37 tools)
     ├── mcpo_config.json            local MCP bridge config (gitignored)
     ├── pg_dagdb/                   PostgreSQL extension
@@ -327,7 +343,7 @@ SET <node> RANK <n>
 SET <node> LUT <PRESET>
 CONNECT FROM <src> TO <dst>
 CLEAR <node> EDGES
-SET_RANKS_BULK          # reads u32 vector from shm offset 8
+SET_RANKS_BULK          # reads u64 vector from shm offset 8
 
 # Persistence
 SAVE <path> [COMPRESSED]
@@ -393,7 +409,7 @@ not in repo). The daemon itself is supervised by
 
 ```
 cd dagdb
-swift test                                      # 98 tests, ~2.8 s
+swift test                                      # 446 tests, ~50 s
 python3 plugins/biology/rank_policies.py        # self-test
 python3 -m pytest plugins/loom/test_adapter.py -q   # 16 tests
 ```
