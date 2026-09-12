@@ -16,6 +16,10 @@ on Apple-Silicon Unified Memory}
 \begin{document}
 \maketitle
 
+\noindent\textit{Scope.} This paper describes the engine as of 18
+April 2026. The numbers reported here are that date's measurements;
+the engine has moved since --- see the addendum at the end.
+
 \begin{abstract}
 We present DagDB, a compact ranked directed-acyclic-graph substrate
 for Apple-silicon unified memory, together with a four-stage compute
@@ -24,7 +28,7 @@ with fan-in bounded to~6 so that a LUT6 truth table fits exactly in
 one \texttt{uint64\_t} register and the combinational step becomes
 \texttt{state\,=\,(lut\,>>\,idx)\,\&\,1} --- a branch-free
 shift-and-mask. Storage is \texttt{MTLResourceOptions.storageModeShared}
-for zero-copy CPU\,↔\,GPU access; Morton Z-curve memory ordering is
+for zero-copy CPU\,$\leftrightarrow$\,GPU access; Morton Z-curve memory ordering is
 used for cache coalescing; rank monotonicity on edges enables a
 lock-free rank-by-rank dispatch. The full four-stage pipeline
 (forward wave, leaf mirror, backward wave, queen mirror) executes one
@@ -252,13 +256,32 @@ epochs on fixed inputs (this is the motivation for
 \toprule
 metric & value on Apple M5\,Max \\
 \midrule
-throughput on $10^6$-node graph & $\mathbf{0.71}$ GCUPS \\
-unit-test suite & $27/27$ passing \\
+throughput, legacy rank tick, $1{,}048{,}576$ nodes & $\mathbf{0.71}$ GCUPS$^{\dagger}$ \\
+unit-test suite (at the date) & $27/27$ passing$^{\ddagger}$ \\
 snapshot format (\texttt{.dags}) & zlib-compressed to $\approx 4\%$ of raw on sparse graphs \\
 example compression ($10^7$ nodes) & $358\,\text{MB} \to 14.4\,\text{MB}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\noindent$^{\dagger}$\,The verb measured is the rank-mode tick, taken
+on the \emph{legacy} rank-tick dispatch path (early-out) --- the
+default path at this paper's date of 18 April 2026 --- over a
+$1024\times1024$ grid of $1{,}048{,}576$ nodes on an Apple M5\,Max.
+Later measurement on the same machine and the same benchmark graph:
+the \emph{compacted} rank path, which became the default in July 2026,
+runs at $0.81$--$1.69$ GCUPS on the shallow (three-rank) spread and
+$0.15$--$0.65$ GCUPS on the 16-rank spread, and a synchronous
+whole-graph tick mode added since runs at $\approx 3.5$ GCUPS, stable
+across runs and spreads. Single runs on this machine vary up to
+$\approx 2\times$ with thermal state, which is why the later receipts
+report ranges rather than single figures; a subsequent re-measurement
+on a cool machine did not reproduce the 16-rank instability.
+
+\noindent$^{\ddagger}$\,$27/27$ is the count at this paper's date. As
+of 10 September 2026 the suite stands at $761$ tests with $45$
+fixture-gated skips on the most recent working branch ($710$ cases on
+the merged main line).
 
 These are early-stage numbers on a small graph. Scaling to the
 $10^{10}$-edge regime and layering in the routing-tree compiler
@@ -279,10 +302,64 @@ claim convergence. Instead:
   \item Observable: the clock-tick at which the pipeline exhausts its
         polynomial library-loader budget $p(n)$ without finding a
         witness.
-  \item Claim: the exhaustion rate rises sharply as $\alpha$ crosses
-        $\alpha_c$, matching the CSP phase-transition literature
-        (Cheeseman--Kanefsky--Taylor 1991; Monasson et al.\ 1999).
 \end{itemize}
+
+\paragraph{What is \emph{not} an acceptance criterion.} An earlier
+version of this specification accepted the result if the exhaustion
+rate rose sharply as $\alpha$ crossed $\alpha_c$, ``matching the CSP
+phase-transition literature'' (Cheeseman--Kanefsky--Taylor 1991;
+Monasson et al.\ 1999). That criterion is dropped: any local-search
+solver on random 3-SAT reproduces the same onset regardless of
+substrate, so a match is uninformative about \emph{this} pipeline. The
+literature remains the background against which the sweep is read, not
+a test the pipeline can pass.
+
+\paragraph{Confound: $\alpha$ and proxy depth are one knob.} In random
+3-SAT with $m = \alpha n$ clauses, the number of clauses a variable
+occurs in is Poisson with mean $3\alpha$. A variable's forward fan-out
+is its occurrence count, so the routing-tree pass of
+\S\ref{sec:routing} rewrites every variable with more than six
+occurrences into a proxy tree of depth $\lceil\log_6 k\rceil$. At
+$\alpha = 2$ the mean occurrence count is $6$ and roughly half the
+variables acquire a proxy tree; at $\alpha_c$ the mean is $12.8$ and
+nearly all of them do, most at depth $2$. The proxy structure
+therefore switches on across exactly the interval in which the
+transition is being looked for, and a sweep in $\alpha$ alone cannot
+separate the constraint density from the compiler pass.
+
+\paragraph{Two additions the specification requires before any run.}
+\begin{enumerate}[label=\textbf{(\roman*)},leftmargin=2.4em]
+  \item \textbf{State the mirror proxies' aggregation function as a
+        LUT, before the backward wave is defined.} Under edge
+        inversion a variable with $k$ occurrences receives its
+        frustration through $\lceil\log_6 k\rceil$ layers of 6-to-1
+        aggregation, and \S\ref{sec:frustration} does not say what
+        that aggregation computes. If it is OR, a high-occurrence
+        variable reads ``frustrated'' whenever any one of its clauses
+        is, and flips constantly; if it is majority, it almost never
+        flips near a solution and freezes. Either way the per-variable
+        flip rate depends on occurrence count, and occurrence count is
+        $3\alpha$ again. The dynamics the observable measures are a
+        function of the pass, so the function must be written down ---
+        as an explicit 64-bit LUT6 table --- before the experiment
+        means anything.
+  \item \textbf{An occurrence-regular control ensemble at equal
+        $\alpha$.} Run the same sweep against instances in which every
+        variable occurs in exactly $\lceil 3\alpha \rceil$ clauses
+        (threshold $\approx 4.2$), alongside the Poisson ensemble. If
+        exhaustion differs at equal $\alpha$ by more than the known
+        shift between the two thresholds, the pipeline is tracking the
+        proxy tree rather than the constraint density.
+\end{enumerate}
+
+\paragraph{Status.} This experiment has not been run. The paper
+reports no measurements from it; the section above is a
+specification, and the two additions are part of it, not follow-up
+work. A further caveat on timing: \S\ref{sec:frustration}'s
+frustration propagation, without which the backward wave is a memory
+copy, is likewise proposed and not implemented at this paper's date,
+so the pipeline as built has no search dynamics for the sweep to
+measure.
 
 A solver that halts predictably with ``unreachable'' when it hits its
 polynomial budget is more useful than one that claims convergence it
@@ -336,6 +413,95 @@ competitive performance claims against production systems. The
 benchmarks reported here are reproducible from the companion
 repositories and are intended as single-laptop order-of-magnitude
 markers.
+
+\section*{Addendum (2026-09-11): what has changed since this paper's
+date}
+
+This paper is dated 18 April 2026 and is left as written. The engine
+has moved since; the following are the changes a reader of the body
+text should know about.
+
+\begin{itemize}[label={--},leftmargin=1.6em]
+  \item \textbf{The rank axis is numbered in the opposite direction in
+        the released engine.} This is a difference of convention, not
+        of structure, and it is stated first because every other
+        bullet refers to ranks. In this paper a node's inputs carry
+        \emph{lower} rank than the node itself, leaves sit at rank $1$,
+        the Queen at rank $N$, and the forward wave ascends. In the
+        engine as released, a node's six input slots hold sources of
+        \emph{higher} rank: the hard invariant on every combinational
+        edge is $\rank(src) > \rank(dst)$ --- edges flow leaves to
+        roots, leaves carry the highest ranks, the root sits at rank
+        $0$ --- and the rank-mode tick strides from the highest rank
+        present down to zero. Tile routing and rank-range queries
+        depend on that orientation. The two describe the same DAG with
+        the rank axis reversed: this paper's rank $r$ is the engine's
+        $N - r$, and the mirror-rank formula $2N - r + 1$ in
+        \S\ref{sec:dagdb} inherits the same reversal. A reader
+        comparing the two should map the axis rather than read either
+        as an error.
+  \item \textbf{Rank widened to 64 bits} (21 April 2026, three days
+        after this paper's date), across core, shader, snapshot, log
+        and wire. The node table in \S\ref{sec:dagdb} shows the
+        4-byte rank field of the build described here; the rank buffer
+        is now 8 bytes per node, the snapshot body 42 bytes per node,
+        and a shared-memory result row 24 bytes. The change was made
+        for the tiled stretch target, which needs an address space
+        past $2^{32}$.
+  \item \textbf{Snapshot format is now version 7} (6 September 2026),
+        with load accepting versions 1 through 7. Later versions added
+        a back-edge trailer, an environment-origin trailer, a
+        weight/value lane section, and a section carrying the
+        interface state described below.
+  \item \textbf{A write-ahead log, and startup recovery} (9 September
+        2026, opt-in). A configured snapshot is loaded before log
+        replay; every durable save checkpoints the log immediately
+        after itself, so snapshot plus replayed tail is the state at
+        the last accepted command. A configured snapshot that is
+        unreadable or outside the data root is fatal, never a silent
+        empty start.
+  \item \textbf{A twin-primitive interface} (merged 5--6 September
+        2026): seven primitives plus an alarm-stream family with its
+        sealed courts, reachable over the daemon socket and the tool
+        bridge rather than in-process only, each behind a frozen gate
+        contract --- one of which carries an amendment from an
+        independent hostile read.
+  \item \textbf{Further verb families since} (September 2026): a
+        waveform mouth; a fold that reads the engine's own lanes
+        without minting state; derived views over a sealed fixture,
+        persisted by reference and hash rather than by bytes; per-path
+        kernel storage with a sealed cross-convolution residual, which
+        replaces an earlier patrol check now documented as deprecated
+        (on 190 sealed trials that older check flips 50 court gates,
+        every one a true recording); and a ticked attention hook whose
+        per-frame ledger is derived on restore, never stored.
+  \item \textbf{Tiling, step one} (10 September 2026). A DAG splits by
+        rank range into per-tile bodies with lower and upper halos and
+        a manifest; a residency-bounded router answers cross-tile
+        breadth-first, ancestry and select queries identically to the
+        single engine, and refuses a torn tile body instead of loading
+        it silently. Pre-fetch, ticking across tiles, the cold tier
+        and the $10^{11}$-node run are not done.
+  \item \textbf{Rank-bound correction} (10 September 2026). Rank-mode
+        ticking used to dispatch only the levels below the configured
+        rank bound: a node at or above it was never computed, while
+        the synchronous tick mode did compute it, and no verb refused
+        the state. The likeliest way to reach it was a restore --- a
+        snapshot saved under a large bound, loaded into a daemon
+        started with a small one. The defect was present in the engine
+        as described in this paper. It is fixed by computing rather
+        than refusing: the dispatch now sizes itself to every rank
+        actually present, and the tick reply reports its own coverage
+        --- the node-evaluation count always, plus the dispatched
+        level count and the configured bound whenever the graph
+        reaches past that bound.
+  \item \textbf{Performance.} The default rank-tick path changed in
+        July 2026 and a synchronous whole-graph tick mode was added;
+        both are conditioned in the note to the results table in
+        \S\ref{sec:bench}. The $0.71$ GCUPS figure in the body is the
+        legacy path at this paper's date and should not be read as the
+        engine's current throughput.
+\end{itemize}
 
 \begin{thebibliography}{9}
 \bibitem{cheeseman1991}

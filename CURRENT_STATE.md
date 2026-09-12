@@ -111,7 +111,7 @@ Gate contract: `docs/contracts/HOOK_GATES_FROZEN.md` (H1–H6, amendment
 `STATUS` now reports
 `twin_open=<n>` alongside the existing fields.
 `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md` is the frozen gate contract (incl.
-amendment 1, DT's hostile read); `docs/contracts/FOLD_API_GATES_FROZEN.md`
+amendment 1, an independent hostile read); `docs/contracts/FOLD_API_GATES_FROZEN.md`
 is FOLD's own frozen gate contract (F1–F5).
 
 ## Tiling, step one (2026-09-10, branch `dag/tiling`)
@@ -389,7 +389,7 @@ directory on disk written by `SAVE TILED` IS the durable state, and
 - **Prod socket**: `/tmp/dagdb.sock`.
 - **MCP bridge**: `com.dagdb.mcpo` on port `8787`, plist at
   `~/Library/LaunchAgents/com.dagdb.mcpo.plist`.
-- **Prod binary**: `004_Active_Doing_DagDB-prod/dagdb/.build/release/dagdb-daemon`.
+- **Prod binary**: `<prod checkout>/dagdb/.build/release/dagdb-daemon`.
 - **Prod data root**: `~/dag_databases/prod/`.
 - A separate process supervisor is **not** the prod owner; the
   launchd plist above is. If that ever changes, the one-prod-owner

@@ -25,7 +25,7 @@ answered `TICK` with `OK` and a rising tick count while part of the
 graph stood still. Present in the engine as shipped, including public
 v0.2.0.
 
-**The path that reaches it in the field** (DT's hole, adopted as R1):
+**The path that reaches it in the field** (the hole named by an independent hostile read, adopted as R1):
 not a hand-injected rank, but a restore. A graph saved from a daemon
 configured with a large bound and loaded into one configured with a
 small one carries ranks above the running bound without touching any
@@ -809,7 +809,7 @@ bugs, a security hole, and a structural test gap. All fixed in one
   race-free 7-coloring, colour-group partition, chained `BACK_EDGE`
   one-tick latch), plus per-test temp directories so concurrent
   `swift test` runs stop racing on shared `/tmp` fixture names (the
-  several branches share one working directory).
+  several checkouts share one dagdb working directory).
 
 Full suite climbed **165 → 191** across the sweep (README corrected
 06-24 after an adversarial read of the deck claims caught the stale

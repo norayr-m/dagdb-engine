@@ -157,7 +157,7 @@ final class SlimeMoldPerfScoutTests: XCTestCase {
     }
 
     /// Same shape as the 200×200 scout, but pushed to ~320 K nodes (the
-    /// upper end of dag's 250–320 K target). This path bypasses
+    /// upper end of the 250–320 K target). This path bypasses
     /// `DagDBGraph` entirely — the 200×200 build was 32 s on the graph
     /// layer because of the dup-check + label-index work, which would
     /// extrapolate to ~10+ minutes at 320 K. Instead we write directly to

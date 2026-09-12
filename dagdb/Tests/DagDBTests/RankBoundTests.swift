@@ -2,7 +2,8 @@ import XCTest
 @testable import DagDB
 
 /// RANK BOUND gates — docs/contracts/RANK_BOUND_GATES_FROZEN.md
-/// (AMENDMENT 1 replaces the original R1 with DT's restore-path fixture;
+/// (AMENDMENT 1 replaces the original R1 with the reviewer's restore-path
+/// fixture;
 /// AMENDMENT 2 rules the remedy to be *compute*, not refuse.)
 ///
 /// R1 · the restore path. A graph whose ranks run to 21, built in an

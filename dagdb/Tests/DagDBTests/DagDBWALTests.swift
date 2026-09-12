@@ -4,7 +4,7 @@ import XCTest
 final class DagDBWALTests: XCTestCase {
 
     /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when princes run swift test concurrently in the shared dagdb dir).
+    /// when several checkouts run swift test concurrently in one shared dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {

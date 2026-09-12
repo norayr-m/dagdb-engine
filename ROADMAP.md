@@ -36,7 +36,7 @@ infrastructure.
 | 6 | Cross-convolution self-test | **Done** | `SealedCrossConvolution.swift` — the W1 court's own frozen residual R (window [warmup, n), one-sided denominator, float64), reproducing the court's G0–G3 lines exactly; `KernelPair` stores per-path kernels by reference, `KERNEL`/`XCONV SEALED` verb family; `docs/contracts/KERNELS_GATES_FROZEN.md` K1–K5 — on `dag/kernels`, merged 2026-09-10 to main. `CrossConvolutionCheck.swift` (pass/scream/flash, 2026-08-30) is now the **deprecated patrol check**: it compares past the record's end with a symmetric denominator and Float32 inputs, and flips 50 of 190 court gates on the sealed records (all true recordings) — kept wired for compatibility, no longer the engine's standing cross-convolution check |
 | 7 | Mandatory time-domain header (t-zero law) | **Done** | `StreamHeader.swift` — seven declared quantities, arithmetic refusals |
 | 8 | Waveform mouth as matmul (bank Φ, generate = Φ@C) | **Done** (code, gated: contract path) | `WaveBank.swift` + `BANK` verb family; `docs/contracts/SPEC8_MOUTH_GATES_FROZEN.md` — default bank K=144 (repaired, full rank), the sealed K=160 control kept and reachable with `ALIASED`; on `dag/spec8-mouth`, merged 2026-09-10 to main |
-| 9 | LUT nesting for the attention cascade (ternary patrol → float fovea) | **Waits on Hex** | design only; the hex-attention seam; not sealed |
+| 9 | LUT nesting for the attention cascade (ternary patrol → float fovea) | **Waits on the hex-attention line** | design only; the hex-attention seam; not sealed |
 
 Seven of nine on main as of 2026-09-06 (rollback anchors
 `pre-merge-twin-r3-20260905` and `pre-merge-p4-20260906`; spec 4 gated
@@ -164,16 +164,16 @@ held exactly at S = 2/4/6/8. 570 tests on that branch.
    itself (hex hierarchy) unchanged from before.
 9. **Liver twin plugin surface.** Blocked on that twin's spec (state
    model, kernels, observables). Placeholder until it lands.
-10. **Spec 9 / hex seam.** Handover of hex-attention artefacts to the
-    Hex sibling when spawned; the engine hosts the nesting, Hex owns
-    the cascade.
+10. **Spec 9 / hex seam.** Handover of hex-attention artefacts to a
+    later line when it exists; the engine hosts the nesting, that
+    later line owns the cascade.
 
 ## Gates that every item passes
 
 - A frozen contract before any number exists — object, method, floor
   of the instrument, prior work and the run's kind (claim / control /
   re-derivation), PASS criterion as a number.
-- Blinded rooms; a mechanical notary; a hostile read by the other lane.
+- Blinded rooms; a mechanical notary; an independent hostile read.
 - Merge to main only with a proven rollback anchor before and a green
   full suite after.
 - Documentation updated in the same change (CHANGES, CURRENT_STATE,

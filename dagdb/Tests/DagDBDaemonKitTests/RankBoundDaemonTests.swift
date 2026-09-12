@@ -29,7 +29,7 @@ final class RankBoundDaemonTests: XCTestCase {
     }
 
     /// Save the deep-rank object from a `maxRank` 32 engine, then restore it
-    /// into the fixture's `maxRank` 8 handler — DT's restore path.
+    /// into the fixture's `maxRank` 8 handler — the reviewer's restore path.
     private func restoredFixture() throws -> (HandlerFixture, RankBoundFixture.Tables) {
         let side = RankBoundFixture.side
         let n = RankBoundFixture.nodeCount

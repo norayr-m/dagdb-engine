@@ -29,7 +29,7 @@ RECORDS_SRC = Path(
 KERNELS_SHA = "2523d3a8a4de44b56268ee31a703b6bcc6522c7c66a305651f8ec7c03e5c56b8"
 RECORDS_SHA = "ba899eeff82a85b74ce5572d8a5297eee479d9eb4b72b11ea0add2359f633f1a"
 
-REPO_ROOT = Path(__file__).resolve().parents[2]  # .../004_Active_Doing_DagDB-dag
+REPO_ROOT = Path(__file__).resolve().parents[2]  # the repository root
 FIXTURES = REPO_ROOT / "dagdb" / "Tests" / "Fixtures"
 
 WARM = 185

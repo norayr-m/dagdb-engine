@@ -74,7 +74,7 @@ def test_dialogue_turn_chains_both_ways():
         "file": "/loom/X.md",
     }
     records, _ = ingest_stream([ev1, ev2, ev3])
-    # ev2: prev_by_agent=ev1 (dag's prior), no dialogue_prev_turn yet
+    # ev2: prev_by_agent=ev1 (the agent's prior), no dialogue_prev_turn yet
     assert records[1].neighbors == [0]
     # ev3: prev_by_agent=none (fold's first event), dialogue_prev_turn=ev2
     assert records[2].neighbors == [1]
