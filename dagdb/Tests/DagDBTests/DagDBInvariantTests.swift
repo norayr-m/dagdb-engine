@@ -12,7 +12,7 @@ import XCTest
 final class DagDBInvariantTests: XCTestCase {
 
     private func makeEngine(side: Int, maxRank: Int = 8) throws -> DagDBEngine {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: maxRank)
         let nb = engine.neighborsBuf.contents().bindMemory(
@@ -81,9 +81,9 @@ final class DagDBInvariantTests: XCTestCase {
     /// The lock-free intra-rank tick depends on the hex 7-colouring placing
     /// no two adjacent nodes in the same colour group. Verify across several
     /// grid sizes, including non-power-of-two.
-    func testSevenColoringIsRaceFree() {
+    func testSevenColoringIsRaceFree() throws {
         for side in [8, 16, 17, 31, 64] {
-            let grid = HexGrid(width: side, height: side)
+            let grid = try HexGrid(width: side, height: side)
             XCTAssertTrue(grid.verifyColoring(),
                 "7-colouring placed adjacent nodes in the same group at side=\(side)")
         }
@@ -91,9 +91,9 @@ final class DagDBInvariantTests: XCTestCase {
 
     /// Every node must appear in exactly one colour group, and the groups
     /// must partition the node set (no gaps, no duplicates).
-    func testColorGroupsPartitionNodes() {
+    func testColorGroupsPartitionNodes() throws {
         let side = 16
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         var seen = Set<Int32>()
         var total = 0
         for group in grid.colorGroups {

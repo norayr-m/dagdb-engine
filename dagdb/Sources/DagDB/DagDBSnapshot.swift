@@ -130,6 +130,17 @@ public enum DagDBSnapshot {
         case ioFailure(String)
         case validationFailed(String)
         case manifestMismatch(expected: String, actual: String)
+        /// A 32-bit header field cannot hold the value the save would put in
+        /// it. Refused by name rather than trapped on the `UInt32(...)`
+        /// conversion (audit A, findings 4 and 5).
+        case headerFieldOverflow(field: String, value: Int)
+        /// The body could not be compressed into a shape `load` would accept.
+        case compressionFailed(String)
+        /// The v6 lane flags carry a bit this build does not define. Refusing
+        /// here names the lane section; accepting it mis-computes the read
+        /// offset and surfaces later as an "ENVS magic mismatch" that blames
+        /// the trailer (audit A, finding 11).
+        case unknownLaneFlag(UInt8)
 
         public var description: String {
             switch self {
@@ -141,6 +152,11 @@ public enum DagDBSnapshot {
             case .ioFailure(let s): return "io: \(s)"
             case .validationFailed(let s): return "validation: \(s)"
             case .manifestMismatch(let e, let a): return "manifest mismatch: sha256 file=\(e) computed=\(a) — snapshot corrupt, refusing load"
+            case let .headerFieldOverflow(f, v):
+                return "header field '\(f)' = \(v) exceeds the 32-bit field the snapshot format has for it (max \(UInt32.max))"
+            case .compressionFailed(let s): return "compression: \(s)"
+            case .unknownLaneFlag(let b):
+                return String(format: "unknown lane flag bit(s) 0x%02x in the WGTS section — this file was written by a newer build with a lane this one does not know", b)
             }
         }
     }
@@ -181,6 +197,62 @@ public enum DagDBSnapshot {
             }
         }
 
+        // C3 · the register invariant the engine actually evaluates.
+        // `DagDBState`'s own doc says VALIDATE enforces "dst has zero
+        // combinational fan-in"; it did not (audit A, finding 9). A register
+        // with a combinational input is a node the rank kernel skips and the
+        // latch overwrites — its inputs are evaluated by nobody.
+        let reg = engine.isRegisterBuf.contents()
+            .bindMemory(to: UInt8.self, capacity: nodeCount)
+        for dst in 0..<nodeCount where reg[dst] != 0 {
+            for d in 0..<6 {
+                let src = nb[dst * 6 + d]
+                if src >= 0 {
+                    return "register invariant: node \(dst) is a BACK_EDGE " +
+                           "destination (register) but has a combinational " +
+                           "input at slot \(d) (source node \(src)); registers " +
+                           "must have zero combinational fan-in"
+                }
+            }
+        }
+
+        // C3 · the back-edge lists are indices into the same buffers the
+        // latch phase writes through. Out of range here is a heap write on
+        // every tick, so the range is checked as an invariant, not trusted.
+        if engine.backEdgeSrcs.count != engine.backEdgeDsts.count {
+            return "back-edge lists disagree in length: " +
+                   "\(engine.backEdgeSrcs.count) source(s) vs " +
+                   "\(engine.backEdgeDsts.count) destination(s)"
+        }
+        for i in 0..<engine.backEdgeSrcs.count {
+            let s = engine.backEdgeSrcs[i]
+            let d = engine.backEdgeDsts[i]
+            if Int(s) >= nodeCount {
+                return "back-edge \(i): source \(s) out of range for nodeCount \(nodeCount)"
+            }
+            if Int(d) >= nodeCount {
+                return "back-edge \(i): destination \(d) out of range for nodeCount \(nodeCount)"
+            }
+        }
+
+        // C3 · and the flag buffer must agree with the list, in both
+        // directions: a flag with no back edge is a node the kernel skips
+        // forever, and an unflagged destination is a node the kernel and the
+        // latch both write.
+        var isDst = [Bool](repeating: false, count: nodeCount)
+        for d in engine.backEdgeDsts where Int(d) < nodeCount { isDst[Int(d)] = true }
+        for i in 0..<nodeCount {
+            let flagged = reg[i] != 0
+            if flagged && !isDst[i] {
+                return "register flag disagreement: node \(i) is flagged as a " +
+                       "register but is not the destination of any BACK_EDGE"
+            }
+            if !flagged && isDst[i] {
+                return "register flag disagreement: node \(i) is the destination " +
+                       "of a BACK_EDGE but is not flagged as a register"
+            }
+        }
+
         // Rank bound (R4, docs/contracts/RANK_BOUND_GATES_FROZEN.md).
         // A snapshot written under a large `maxRank` and restored under a
         // small one carries ranks at or above the running bound. The rank
@@ -203,9 +275,34 @@ public enum DagDBSnapshot {
             }
         }
         if overCount > 0 {
-            return "rank bound: \(overCount) node(s) at or above maxRank " +
-                   "\(engine.maxRank) (first node \(firstOver) rank " +
-                   "\(firstOverRank), highest rank \(highest))"
+            // C3 · the same sentence, then the dispatch's OWN thresholds
+            // appended. `maxRank` alone conflates two different states: a
+            // rank the dispatch reaches anyway (the stale-bound warning that
+            // R4 wants kept) and a rank no dispatch covers (a node nothing
+            // evaluates). `effectiveRankCount` is the real exclusion line —
+            // it is what `rebuildCompaction` buckets against — and
+            // `rankDispatchNodeCount()` is the coverage as a number rather
+            // than as an inference (audit A, finding 10).
+            engine.ensureRankTopology()
+            let levels = engine.effectiveRankCount
+            var uncovered = 0
+            var firstUncovered = -1
+            var firstUncoveredRank: UInt64 = 0
+            for i in 0..<nodeCount where rank[i] >= UInt64(levels) {
+                uncovered += 1
+                if firstUncovered < 0 { firstUncovered = i; firstUncoveredRank = rank[i] }
+            }
+            var line = "rank bound: \(overCount) node(s) at or above maxRank " +
+                       "\(engine.maxRank) (first node \(firstOver) rank " +
+                       "\(firstOverRank), highest rank \(highest))"
+            line += "; rank dispatch covers \(engine.rankDispatchNodeCount()) of " +
+                    "\(nodeCount) node(s) over \(levels) rank level(s)"
+            if uncovered > 0 {
+                line += "; \(uncovered) node(s) at rank >= \(levels) are outside " +
+                        "every dispatch (first node \(firstUncovered) rank " +
+                        "\(firstUncoveredRank))"
+            }
+            return line
         }
         return nil
     }
@@ -278,15 +375,31 @@ public enum DagDBSnapshot {
             let compressed = zlibCompress(buf)
             bodyBytes = compressed.count
 
-            var header = buildHeader(nodeCount: nodeCount, gridW: gridW, gridH: gridH,
-                                     tickCount: tickCount, flags: flags, bodyBytes: bodyBytes)
+            // C2 · a SAVE that returns success can be LOADed. Two ways the
+            // compressed path used to write a file `load` would refuse, both
+            // silently: an encode that returned nothing (zlib expands
+            // incompressible input; audit A, finding 3), and a stream that
+            // does not decode back to the exact body size. Check both HERE,
+            // while refusing still costs the caller nothing.
+            guard uncompressedBodySize == 0 || !compressed.isEmpty else {
+                throw SnapError.compressionFailed(
+                    "zlib produced an empty body for \(uncompressedBodySize) bytes of input")
+            }
+            let check = zlibDecompress(compressed, expectedSize: uncompressedBodySize)
+            guard check.count == uncompressedBodySize else {
+                throw SnapError.compressionFailed(
+                    "compressed body decodes to \(check.count) bytes, expected " +
+                    "\(uncompressedBodySize) (nodeCount \(nodeCount) × 42)")
+            }
+
+            let header = try buildHeader(nodeCount: nodeCount, gridW: gridW, gridH: gridH,
+                                         tickCount: tickCount, flags: flags, bodyBytes: bodyBytes)
             handle.write(header)
             handle.write(compressed)
-            _ = header // keep explicit for clarity
         } else {
             bodyBytes = uncompressedBodySize
-            let header = buildHeader(nodeCount: nodeCount, gridW: gridW, gridH: gridH,
-                                     tickCount: tickCount, flags: flags, bodyBytes: bodyBytes)
+            let header = try buildHeader(nodeCount: nodeCount, gridW: gridW, gridH: gridH,
+                                         tickCount: tickCount, flags: flags, bodyBytes: bodyBytes)
             handle.write(header)
 
             handle.write(Data(bytesNoCopy: rankBytes,  count: nodeCount * 8,      deallocator: .none))
@@ -422,19 +535,32 @@ public enum DagDBSnapshot {
         return (total, uncompressedBodySize, elapsed)
     }
 
-    private static func buildHeader(
+    /// Build the 32-byte header, refusing by name any field that does not fit
+    /// its 32-bit slot. `internal` so the overflow gate can call it without
+    /// allocating a 4-billion-node engine.
+    static func buildHeader(
         nodeCount: Int, gridW: Int, gridH: Int,
         tickCount: UInt32, flags: Flags, bodyBytes: Int
-    ) -> Data {
+    ) throws -> Data {
+        func fit(_ name: String, _ v: Int) throws -> UInt32 {
+            guard v >= 0 && v <= Int(UInt32.max) else {
+                throw SnapError.headerFieldOverflow(field: name, value: v)
+            }
+            return UInt32(v)
+        }
+        let nc = try fit("nodeCount", nodeCount)
+        let gw = try fit("gridW", gridW)
+        let gh = try fit("gridH", gridH)
+        let bb = try fit("bodyBytes", bodyBytes)
         var header = Data(capacity: headerSize)
         header.append(contentsOf: magic)
         appendU32(&header, version)
-        appendU32(&header, UInt32(nodeCount))
-        appendU32(&header, UInt32(gridW))
-        appendU32(&header, UInt32(gridH))
+        appendU32(&header, nc)
+        appendU32(&header, gw)
+        appendU32(&header, gh)
         appendU32(&header, tickCount)
         appendU32(&header, flags.rawValue)
-        appendU32(&header, UInt32(bodyBytes))
+        appendU32(&header, bb)
         return header
     }
 
@@ -635,7 +761,7 @@ public enum DagDBSnapshot {
                     for j in 0..<nodeCount { rp[j] = 0 }
                     throw SnapError.ioFailure("back-edge entry \(i) out of range: src=\(src) dst=\(dst) nodeCount=\(nodeCount)")
                 }
-                engine.addBackEdgeUnchecked(src: src, dst: dst)
+                try engine.addBackEdgeUnchecked(src: src, dst: dst)
             }
             totalRead += beSectionSize
         }
@@ -652,6 +778,13 @@ public enum DagDBSnapshot {
                 throw SnapError.ioFailure("v6 lane-section magic mismatch: got 0x\(laneMagic.map { String(format: "%02x", $0) }.joined()), expected 'WGTS' (0x57475453)")
             }
             let laneFlags = data[laneStart + 4]
+            // Bits 3–7 are not defined at this version. Reading past them
+            // would leave `totalRead` short by a whole lane and blame the
+            // ENVS trailer for it; name the lane bit instead.
+            let unknownLaneBits = laneFlags & ~UInt8(0x07)
+            guard unknownLaneBits == 0 else {
+                throw SnapError.unknownLaneFlag(unknownLaneBits)
+            }
             var off6 = laneStart + 5
             if laneFlags & 0x01 != 0 {
                 let sz = nodeCount * 6 * 4
@@ -743,12 +876,33 @@ public enum DagDBSnapshot {
             totalRead += 5
         }
 
+        // C2 · the rank buffer was overwritten above, so the compacted
+        // dispatch lists are stale. `markRankTopologyDirty`'s own doc names
+        // LOAD as a required caller; the daemon compensated, the library API
+        // did not, and an embedder that called `load` and then ticked
+        // dispatched the PRE-load rank topology (audit A, finding 8).
+        engine.markRankTopologyDirty()
+
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return LoadResult(bytesRead: totalRead, fileNodeCount: fileNC, fileTicks: fileTicks, elapsedMs: elapsed)
     }
 
     // MARK: - Morton export (raw per-buffer files for Tier-1 interop)
 
+    /// Write every persisted buffer to its own raw file, no header, no
+    /// compression, Morton order.
+    ///
+    /// Eleven files: the six body lanes — `rank.bin` (u64), `truth.bin`,
+    /// `nodeType.bin`, `lut_low.bin`, `lut_high.bin`, `neighbors.bin` —
+    /// under their original names, contents and layout, plus
+    /// `edge_weights.bin` (f32 × n × 6), `activation.bin` (i16 × n),
+    /// `node_value.bin` (f32 × n), `is_register.bin` (u8 × n) and
+    /// `back_edges.bin` (u32 count + count × (u32 src + u32 dst)).
+    ///
+    /// C8 · the last five are additions. Six files described a graph the
+    /// engine does not have, and the call returned `nodeCount * 42` as
+    /// though that were the whole object (audit A, finding 6). The returned
+    /// byte count is now what was written.
     public static func exportMorton(
         engine: DagDBEngine,
         nodeCount: Int,
@@ -776,7 +930,30 @@ public enum DagDBSnapshot {
         try writeRaw("lut_high.bin",  engine.lut6HighBuf.contents(),   nodeCount * 4)
         try writeRaw("neighbors.bin", engine.neighborsBuf.contents(),  nodeCount * 6 * 4)
 
-        let total = nodeCount * 42
+        // C8 · the other four persisted lanes and the back-edge list. Six
+        // files described a graph the engine does not have: the weights,
+        // activation and node-value lanes and every register were dropped,
+        // and the call returned `nodeCount * 42` as though that were the
+        // whole object (audit A, finding 6). The six original files keep
+        // their names, contents and layout, so a reader of the old set is
+        // unaffected; these five are additions beside them.
+        try writeRaw("edge_weights.bin", engine.edgeWeightsBuf.contents(), nodeCount * 6 * 4)
+        try writeRaw("activation.bin",   engine.activationBuf.contents(),  nodeCount * 2)
+        try writeRaw("node_value.bin",   engine.nodeValueBuf.contents(),   nodeCount * 4)
+        try writeRaw("is_register.bin",  engine.isRegisterBuf.contents(),  nodeCount)
+
+        // back_edges.bin: u32 count + count × (u32 src + u32 dst).
+        var be = Data()
+        appendU32(&be, UInt32(engine.backEdgeCount))
+        for i in 0..<engine.backEdgeCount {
+            appendU32(&be, engine.backEdgeSrcs[i])
+            appendU32(&be, engine.backEdgeDsts[i])
+        }
+        try be.write(to: URL(fileURLWithPath: "\(dir)/back_edges.bin"))
+
+        let total = nodeCount * 42                      // the six body lanes
+            + nodeCount * 6 * 4 + nodeCount * 2 + nodeCount * 4 + nodeCount
+            + be.count
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return (total, elapsed)
     }
@@ -836,6 +1013,50 @@ public enum DagDBSnapshot {
             if let v = violation { throw SnapError.validationFailed(v) }
         }
 
+        // C8 · the four extra lanes and the back-edge list, when the
+        // directory carries them. A directory holding only the six original
+        // files still imports; the lanes it does not carry come back at
+        // their defaults below, exactly as `load` resets them, rather than
+        // keeping the destination's previous graph.
+        func optional(_ name: String, _ expectedSize: Int) throws -> Data? {
+            let path = "\(dir)/\(name)"
+            guard FileManager.default.fileExists(atPath: path) else { return nil }
+            let d = try Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe])
+            guard d.count == expectedSize else {
+                throw SnapError.ioFailure("\(name): expected \(expectedSize) bytes, got \(d.count)")
+            }
+            return d
+        }
+        let wData = try optional("edge_weights.bin", nodeCount * 6 * 4)
+        let aData = try optional("activation.bin",   nodeCount * 2)
+        let vData = try optional("node_value.bin",   nodeCount * 4)
+
+        var beSrcs: [UInt32] = []
+        var beDsts: [UInt32] = []
+        var beBytes = 0
+        let bePath = "\(dir)/back_edges.bin"
+        if FileManager.default.fileExists(atPath: bePath) {
+            let d = try Data(contentsOf: URL(fileURLWithPath: bePath))
+            guard d.count >= 4 else {
+                throw SnapError.ioFailure("back_edges.bin: missing the entry count")
+            }
+            let count = Int(readU32(d, 0))
+            guard d.count == 4 + count * 8 else {
+                throw SnapError.ioFailure(
+                    "back_edges.bin: \(count) entries need \(4 + count * 8) bytes, file has \(d.count)")
+            }
+            for i in 0..<count {
+                let s = readU32(d, 4 + i * 8)
+                let t = readU32(d, 8 + i * 8)
+                guard Int(s) < nodeCount && Int(t) < nodeCount else {
+                    throw SnapError.ioFailure(
+                        "back_edges.bin entry \(i) out of range: src=\(s) dst=\(t) nodeCount=\(nodeCount)")
+                }
+                beSrcs.append(s); beDsts.append(t)
+            }
+            beBytes = d.count
+        }
+
         // Commit — all validations passed
         rankData.withUnsafeBytes  { memcpy(engine.rankBuf.contents(),       $0.baseAddress!, nodeCount * 8) }
         truthData.withUnsafeBytes { memcpy(engine.truthStateBuf.contents(), $0.baseAddress!, nodeCount) }
@@ -844,7 +1065,37 @@ public enum DagDBSnapshot {
         highData.withUnsafeBytes  { memcpy(engine.lut6HighBuf.contents(),   $0.baseAddress!, nodeCount * 4) }
         nbData.withUnsafeBytes    { memcpy(engine.neighborsBuf.contents(),  $0.baseAddress!, nodeCount * 6 * 4) }
 
+        // Reset exactly what `load` resets — back edges, register flags and
+        // the three lanes — before installing what the directory carried.
+        // Without this the previous graph's registers stayed flagged and
+        // every node at those indices was skipped by every rank tick
+        // (audit A, finding 7).
+        engine.backEdgeSrcs.removeAll(keepingCapacity: false)
+        engine.backEdgeDsts.removeAll(keepingCapacity: false)
+        let regPtr = engine.isRegisterBuf.contents()
+            .bindMemory(to: UInt8.self, capacity: nodeCount)
+        for i in 0..<nodeCount { regPtr[i] = 0 }
+        let wPtr = engine.edgeWeightsBuf.contents()
+            .bindMemory(to: Float.self, capacity: nodeCount * 6)
+        for i in 0..<(nodeCount * 6) { wPtr[i] = 1.0 }
+        let aPtr = engine.activationBuf.contents()
+            .bindMemory(to: Int16.self, capacity: nodeCount)
+        for i in 0..<nodeCount { aPtr[i] = 0 }
+        let vPtr = engine.nodeValueBuf.contents()
+            .bindMemory(to: Float.self, capacity: nodeCount)
+        for i in 0..<nodeCount { vPtr[i] = 0.0 }
+
+        wData?.withUnsafeBytes { memcpy(engine.edgeWeightsBuf.contents(), $0.baseAddress!, nodeCount * 6 * 4) }
+        aData?.withUnsafeBytes { memcpy(engine.activationBuf.contents(),  $0.baseAddress!, nodeCount * 2) }
+        vData?.withUnsafeBytes { memcpy(engine.nodeValueBuf.contents(),   $0.baseAddress!, nodeCount * 4) }
+        for i in 0..<beSrcs.count {
+            try engine.addBackEdgeUnchecked(src: beSrcs[i], dst: beDsts[i])
+        }
+        engine.markRankTopologyDirty()
+
         let total = nodeCount * 42
+            + (wData?.count ?? 0) + (aData?.count ?? 0) + (vData?.count ?? 0)
+            + beBytes
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
         return (total, elapsed)
     }
@@ -910,18 +1161,34 @@ public enum DagDBSnapshot {
 
     // MARK: - Compression
 
-    /// Compress a byte array with zlib. Returns a fresh Data.
+    /// Compress a byte array with zlib. Returns a fresh Data, empty only if
+    /// the input was empty.
+    ///
+    /// `compression_encode_buffer` returns 0 when the destination is too
+    /// small, and zlib EXPANDS incompressible input — so sizing the
+    /// destination at `input.count` (what this did until C2) turned a random
+    /// body into an empty one with no error anywhere (audit A, finding 3).
+    /// The destination now starts at zlib's own worst case (the deflate
+    /// bound: input + input/1000 + 13, plus the zlib wrapper and a margin)
+    /// and doubles if the encoder still says it does not fit.
     static func zlibCompress(_ input: Data) -> Data {
-        let bufSize = max(input.count, 64)
-        var output = [UInt8](repeating: 0, count: bufSize)
-        let sz = input.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
-            return compression_encode_buffer(
-                &output, bufSize,
-                src.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
-                nil, COMPRESSION_ZLIB
-            )
+        if input.isEmpty { return Data() }
+        var bufSize = max(input.count + input.count / 1000 + 128, 128)
+        // Three attempts is already far past the theoretical bound; the loop
+        // exists so a future codec change cannot reintroduce a silent zero.
+        for _ in 0..<3 {
+            var output = [UInt8](repeating: 0, count: bufSize)
+            let sz = input.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
+                return compression_encode_buffer(
+                    &output, bufSize,
+                    src.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
+                    nil, COMPRESSION_ZLIB
+                )
+            }
+            if sz > 0 { return Data(output[0..<sz]) }
+            bufSize *= 2
         }
-        return Data(output[0..<sz])
+        return Data()
     }
 
     /// Decompress a zlib-compressed byte array of known uncompressed size.

@@ -20,29 +20,60 @@ public enum TwinWALCodec {
     /// driving an unbounded allocation during decode.
     public static let maxPayloadBytes = 1 << 20
 
+    /// Named refusals on the encode side (findings 55, 56, 58). Decode
+    /// never throws: its contract is `nil` on anything malformed.
+    public enum CodecError: Error, Equatable, CustomStringConvertible {
+        /// A string whose UTF-8 length will not fit the u16 length field.
+        case stringTooLong(field: String, bytes: Int)
+        /// An `Int` field outside the `0..<2^32` window its wire slot holds.
+        case valueOutOfRange(field: String, value: Int)
+        /// A `WaveBank.Spec` the codec cannot represent (negative or
+        /// oversized field).
+        case badSpec(String)
+
+        public var description: String {
+            switch self {
+            case .stringTooLong(let f, let n):
+                return "string field '\(f)' is \(n) UTF-8 bytes, above the \(Int(UInt16.max)) the length field holds"
+            case .valueOutOfRange(let f, let v):
+                return "field '\(f)' value \(v) outside 0..<2^32"
+            case .badSpec(let why):
+                return "bank spec: \(why)"
+            }
+        }
+    }
+
+    /// The widest `Int` a u32 wire slot can carry, exclusive.
+    static let u32Limit = Int(UInt32.max) + 1
+
+    private static func checkedU32(_ v: Int, _ field: String) throws -> UInt32 {
+        guard v >= 0, v < u32Limit else { throw CodecError.valueOutOfRange(field: field, value: v) }
+        return UInt32(v)
+    }
+
     // MARK: - encode
 
-    public static func encode(_ op: TwinOp) -> (opcode: DagDBWAL.Opcode, payload: Data) {
+    public static func encode(_ op: TwinOp) throws -> (opcode: DagDBWAL.Opcode, payload: Data) {
         var d = Data()
         let opcode: DagDBWAL.Opcode
 
         switch op {
         case .streamOpen(let id, let name, let stateHi, let stateLo, let incHi, let incLo):
             opcode = .twinStreamOpen
-            writeString(id, &d)
-            writeString(name, &d)
+            try writeString(id, &d)
+            try writeString(name, &d)
             writeU64(stateHi, &d); writeU64(stateLo, &d)
             writeU64(incHi, &d); writeU64(incLo, &d)
 
         case .streamState(let id, let stateHi, let stateLo, let draws):
             opcode = .twinStreamState
-            writeString(id, &d)
+            try writeString(id, &d)
             writeU64(stateHi, &d); writeU64(stateLo, &d); writeU64(draws, &d)
 
         case .recordOpen(let id, let name, let header, let stateHi, let stateLo, let incHi, let incLo):
             opcode = .twinRecordOpen
-            writeString(id, &d)
-            writeString(name, &d)
+            try writeString(id, &d)
+            try writeString(name, &d)
             writeF64(header.signalBandHz, &d)
             writeF64(header.tauWindowSec, &d)
             writeF64(header.combRateHz, &d)
@@ -55,80 +86,85 @@ public enum TwinWALCodec {
 
         case .recordSlice(let id, let count):
             opcode = .twinRecordSlice
-            writeString(id, &d)
+            try writeString(id, &d)
             writeU32(count, &d)
 
         case .ringsOpen(let id, let gear, let rings, let cells):
             opcode = .twinRingsOpen
-            writeString(id, &d)
+            try writeString(id, &d)
             writeU64(gear, &d)
             writeU32(rings, &d)
             writeU32(cells, &d)
 
         case .ringsWrite(let id, let values):
             opcode = .twinRingsWrite
-            writeString(id, &d)
-            writeU32(UInt32(values.count), &d)
+            try writeString(id, &d)
+            writeU32(try checkedU32(values.count, "ringsWrite.values"), &d)
             for v in values { writeF32(v, &d) }
 
         case .clockOpen(let id):
             opcode = .twinClockOpen
-            writeString(id, &d)
+            try writeString(id, &d)
 
         case .clockAdvance(let id, let count, let value):
             opcode = .twinClockAdvance
-            writeString(id, &d)
+            try writeString(id, &d)
             writeU64(count, &d)
             writeF32(value, &d)
 
         case .gearOpen(let id, let clockId, let name, let num, let den):
             opcode = .twinGearOpen
-            writeString(id, &d)
-            writeString(clockId, &d)
-            writeString(name, &d)
+            try writeString(id, &d)
+            try writeString(clockId, &d)
+            try writeString(name, &d)
             writeU64(num, &d)
             writeU64(den, &d)
 
         case .layoutOpen(let id, let cost, let minTier):
             opcode = .twinLayoutOpen
-            writeString(id, &d)
-            writeU32(UInt32(cost.count), &d)
+            try writeString(id, &d)
+            writeU32(try checkedU32(cost.count, "layoutOpen.rows"), &d)
             for row in cost {
-                writeU32(UInt32(row.count), &d)
+                writeU32(try checkedU32(row.count, "layoutOpen.cols"), &d)
                 for c in row { writeF64(c, &d) }
             }
-            writeU32(UInt32(minTier.count), &d)
+            writeU32(try checkedU32(minTier.count, "layoutOpen.minTier"), &d)
             for t in minTier { writeI32(Int32(truncatingIfNeeded: t), &d) }
 
         case .alarmLoad(let id, let path, let sha256):
             opcode = .twinAlarmLoad
-            writeString(id, &d)
-            writeString(path, &d)
-            writeString(sha256, &d)
+            try writeString(id, &d)
+            try writeString(path, &d)
+            try writeString(sha256, &d)
 
         case .bankOpen(let id, let name, let spec):
             opcode = .twinBankOpen
-            writeString(id, &d)
-            writeString(name, &d)
+            try writeString(id, &d)
+            try writeString(name, &d)
+            // Finding 58: the spec's own validator runs BEFORE any
+            // non-truncating width conversion, so a negative or oversized
+            // field refuses by name instead of trapping.
+            if let why = WaveBank.validationError(spec) { throw CodecError.badSpec(why) }
+            guard spec.samples >= 0 else { throw CodecError.badSpec("samples \(spec.samples) is negative") }
             writeU64(UInt64(spec.samples), &d)
             writeF64(spec.sampleRate, &d)
             writeF64(spec.f0, &d)
-            writeU32(UInt32(spec.harmonics), &d)
-            writeU32(UInt32(spec.gaborCenters), &d)
-            writeU32(UInt32(spec.gaborFreqs), &d)
+            writeU32(try checkedU32(spec.harmonics, "bankOpen.harmonics"), &d)
+            writeU32(try checkedU32(spec.gaborCenters, "bankOpen.gaborCenters"), &d)
+            writeU32(try checkedU32(spec.gaborFreqs, "bankOpen.gaborFreqs"), &d)
             writeF64(spec.gaborSigmaFrac, &d)
 
         case .viewLoad(let id, let path, let sha256):
             opcode = .twinViewLoad
-            writeString(id, &d)
-            writeString(path, &d)
-            writeString(sha256, &d)
+            try writeString(id, &d)
+            try writeString(path, &d)
+            try writeString(sha256, &d)
 
         case .kernelLoad(let id, let path, let sha256, let tauA, let tauB, let sigmaSource, let declaredWarmup):
             opcode = .twinKernelLoad
-            writeString(id, &d)
-            writeString(path, &d)
-            writeString(sha256, &d)
+            try writeString(id, &d)
+            try writeString(path, &d)
+            try writeString(sha256, &d)
             writeOptionalF64(tauA, &d)
             writeOptionalF64(tauB, &d)
             writeOptionalF64(sigmaSource, &d)
@@ -136,22 +172,22 @@ public enum TwinWALCodec {
 
         case .hookOpen(let id, let params):
             opcode = .twinHookOpen
-            writeString(id, &d)
-            writeString(params.alarmId, &d)
-            writeOptionalString(params.layoutId, &d)
+            try writeString(id, &d)
+            try writeString(params.alarmId, &d)
+            try writeOptionalString(params.layoutId, &d)
             writeF64(params.budget, &d)
-            writeU32(UInt32(truncatingIfNeeded: params.delta), &d)
+            writeU32(try checkedU32(params.delta, "hookOpen.delta"), &d)
             d.append(policyByte(params.policy))
-            writeOptionalString(params.clockId, &d)
+            try writeOptionalString(params.clockId, &d)
 
         case .hookStep(let id, let count):
             opcode = .twinHookStep
-            writeString(id, &d)
-            writeU32(UInt32(truncatingIfNeeded: count), &d)
+            try writeString(id, &d)
+            writeU32(try checkedU32(count, "hookStep.count"), &d)
 
         case .close(let id):
             opcode = .twinClose
-            writeString(id, &d)
+            try writeString(id, &d)
         }
 
         return (opcode, d)
@@ -202,6 +238,15 @@ public enum TwinWALCodec {
         func readI32() -> Int32? {
             guard let u = readU32() else { return nil }
             return Int32(bitPattern: u)
+        }
+        /// Finding 54: a u32 element-count prefix is only believable if the
+        /// payload still holds `count * elementSize` bytes. Read it, bound
+        /// it against what is actually left, and refuse (nil) before any
+        /// `reserveCapacity` — a 20-byte record must never be able to ask
+        /// for gigabytes.
+        func readBoundedCount(elementSize: Int) -> Int? {
+            guard let n = readU32() else { return nil }
+            return TwinWALCodec.boundedCount(n, elementSize: elementSize, remaining: bytes.count - off)
         }
         // Presence byte (0/1) followed by the value when present — used by
         // .kernelLoad's four optionals (tauA, tauB, sigmaSource,
@@ -284,9 +329,9 @@ public enum TwinWALCodec {
             decoded = .ringsOpen(id: id, gear: gear, rings: rings, cells: cells)
 
         case .twinRingsWrite:
-            guard let id = readString(), let n = readU32() else { return nil }
+            guard let id = readString(), let n = readBoundedCount(elementSize: 4) else { return nil }
             var values: [Float] = []
-            values.reserveCapacity(Int(n))
+            values.reserveCapacity(n)
             for _ in 0..<n {
                 guard let v = readF32() else { return nil }
                 values.append(v)
@@ -309,22 +354,23 @@ public enum TwinWALCodec {
             decoded = .gearOpen(id: id, clockId: clockId, name: name, num: num, den: den)
 
         case .twinLayoutOpen:
-            guard let id = readString(), let rowCount = readU32() else { return nil }
+            // A row costs at least its own 4-byte column-count prefix.
+            guard let id = readString(), let rowCount = readBoundedCount(elementSize: 4) else { return nil }
             var cost: [[Double]] = []
-            cost.reserveCapacity(Int(rowCount))
+            cost.reserveCapacity(rowCount)
             for _ in 0..<rowCount {
-                guard let colCount = readU32() else { return nil }
+                guard let colCount = readBoundedCount(elementSize: 8) else { return nil }
                 var row: [Double] = []
-                row.reserveCapacity(Int(colCount))
+                row.reserveCapacity(colCount)
                 for _ in 0..<colCount {
                     guard let c = readF64() else { return nil }
                     row.append(c)
                 }
                 cost.append(row)
             }
-            guard let tierCount = readU32() else { return nil }
+            guard let tierCount = readBoundedCount(elementSize: 4) else { return nil }
             var minTier: [Int] = []
-            minTier.reserveCapacity(Int(tierCount))
+            minTier.reserveCapacity(tierCount)
             for _ in 0..<tierCount {
                 guard let t = readI32() else { return nil }
                 minTier.append(Int(t))
@@ -364,9 +410,13 @@ public enum TwinWALCodec {
                   let harmonics = readU32(), let gaborCenters = readU32(), let gaborFreqs = readU32(),
                   let gaborSigmaFrac = readF64()
             else { return nil }
+            // Finding 57: `Int(UInt64)` traps above Int.max, inside a
+            // decoder whose contract is "nil on anything malformed".
+            guard samples <= UInt64(Int.max) else { return nil }
             let spec = WaveBank.Spec(samples: Int(samples), sampleRate: sampleRate, f0: f0,
                                       harmonics: Int(harmonics), gaborCenters: Int(gaborCenters),
                                       gaborFreqs: Int(gaborFreqs), gaborSigmaFrac: gaborSigmaFrac)
+            guard WaveBank.validationError(spec) == nil else { return nil }
             decoded = .bankOpen(id: id, name: name, spec: spec)
 
         case .twinViewLoad:
@@ -391,6 +441,17 @@ public enum TwinWALCodec {
         // record, not a forward-compatible extra field.
         guard off == bytes.count else { return nil }
         return decoded
+    }
+
+    /// The bound behind `readBoundedCount` (finding 54), exposed so the
+    /// gate can drive it directly: `n` elements of `elementSize` bytes are
+    /// believable only if `remaining` bytes are actually left. nil means
+    /// the prefix overshoots the payload — refuse before allocating.
+    static func boundedCount(_ n: UInt32, elementSize: Int, remaining: Int) -> Int? {
+        guard elementSize > 0, remaining >= 0 else { return nil }
+        let maxElements = remaining / elementSize
+        guard n <= UInt32(clamping: maxElements) else { return nil }
+        return Int(n)
     }
 
     // MARK: - byte helpers (private, little-endian)
@@ -420,9 +481,14 @@ public enum TwinWALCodec {
         writeU64(v.bitPattern, &d)
     }
 
-    private static func writeString(_ s: String, _ d: inout Data) {
+    /// Finding 55: a string too long for the u16 length field refuses to
+    /// encode rather than writing a truncated length beside the full bytes.
+    private static func writeString(_ s: String, _ d: inout Data) throws {
         let utf8 = Array(s.utf8)
-        writeU16(UInt16(truncatingIfNeeded: utf8.count), &d)
+        guard utf8.count <= Int(UInt16.max) else {
+            throw CodecError.stringTooLong(field: "string", bytes: utf8.count)
+        }
+        writeU16(UInt16(utf8.count), &d)
         d.append(contentsOf: utf8)
     }
 
@@ -448,10 +514,10 @@ public enum TwinWALCodec {
 
     /// Presence byte (0/1) then a length-prefixed string when present —
     /// `.hookOpen`'s `layoutId`/`clockId`.
-    private static func writeOptionalString(_ v: String?, _ d: inout Data) {
+    private static func writeOptionalString(_ v: String?, _ d: inout Data) throws {
         if let v = v {
             d.append(1)
-            writeString(v, &d)
+            try writeString(v, &d)
         } else {
             d.append(0)
         }
@@ -484,7 +550,7 @@ public enum TwinWALCodec {
 extension DagDBWAL.Appender {
     @discardableResult
     public func twin(_ op: TwinOp) throws -> Int {
-        let (opcode, payload) = TwinWALCodec.encode(op)
+        let (opcode, payload) = try TwinWALCodec.encode(op)
         return try append(opcode: opcode, payload: payload)
     }
 }

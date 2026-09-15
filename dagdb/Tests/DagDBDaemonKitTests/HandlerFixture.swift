@@ -22,17 +22,29 @@ final class HandlerFixture {
     /// engine (144 nodes) but whose 49x49 Float32 output (9,604 bytes) does
     /// not fit that engine's default-sized buffer (3,464 bytes). Passing
     /// `nil` (the default) keeps every existing fixture's sizing unchanged.
+    /// `maxRank`: the engine's allocated rank-bucket COUNT (the dispatch
+    /// table's sizing, NOT a bound check — `DagDBEngine.tick`'s rank-mode
+    /// loop iterates `0..<maxRank`, silently skipping any node whose
+    /// actual rank falls outside that range). Defaults to 8 (every
+    /// existing fixture's side needs no more), but a side whose
+    /// Chebyshev-derived max rank exceeds 8 (`TiledFixture`'s
+    /// `maxRankForSide`, e.g. side 44 → 22) MUST pass a larger value here
+    /// for rank-mode ticking (`TICK`) to reach every node — `TICK_SYNC`
+    /// is unaffected (it dispatches over all `nodeCount` nodes regardless
+    /// of `maxRank`), which is why this only bites rank-mode ticking
+    /// tests specifically.
     init(
         side: Int,
         dataRoot: String? = nil,
         dagdbEnv: String? = nil,
         wal: DagDBWAL.Appender? = nil,
         twin: TwinState = TwinState(),
-        shmBytes: Int? = nil
+        shmBytes: Int? = nil,
+        maxRank: Int = 8
     ) throws {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
-        let engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
+        let engine = try DagDBEngine(grid: grid, state: state, maxRank: maxRank)
         let nb = engine.neighborsBuf.contents()
             .bindMemory(to: Int32.self, capacity: engine.nodeCount * 6)
         for i in 0..<(engine.nodeCount * 6) { nb[i] = -1 }
@@ -46,7 +58,7 @@ final class HandlerFixture {
 
         self.handler = DagDBCommandHandler(
             engine: engine, grid: grid, nodeCount: engine.nodeCount,
-            width: side, height: side, maxRank: 8,
+            width: side, height: side, maxRank: maxRank,
             tickCount: 0, walAppender: wal,
             sessionManager: DagDBReaderSessionManager(),
             truthRankIndex: TruthRankIndex(),

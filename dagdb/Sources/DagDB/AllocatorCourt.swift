@@ -35,7 +35,10 @@ public enum AllocatorCourt {
         public var perEar: [String: Tally]
         public var burst = Burst()
         public var servedTrialIds: [Int] = []
-        public let warmupFramesExcluded = 3, tailFramesAppended = 3
+        /// Finding 46: both are the run's own `delta`, never the literal
+        /// 3 — `newArmBucket(delta:)` seeds them from the parameter the
+        /// caller actually passed.
+        public var warmupFramesExcluded = SealedCourt.delta, tailFramesAppended = SealedCourt.delta
     }
 
     public struct Frame: Equatable {
@@ -61,12 +64,30 @@ public enum AllocatorCourt {
     /// Smallest tier with value 1 for `row` that is affordable at `budget`
     /// — mirrors `cheapest_value1_tier`. `SealedCourt.tiers` is already
     /// ascending, so the first affordable candidate is the cheapest.
+    /// Validating front door (finding 47): a pocket outside the sealed
+    /// `3…6` vocabulary is refused by name instead of indexing
+    /// `layout.cost` out of bounds.
     public static func cheapestValue1Tier(
         row: ValueRow, pocket: Int, budget: Double, layout: BudgetLayout = SealedCourt.makeLayout()
+    ) throws -> (tier: Int?, cost: Double) {
+        _ = try SealedCourt.pocketIndexChecked(pocket)
+        return cheapestValue1TierTotal(row: row, pocket: pocket, budget: budget, layout: layout)
+    }
+
+    /// Total (never-trapping) variant used by `run` and `AttentionHook`:
+    /// a pocket with no column in the layout has nothing affordable in
+    /// it, so the answer is `(nil, 0)`. Unreachable from an
+    /// `AlarmRecord` — its `claim.pocket` is 3, 5 or 6 by construction —
+    /// and kept as a guard rather than a trap. The arithmetic on a valid
+    /// pocket is bit-identical to the front door's; never change it.
+    static func cheapestValue1TierTotal(
+        row: ValueRow, pocket: Int, budget: Double, layout: BudgetLayout
     ) -> (tier: Int?, cost: Double) {
-        let pi = SealedCourt.pocketIndex(pocket)
+        guard let pi = SealedCourt.validPocketIndex(pocket), pi < layout.cost.count else { return (nil, 0) }
         for r in SealedCourt.tiers where SealedCourt.value(row, tier: r) == 1 {
-            let c = layout.cost[pi][SealedCourt.tierIndex(r)]
+            let ti = SealedCourt.tierIndex(r)
+            guard ti >= 0, ti < layout.cost[pi].count else { continue }
+            let c = layout.cost[pi][ti]
             if c <= budget { return (r, c) }
         }
         return (nil, 0)
@@ -75,9 +96,16 @@ public enum AllocatorCourt {
     /// Deepest tier affordable at `budget`, independent of value — mirrors
     /// `deepest_affordable_tier`. Uses the sealed tariff directly (no
     /// `layout` parameter, matching Python's direct `cost[pocket][r]` read).
-    public static func deepestAffordableTier(pocket: Int, budget: Double) -> (tier: Int?, cost: Double) {
+    public static func deepestAffordableTier(pocket: Int, budget: Double) throws -> (tier: Int?, cost: Double) {
+        _ = try SealedCourt.pocketIndexChecked(pocket)
+        return deepestAffordableTierTotal(pocket: pocket, budget: budget)
+    }
+
+    /// Total variant — see `cheapestValue1TierTotal`.
+    static func deepestAffordableTierTotal(pocket: Int, budget: Double) -> (tier: Int?, cost: Double) {
+        guard let row = SealedCourt.tariff[pocket] else { return (nil, 0) }
         for r in SealedCourt.tiers.reversed() {
-            let c = SealedCourt.tariff[pocket]![r]!
+            guard let c = row[r] else { continue }
             if c <= budget { return (r, c) }
         }
         return (nil, 0)
@@ -87,10 +115,12 @@ public enum AllocatorCourt {
     /// incremental hook) reproduces this court's per-frame loop one frame
     /// at a time and calls this exact function so its arithmetic can never
     /// drift from the court's — never change what it computes.
-    static func newArmBucket() -> ArmResult {
+    static func newArmBucket(delta: Int = SealedCourt.delta) -> ArmResult {
         ArmResult(
             perClass: ["quiet": Tally(), "liar": Tally(), "deep": Tally(), "drift": Tally()],
-            perEar: ["A": Tally(), "B": Tally(), "C": Tally()])
+            perEar: ["A": Tally(), "B": Tally(), "C": Tally()],
+            warmupFramesExcluded: delta,
+            tailFramesAppended: delta)
     }
 
     /// Records the outcome of one judged, non-quiet trial into `arm` —
@@ -110,9 +140,14 @@ public enum AllocatorCourt {
         if tierBought == SealedCourt.dummyTier { arm.dummy += 1 }
         if let t = tierBought, SealedCourt.dominatedTiers.contains(t) { arm.dominated += 1 }
         if hit { arm.served += 1 } else { arm.misses += 1 }
-        if hit { arm.perClass[trial.rawClass]?.served += 1 } else { arm.perClass[trial.rawClass]?.missed += 1 }
+        // Finding 48: `default:` rather than optional chaining — a class or
+        // ear absent from the seeded buckets must still be counted, so the
+        // per-class tallies always sum to served + misses.
+        if hit { arm.perClass[trial.rawClass, default: Tally()].served += 1 }
+        else { arm.perClass[trial.rawClass, default: Tally()].missed += 1 }
         if let ear = trial.ear {
-            if hit { arm.perEar[ear.rawValue]?.served += 1 } else { arm.perEar[ear.rawValue]?.missed += 1 }
+            if hit { arm.perEar[ear.rawValue, default: Tally()].served += 1 }
+            else { arm.perEar[ear.rawValue, default: Tally()].missed += 1 }
         }
         arm.servedTrialIds.append(trial.index)
         if trial.pocket == SealedCourt.concentrationPocket {
@@ -122,23 +157,35 @@ public enum AllocatorCourt {
     }
 
     /// Replay all four arms at one budget point — mirrors `run_point`
-    /// exactly. Frames t = 1...(200+delta): src = t - delta; frames whose
-    /// src falls outside 1...200 are warmup/tail — uniform still books its
+    /// exactly. Frames t = 1...(records.count + delta): src = t - delta;
+    /// frames whose src falls outside 1...records.count are warmup/tail —
+    /// uniform still books its
     /// flat frame cost into `warmupCostExcluded` and updates
     /// `maxSpendRatio` there, the other arms simply skip. Quiet-sourced
     /// judged frames buy nothing (not a miss) for allocator/greedy/oracle;
     /// uniform still pays its flat cost on every judged frame regardless
-    /// of class. Oracle iterates the 200 trials directly with no lag.
+    /// of class. Oracle iterates every trial directly with no lag.
     public static func run(records: [AlarmRecord], budget: Double, delta: Int = SealedCourt.delta) -> [Arm: ArmResult] {
         let layout = SealedCourt.makeLayout()
-        let byIndex = Dictionary(uniqueKeysWithValues: records.map { ($0.index, $0) })
+        // Finding 49: keep-first rather than `uniqueKeysWithValues`, which
+        // traps on a duplicate index. A fixture loaded through
+        // `AlarmFixture.load` cannot carry one (the loader refuses a
+        // duplicate reconstructed position by name); a hand-built array
+        // can, and `duplicateRecordIndex(in:)` names it for callers that
+        // want the refusal. `AttentionHook.init` throws on it outright.
+        let byIndex = Dictionary(records.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
+        // Finding 45: the judged range is the fixture's own length, never
+        // the literal 200 — the same quantity `AttentionHook` derives from
+        // `records.count`, so hook and court judge the same frame set for
+        // a fixture of any size.
+        let judgedCount = records.count
         var out: [Arm: ArmResult] = [:]
 
         // ---- Oracle: no lag, direct 1:1 on each trial's own frame ----
-        var oracle = newArmBucket()
+        var oracle = newArmBucket(delta: delta)
         for t in records {
             guard let claim = t.claim else { continue }  // quiet: nothing to judge
-            let (r, c) = cheapestValue1Tier(row: claim.row, pocket: claim.pocket, budget: budget, layout: layout)
+            let (r, c) = cheapestValue1TierTotal(row: claim.row, pocket: claim.pocket, budget: budget, layout: layout)
             let hit = r != nil
             recordOutcome(&oracle, t, hit: hit, spend: hit ? c : 0, tierBought: r, budget: budget)
         }
@@ -146,10 +193,12 @@ public enum AllocatorCourt {
 
         // ---- Lagged arms: allocator, uniform, greedy ----
         for armName in [Arm.allocator, .uniform, .greedy] {
-            var arm = newArmBucket()
-            for tfrm in 1...(200 + delta) {
+            var arm = newArmBucket(delta: delta)
+            let lastFrame = judgedCount + delta
+            guard lastFrame >= 1 else { out[armName] = arm; continue }
+            for tfrm in 1...lastFrame {
                 let srcIdx = tfrm - delta
-                let isJudged = srcIdx >= 1 && srcIdx <= 200
+                let isJudged = srcIdx >= 1 && srcIdx <= judgedCount
                 if !isJudged {
                     if armName == .uniform {
                         arm.warmupCostExcluded += SealedCourt.uniformFrameCost
@@ -169,9 +218,11 @@ public enum AllocatorCourt {
                     guard let claim = src.claim else { continue }  // quiet: cost paid, no hit/miss
                     let hit = SealedCourt.value(claim.row, tier: SealedCourt.uniformTier) == 1
                     if hit { arm.served += 1 } else { arm.misses += 1 }
-                    if hit { arm.perClass[src.rawClass]?.served += 1 } else { arm.perClass[src.rawClass]?.missed += 1 }
+                    if hit { arm.perClass[src.rawClass, default: Tally()].served += 1 }
+                    else { arm.perClass[src.rawClass, default: Tally()].missed += 1 }
                     if let ear = src.ear {
-                        if hit { arm.perEar[ear.rawValue]?.served += 1 } else { arm.perEar[ear.rawValue]?.missed += 1 }
+                        if hit { arm.perEar[ear.rawValue, default: Tally()].served += 1 }
+                        else { arm.perEar[ear.rawValue, default: Tally()].missed += 1 }
                     }
                     arm.servedTrialIds.append(srcIdx)
                     if src.pocket == SealedCourt.concentrationPocket {
@@ -188,11 +239,11 @@ public enum AllocatorCourt {
                 guard let claim = src.claim else { continue }  // quiet: no alarm, buys nothing
 
                 if armName == .allocator {
-                    let (r, c) = cheapestValue1Tier(row: claim.row, pocket: claim.pocket, budget: budget, layout: layout)
+                    let (r, c) = cheapestValue1TierTotal(row: claim.row, pocket: claim.pocket, budget: budget, layout: layout)
                     let hit = r != nil
                     recordOutcome(&arm, src, hit: hit, spend: hit ? c : 0, tierBought: r, budget: budget)
                 } else if armName == .greedy {
-                    let (r, c) = deepestAffordableTier(pocket: claim.pocket, budget: budget)
+                    let (r, c) = deepestAffordableTierTotal(pocket: claim.pocket, budget: budget)
                     let hit = (r != nil) && (SealedCourt.value(claim.row, tier: r!) == 1)
                     recordOutcome(&arm, src, hit: hit, spend: r != nil ? c : 0, tierBought: r, budget: budget)
                 }
@@ -201,6 +252,14 @@ public enum AllocatorCourt {
         }
 
         return out
+    }
+
+    /// The first 1-based frame index carried by two different records, or
+    /// nil when every index is distinct (finding 49).
+    public static func duplicateRecordIndex(in records: [AlarmRecord]) -> Int? {
+        var seen = Set<Int>()
+        for r in records where !seen.insert(r.index).inserted { return r.index }
+        return nil
     }
 
     /// `run` at every point of the sealed budget grid, richest first.

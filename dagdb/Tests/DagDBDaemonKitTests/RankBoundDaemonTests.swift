@@ -34,10 +34,10 @@ final class RankBoundDaemonTests: XCTestCase {
         let side = RankBoundFixture.side
         let n = RankBoundFixture.nodeCount
 
-        let gridA = HexGrid(width: side, height: side)
+        let gridA = try HexGrid(width: side, height: side)
         let stateA = DagDBState(width: side, height: side)
         let engA = try DagDBEngine(grid: gridA, state: stateA, maxRank: 32)
-        let t = RankBoundFixture.install(into: engA)
+        let t = try RankBoundFixture.install(into: engA)
         engA.tick(tickNumber: 0)
 
         let path = tmpDir + "restore.dag"
@@ -108,7 +108,8 @@ final class RankBoundDaemonTests: XCTestCase {
         XCTAssertEqual(
             reply,
             "FAIL VALIDATE rank bound: 42 node(s) at or above maxRank 8 " +
-            "(first node 24 rank 8, highest rank 21)")
+            "(first node 24 rank 8, highest rank 21)" +
+            "; rank dispatch covers 81 of 81 node(s) over 22 rank level(s)")
     }
 
     // MARK: - R3 · the door
@@ -171,7 +172,12 @@ final class RankBoundDaemonTests: XCTestCase {
         // configured bound of 8.
         src[7] = 80
         src[40] = 9
-        XCTAssertEqual(f.handler.handle("SET_RANKS_BULK"), "OK SET_RANKS_BULK nodes=81")
+        // The disclosure suffix is appended at gate D6 (audit B finding 15):
+        // per-insert rank monotonicity is skipped for speed and the reply
+        // now says so, and says where to re-check.
+        XCTAssertEqual(f.handler.handle("SET_RANKS_BULK"),
+                       "OK SET_RANKS_BULK nodes=81 validation=skipped"
+                       + " skipped=rank_monotonicity recheck=VALIDATE")
         XCTAssertEqual(rank[7], 80)
         XCTAssertEqual(rank[40], 9)
     }

@@ -362,7 +362,7 @@ final class TwinViewCommandTests: XCTestCase {
         loadSealed(f, path: path)
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 10, height: 10)
+        let grid = try HexGrid(width: 10, height: 10)
         let state = DagDBState(width: 10, height: 10)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)

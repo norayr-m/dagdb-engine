@@ -289,6 +289,13 @@ public final class DagDBGraph {
         // the neighbor table for nodes that have explicit edges
         for node in nodes {
             let idx = node.id
+            // C9 · same six-slot bound, same reason: `idx * 6 + 6` is the
+            // next node's first weight slot.
+            guard node.edges.count <= 6 else {
+                throw GraphError.tooManyEdges(
+                    "Node \(idx) (\(node.label)) carries \(node.edges.count) edges; " +
+                    "six per node is the bound")
+            }
             for (dir, _) in node.edges.enumerated() {
                 state.edgeWeights[idx * 6 + dir] = 1.0
             }
@@ -305,15 +312,40 @@ public final class DagDBGraph {
 
     /// Export a custom neighbor table that reflects logical edges, not hex geometry.
     /// Returns [Int32] of size nodeCount * 6, suitable for Metal buffer.
-    public func exportNeighborTable(nodeCount gridNodeCount: Int) -> [Int32] {
+    ///
+    /// C9 · refuses a node carrying more than six edges by name. `connect`
+    /// guards the bound and `validate` reports it, but this is the path the
+    /// engine's convenience init actually takes and that init never calls
+    /// `validate`; a seventh entry wrote `nb[idx * 6 + 6]`, which is the NEXT
+    /// node's first slot (audit A, finding 44). `Node.edges` is a public
+    /// `var`, so the graph can hold that shape without `connect` ever seeing
+    /// it.
+    public func exportNeighborTable(nodeCount gridNodeCount: Int) throws -> [Int32] {
         var nb = [Int32](repeating: -1, count: gridNodeCount * 6)
         for node in nodes {
             let idx = node.id
+            guard node.edges.count <= 6 else {
+                throw GraphError.tooManyEdges(
+                    "Node \(idx) (\(node.label)) carries \(node.edges.count) edges; " +
+                    "the table has six slots per node and a seventh would " +
+                    "overwrite node \(idx + 1)'s first slot")
+            }
+            guard idx >= 0 && idx < gridNodeCount else {
+                throw GraphError.gridTooSmall(
+                    "Node \(idx) is outside a \(gridNodeCount)-node grid")
+            }
             for (dir, sourceId) in node.edges.enumerated() {
                 nb[idx * 6 + dir] = Int32(sourceId)
             }
         }
         return nb
+    }
+
+    /// Test/fixture seam: install an edge list without the six-slot guard, so
+    /// the exporter's own refusal can be gated on the shape a caller can
+    /// produce through the public `Node.edges` var.
+    internal func setEdgesUnchecked(node: Int, edges: [Int]) {
+        nodes[node].edges = edges
     }
 
     // MARK: - Lookup
@@ -383,12 +415,15 @@ public final class DagDBGraph {
         case degreeOverflow(String)
         case gridTooSmall(String)
         case backEdgeViolation(String)
+        /// A node carries more than the six edges the tables have slots for.
+        case tooManyEdges(String)
 
         public var description: String {
             switch self {
             case .nodeNotFound: return "Node not found"
             case .rankViolation(let msg): return "Rank violation: \(msg)"
             case .degreeOverflow(let msg): return "Degree overflow: \(msg)"
+            case .tooManyEdges(let msg): return "Too many edges: \(msg)"
             case .gridTooSmall(let msg): return "Grid too small: \(msg)"
             case .backEdgeViolation(let msg): return "BACK_EDGE violation: \(msg)"
             }

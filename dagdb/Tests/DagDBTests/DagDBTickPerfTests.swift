@@ -229,7 +229,7 @@ final class DagDBTickPerfTests: XCTestCase {
         let nodeCount = width * height
 
         func makeEngine(rankSpread: Int) throws -> DagDBEngine {
-            let grid = HexGrid(width: width, height: height)
+            let grid = try HexGrid(width: width, height: height)
             var state = DagDBState(width: width, height: height)
             for y in 0..<height {
                 for x in 0..<width {

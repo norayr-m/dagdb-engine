@@ -337,7 +337,7 @@ final class TwinBankCommandTests: XCTestCase {
         XCTAssertTrue(beforeFit.hasPrefix("OK BANK FIT"), beforeFit)
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 64, height: 64)
+        let grid = try HexGrid(width: 64, height: 64)
         let state = DagDBState(width: 64, height: 64)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)

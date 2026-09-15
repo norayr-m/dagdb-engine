@@ -156,6 +156,14 @@ public final class DagDBEngine {
     }
 
     public init(grid: HexGrid, state: DagDBState, maxRank: Int = 16) throws {
+        // C4 · every buffer below is allocated `grid.nodeCount` elements long
+        // from the CALLER's arrays. A state smaller than the grid made those
+        // `makeBuffer(bytes:length:)` calls read past the caller's storage —
+        // silently, and before any of this object existed (audit A, 13).
+        guard state.nodeCount == grid.nodeCount else {
+            throw EngineError.stateGridMismatch(stateNodeCount: state.nodeCount,
+                                                gridNodeCount: grid.nodeCount)
+        }
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw EngineError.noGPU
         }
@@ -308,6 +316,8 @@ public final class DagDBEngine {
         enc.setBuffer(lut6HighBuf, offset: 0, index: 3)
         enc.setBuffer(neighborsBuf, offset: 0, index: 4)
         enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
+        var kernelNodeCount = UInt32(nodeCount)
+        enc.setBytes(&kernelNodeCount, length: 4, index: 9)
         let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
         var first = true
         for rankLevel in stride(from: effectiveRankCount - 1, through: 0, by: -1) {
@@ -371,6 +381,8 @@ public final class DagDBEngine {
                 var currentRank = UInt64(rankLevel)
                 enc.setBytes(&currentRank, length: 8, index: 7)
                 enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
+                var kernelNodeCount = UInt32(nodeCount)
+                enc.setBytes(&kernelNodeCount, length: 4, index: 9)
                 let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
                 enc.dispatchThreadgroups(
                     MTLSize(width: (colorGroupSizes[colorIdx] + tpg - 1) / tpg,
@@ -480,6 +492,27 @@ public final class DagDBEngine {
     /// if the rule is violated. Use `clearEdges(node:)` (combinational)
     /// before turning a node into a register.
     public func addBackEdge(src: UInt32, dst: UInt32) throws {
+        try validateBackEdge(src: src, dst: dst)
+        try addBackEdgeUnchecked(src: src, dst: dst)
+    }
+
+    /// C12 · the apply half of `addBackEdge`, for a caller that has already
+    /// called `validateBackEdge` and logged the record. Still range-checks
+    /// the indices (the one check `addBackEdgeUnchecked` never skipped); it
+    /// does NOT re-check combinational fan-in, which the validate step owns.
+    public func registerValidatedBackEdge(src: UInt32, dst: UInt32) throws {
+        try addBackEdgeUnchecked(src: src, dst: dst)
+    }
+
+    /// C12 · the check half of `addBackEdge`, with no mutation of any kind.
+    ///
+    /// Split out so a caller can VALIDATE, then LOG, then APPLY — the order
+    /// the WAL file header promises for every mutation. `CONNECT BACK` used
+    /// to apply first and append afterwards, with a comment excusing it; a
+    /// crash in that window left a registered back edge nowhere in the log,
+    /// and a WAL append that failed left the edge registered anyway. Nothing
+    /// here writes, so a refused edge produces no record and no state.
+    public func validateBackEdge(src: UInt32, dst: UInt32) throws {
         guard Int(src) < nodeCount else {
             throw BackEdgeError.nodeIndexOutOfRange(node: src, nodeCount: nodeCount)
         }
@@ -495,17 +528,24 @@ public final class DagDBEngine {
                     dst: dst, slot: k, src: nb)
             }
         }
-        backEdgeSrcs.append(src)
-        backEdgeDsts.append(dst)
-        let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
-        ptr[Int(dst)] = 1
     }
 
     /// Internal: append a BACK_EDGE without validating combinational
     /// fan-in. Used by WAL replay where the original write was already
     /// validated; replay must succeed even if intermediate combinational
     /// state would temporarily violate the rule.
-    func addBackEdgeUnchecked(src: UInt32, dst: UInt32) {
+    ///
+    /// C4 · "unchecked" was only ever meant to skip the FAN-IN rule. The
+    /// index range is checked here, once, at the single point every install
+    /// path goes through — which is what lets `latchBackEdges` trust the
+    /// lists on every tick instead of re-checking them (audit A, 16 and 17).
+    func addBackEdgeUnchecked(src: UInt32, dst: UInt32) throws {
+        guard Int(src) < nodeCount else {
+            throw BackEdgeError.nodeIndexOutOfRange(node: src, nodeCount: nodeCount)
+        }
+        guard Int(dst) < nodeCount else {
+            throw BackEdgeError.nodeIndexOutOfRange(node: dst, nodeCount: nodeCount)
+        }
         backEdgeSrcs.append(src)
         backEdgeDsts.append(dst)
         let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
@@ -515,7 +555,10 @@ public final class DagDBEngine {
     /// Remove every BACK_EDGE whose destination is `dst`. The node also
     /// loses its register flag, so the next tick's combinational pass will
     /// evaluate it like an ordinary node again.
-    public func clearBackEdges(toNode dst: UInt32) {
+    public func clearBackEdges(toNode dst: UInt32) throws {
+        guard Int(dst) < nodeCount else {
+            throw BackEdgeError.nodeIndexOutOfRange(node: dst, nodeCount: nodeCount)
+        }
         var keepSrcs: [UInt32] = []
         var keepDsts: [UInt32] = []
         keepSrcs.reserveCapacity(backEdgeSrcs.count)
@@ -531,7 +574,14 @@ public final class DagDBEngine {
     }
 
     /// Whether `node` is currently a back-edge destination (register).
+    ///
+    /// C4 · a node outside the table is not a register, and asking whether it
+    /// is must not read past the flag buffer. The refusal is the answer
+    /// `false` rather than a throw: every caller in the tree asks this inside
+    /// a non-throwing predicate, and "no" is the honest answer for a node
+    /// this engine does not have.
     public func isRegister(node: UInt32) -> Bool {
+        guard Int(node) < nodeCount else { return false }
         let ptr = isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
         return ptr[Int(node)] != 0
     }
@@ -554,12 +604,32 @@ public final class DagDBEngine {
         }
     }
 
-    enum EngineError: Error {
+    public enum EngineError: Error, CustomStringConvertible {
         case noGPU
         case noQueue
         case bufferAllocationFailed
         case libraryNotFound
         case functionNotFound(String)
+        /// The state's arrays are not the grid's length.
+        case stateGridMismatch(stateNodeCount: Int, gridNodeCount: Int)
+        /// A whole-buffer write was handed fewer elements than the buffer holds.
+        case shortBuffer(what: String, given: Int, nodeCount: Int)
+
+        public var description: String {
+            switch self {
+            case .noGPU: return "no Metal device"
+            case .noQueue: return "no Metal command queue"
+            case .bufferAllocationFailed: return "buffer allocation failed"
+            case .libraryNotFound: return "Metal library not found"
+            case .functionNotFound(let f): return "Metal function not found: \(f)"
+            case let .stateGridMismatch(s, g):
+                return "state nodeCount \(s) does not match grid nodeCount \(g)"
+            case let .shortBuffer(what, given, n):
+                return "\(what): \(given) value(s) for a \(n)-node graph — a " +
+                       "complete snapshot is required, a short one would leave " +
+                       "the tail at its previous values"
+            }
+        }
     }
 
     // Inline shader source as fallback when bundle loading fails
@@ -590,17 +660,19 @@ public final class DagDBEngine {
         constant uint32_t&      group_size   [[ buffer(6) ]],
         constant uint64_t&      current_rank [[ buffer(7) ]],
         device const uint8_t*   is_register  [[ buffer(8) ]],
+        constant uint32_t&      node_count   [[ buffer(9) ]],
         uint                    gid          [[ thread_position_in_grid ]]
     ) {
         if (gid >= group_size) return;
         uint node = group[gid];
+        if (node >= node_count) return;
         if (rank[node] != current_rank) return;
         if (is_register[node] != 0) return;
 
         uint8_t input_bits = 0;
         for (int d = 0; d < 6; d++) {
             int32_t nb = neighbors[node * 6 + d];
-            if (nb < 0) continue;
+            if (nb < 0 || uint(nb) >= node_count) continue;
             uint8_t nb_truth = truth_state[nb];
             uint8_t bit = (nb_truth == TRUTH_TRUE) ? 1u : 0u;
             input_bits |= (bit << d);

@@ -12,7 +12,7 @@ final class DagDBEngineTests: XCTestCase {
 
     func testEngineAllocatesForTinyGrids() throws {
         for width in 1...10 {
-            let grid = HexGrid(width: width, height: 1)
+            let grid = try HexGrid(width: width, height: 1)
             let state = DagDBState(width: width, height: 1)
             let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
             XCTAssertEqual(engine.nodeCount, width, "width=\(width)")

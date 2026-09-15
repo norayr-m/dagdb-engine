@@ -28,7 +28,7 @@ guard args.count >= 3 else { print("usage: e3-ladder control|ladder [profile] <o
 if args[1] == "control" {
     let out = args[2]
     try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
-    let grid = HexGrid(width: 12, height: 12)
+    let grid = try HexGrid(width: 12, height: 12)
     let state = DagDBState(width: 12, height: 12)
     let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
     let object = LadderFold.Objects.control(engine: engine, grid: grid)
@@ -47,7 +47,7 @@ if args[1] == "control" {
     try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
     var g2Seed: UInt64 = 20260821
     if args.count > 4, let sd = UInt64(args[4]) { g2Seed = sd }
-    let grid = HexGrid(width: 44, height: 44)
+    let grid = try HexGrid(width: 44, height: 44)
     let state = DagDBState(width: 44, height: 44)
     let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
     let object = LadderFold.Objects.court(profile: profile, g2Seed: g2Seed, engine: engine, grid: grid)

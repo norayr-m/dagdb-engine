@@ -22,7 +22,7 @@ final class DagDBCommandHandlerTests: XCTestCase {
         dagdbEnv: String? = nil,
         wal: DagDBWAL.Appender? = nil
     ) throws -> DagDBCommandHandler {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         let nb = engine.neighborsBuf.contents()
@@ -87,7 +87,9 @@ final class DagDBCommandHandlerTests: XCTestCase {
         _ = h.handle("SET 3 RANK 7")
         _ = h.handle("SET 3 TRUTH 1")
         let reply = h.handle("NODES AT RANK 7")
-        XCTAssertEqual(reply, "OK NODES rows=1")
+        // `omitted=` appended at gate D7 (audit B finding 17): the default
+        // filter drops rank-0/truth-0 nodes and never said how many.
+        XCTAssertEqual(reply, "OK NODES rows=1 omitted=0")
         // Header: [u32 rowCount][u32 rowSize]; row 0: [u64 node][u64 rank]...
         let header = shm.bindMemory(to: UInt32.self, capacity: 2)
         XCTAssertEqual(header[0], 1)

@@ -40,6 +40,16 @@ extension DagDBCommandHandler {
             } catch {
                 return kernelLoadErrorLine(error)
             }
+            // F5 · alpha's throwing door, BEFORE the id is minted and the op
+            // reaches the WAL: a resolved warmup that leaves no comparison
+            // window must not install a kernel the daemon then reports on.
+            let resolved: (value: Int, derived: Bool)?
+            do {
+                resolved = try loaded.pair.checkedWarmup(override: nil)
+            } catch {
+                return kernelWarmupRefusal("KERNEL LOAD", error)
+            }
+
             let id = twin.nextId(prefix: "k")
             let op = TwinOp.kernelLoad(id: id, path: path, sha256: loaded.sha256, tauA: tauA, tauB: tauB,
                                         sigmaSource: sigmaSource, declaredWarmup: declaredWarmup)
@@ -48,7 +58,6 @@ extension DagDBCommandHandler {
                 try twin.apply(op, kernelLoader: { _ in loaded.pair })
             } catch { return kernelStateErrorLine(error) }
 
-            let resolved = loaded.pair.warmup(override: nil)
             let warmupStr = resolved.map { "\($0.value)" } ?? "none"
             let derivedStr = (resolved?.derived ?? false) ? "1" : "0"
             return twinResponse(
@@ -62,18 +71,32 @@ extension DagDBCommandHandler {
             guard n >= 2 else { return "ERROR out_of_range: n must be >= 2" }
             guard let set = twin.kernels.get(id) else { return "ERROR not_found: \(id)" }
             let pair = set.pair
-            let inputBytes = 8 + 2 * n * 8
+            // D3 · `2 * n * 8` traps on overflow before this guard can fire.
+            guard let inputBytes = checkedProduct(2, n, 8).flatMap({ checkedSum(8, $0) }) else {
+                return overflowRefusal("XCONV SEALED input", "n=\(n)")
+            }
             guard inputBytes <= shmCapacityBytes else {
                 return "ERROR out_of_range: XCONV SEALED input \(inputBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
-            guard let resolved = pair.warmup(override: warmupOverride) else {
+            // F5 · the same door on the override path: a warmup at or above
+            // `window_samples` was silently clamped downstream.
+            let resolvedOpt: (value: Int, derived: Bool)?
+            do {
+                resolvedOpt = try pair.checkedWarmup(override: warmupOverride)
+            } catch {
+                return kernelWarmupRefusal("XCONV SEALED", error)
+            }
+            guard let resolved = resolvedOpt else {
                 return "ERROR bad_value: warmup: neither derived (TAU/SIGMA) nor declared"
             }
             guard resolved.value < n else {
                 return "ERROR out_of_range: warmup \(resolved.value) must be < n \(n)"
             }
+            guard let bOffset = checkedProduct(n, 8).flatMap({ checkedSum(8, $0) }) else {
+                return overflowRefusal("XCONV SEALED input", "n=\(n)")
+            }
             guard let a = readDoubles(count: n, at: 8),
-                  let b = readDoubles(count: n, at: 8 + n * 8) else {
+                  let b = readDoubles(count: n, at: bOffset) else {
                 return "ERROR out_of_range: XCONV SEALED input \(inputBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
             let result = SealedCrossConvolution.residual(a: a, b: b, pair: pair, warmup: resolved.value)
@@ -86,7 +109,12 @@ extension DagDBCommandHandler {
         case .kernelInfo(let id):
             guard let set = twin.kernels.get(id) else { return "ERROR not_found: \(id)" }
             let pair = set.pair
-            let resolved = pair.warmup(override: nil)
+            let resolved: (value: Int, derived: Bool)?
+            do {
+                resolved = try pair.checkedWarmup(override: nil)   // F5
+            } catch {
+                return kernelWarmupRefusal("KERNEL INFO", error)
+            }
             let warmupStr = resolved.map { "\($0.value)" } ?? "none"
             let derivedStr = (resolved?.derived ?? false) ? "1" : "0"
             let tauAStr = pair.meta.tauA.map { "\($0)" } ?? "none"
@@ -151,6 +179,19 @@ extension DagDBCommandHandler {
             }
         }
         return "ERROR io: \(error)"
+    }
+
+    /// F5 · `KernelPair.checkedWarmup`'s refusal on the wire. It is a
+    /// validating front door catching what used to be a silent clamp, so it
+    /// carries `bad_value` like every other such door. Reachable today only
+    /// from `XCONV SEALED`'s override: `KernelPair.load` runs the same check
+    /// itself, so a pair in the registry has already passed it and the
+    /// `KERNEL LOAD` / `KERNEL INFO` uses are defence in depth.
+    private func kernelWarmupRefusal(_ verb: String, _ error: Error) -> String {
+        if let e = error as? KernelPair.KernelError, case .badLayout(let why) = e {
+            return "ERROR bad_value: \(verb) refused: \(why)"
+        }
+        return "ERROR bad_value: \(verb) refused: \(error)"
     }
 
     /// `TwinState.TwinError` renders via its own `description`; kept as a

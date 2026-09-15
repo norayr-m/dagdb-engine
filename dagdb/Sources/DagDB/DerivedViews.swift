@@ -18,15 +18,57 @@ public struct DerivedViews {
         self.fixture = fixture
     }
 
+    // MARK: - Station-count bound (audit C finding 41)
+
+    /// nil iff `S` is a station subset this fixture can serve: `1...stations`
+    /// (8 for the sealed cortex v4 world). Above it, `fixture.tau[c*stride + s]`
+    /// read SILENTLY into candidate c+1's row for every candidate but the
+    /// last, and `frame[s]` then trapped — a wrong answer followed by a
+    /// crash. Refused by name now, on every public entry point.
+    public func stationsViolation(_ S: Int) -> String? {
+        if S < 1 { return "stations \(S) must be >= 1" }
+        if S > fixture.stations {
+            return "stations \(S) exceeds the fixture's own station count \(fixture.stations)"
+        }
+        return nil
+    }
+
+    /// The same bound for the two static entry points, which have a frame
+    /// rather than a fixture: `S` must fit the frame's own row count.
+    public static func stationsViolation(_ S: Int, frame: [[Float]]) -> String? {
+        if S < 1 { return "stations \(S) must be >= 1" }
+        if S > frame.count {
+            return "stations \(S) exceeds the frame's own row count \(frame.count)"
+        }
+        return nil
+    }
+
+    private static func refuse(_ what: String, _ message: String) {
+        FileHandle.standardError.write(Data("ERROR derived_views \(what): \(message)\n".utf8))
+    }
+
+    /// Finding 41's refusing door for library callers that want a throw
+    /// rather than a refusal-carrying result.
+    public func checkStations(_ S: Int) throws {
+        if let violation = stationsViolation(S) {
+            throw CortexFixture.FixtureError.badLayout(violation)
+        }
+    }
+
     // MARK: - Arrivals (ruling: per-station front index, S-subset re-zeroed)
 
     public struct Arrivals: Equatable {
         public let raw: [Double]
         public let zeroed: [Double]
+        /// Appended field, audit C finding 41: non-nil iff the call was
+        /// REFUSED (a station count outside the frame / the fixture); `raw`
+        /// and `zeroed` are then empty. Never a silently wrong answer.
+        public let refusal: String?
 
-        public init(raw: [Double], zeroed: [Double]) {
+        public init(raw: [Double], zeroed: [Double], refusal: String? = nil) {
             self.raw = raw
             self.zeroed = zeroed
+            self.refusal = refusal
         }
     }
 
@@ -36,6 +78,10 @@ public struct DerivedViews {
     /// station's raw arrival is 0. zeroed = raw - min(raw) over the S
     /// stations in use.
     public static func arrivals(frame: [[Float]], stations S: Int) -> Arrivals {
+        if let violation = stationsViolation(S, frame: frame) {
+            refuse("arrivals", violation)
+            return Arrivals(raw: [], zeroed: [], refusal: violation)
+        }
         var raw = [Double](repeating: 0, count: S)
         for s in 0..<S {
             let row = frame[s]
@@ -67,13 +113,24 @@ public struct DerivedViews {
         public let residuals: [Double]
         public let rMin: Double
         public let nearEdge: Int
+        /// Appended field, audit C finding 42: candidates whose
+        /// least-squares fit FAILED and were therefore skipped rather than
+        /// scored from a fabricated (alpha, beta) = (0, 0). `skipped=` is
+        /// what the contract asks be printed; it is carried here and
+        /// totalled in `ReflexSummary.skippedTotal`.
+        public let skipped: Int
+        /// Appended field, audit C finding 41 — see `Arrivals.refusal`.
+        public let refusal: String?
 
-        public init(winner: Int, tiedSet: [Int], residuals: [Double], rMin: Double, nearEdge: Int) {
+        public init(winner: Int, tiedSet: [Int], residuals: [Double], rMin: Double, nearEdge: Int,
+                    skipped: Int = 0, refusal: String? = nil) {
             self.winner = winner
             self.tiedSet = tiedSet
             self.residuals = residuals
             self.rMin = rMin
             self.nearEdge = nearEdge
+            self.skipped = skipped
+            self.refusal = refusal
         }
     }
 
@@ -84,6 +141,11 @@ public struct DerivedViews {
     /// = 0 (beta unchanged); the residual is then recomputed from the
     /// (possibly clamped) alpha, beta — never taken from the solver.
     public func reflex(frame: [[Float]], stations S: Int) -> ReflexDecision {
+        if let violation = stationsViolation(S) ?? DerivedViews.stationsViolation(S, frame: frame) {
+            DerivedViews.refuse("reflex", violation)
+            return ReflexDecision(winner: -1, tiedSet: [], residuals: [], rMin: .nan, nearEdge: 0,
+                                   skipped: 0, refusal: violation)
+        }
         let zeroed = DerivedViews.arrivals(frame: frame, stations: S).zeroed
         let candidates = fixture.candidates
         let stride = fixture.stations
@@ -94,14 +156,25 @@ public struct DerivedViews {
         let workspace = DerivedViews.lstsqWorkspaceQuery(m: S, n: 2)
 
         var residuals = [Double](repeating: 0, count: candidates)
+        var skipped = 0
         for c in 0..<candidates {
             let base = c * stride
             var A = [Double](repeating: 0, count: S * 2)
             for s in 0..<S { A[s] = fixture.tau[base + s] }          // column 0
             for s in 0..<S { A[S + s] = 1.0 }                        // column 1
-            let sol = DerivedViews.solveLstSq(A: A, m: S, n: 2, b: zeroed, workspace: workspace)
-            var alpha = sol?[0] ?? 0
-            let beta = sol?[1] ?? 0
+            // Audit C finding 42: a nil `sol` is a LAPACK FAILURE, not a
+            // fit at the origin. Scoring it from (0, 0) let a failed solve
+            // produce a legitimate-looking residual that could win the
+            // tie-break. The candidate is skipped (residual +infinity, so
+            // it can never be the minimum or enter the tied set) and
+            // COUNTED.
+            guard let sol = DerivedViews.solveLstSq(A: A, m: S, n: 2, b: zeroed, workspace: workspace) else {
+                residuals[c] = .infinity
+                skipped += 1
+                continue
+            }
+            var alpha = sol[0]
+            let beta = sol[1]
             if alpha < 0 { alpha = 0 }
             var r = 0.0
             for s in 0..<S {
@@ -112,7 +185,17 @@ public struct DerivedViews {
             residuals[c] = r
         }
 
-        let rMin = residuals.min() ?? 0
+        // Finding 42: skipped candidates carry +infinity, so the minimum
+        // is taken over the SCORABLE ones only — otherwise a run in which
+        // every solve failed would report every candidate as tied at
+        // infinity.
+        let scorable = residuals.filter { $0.isFinite }
+        guard let rMin = scorable.min() else {
+            return ReflexDecision(winner: -1, tiedSet: [], residuals: residuals, rMin: .nan,
+                                   nearEdge: 0, skipped: skipped,
+                                   refusal: "every candidate's least-squares fit failed "
+                                       + "(skipped=\(skipped) of \(candidates))")
+        }
         let tol = 1e-9 * max(1.0, rMin)
         var tiedSet: [Int] = []
         for c in 0..<candidates where residuals[c] <= rMin + tol { tiedSet.append(c) }
@@ -122,7 +205,8 @@ public struct DerivedViews {
         var nearEdge = 0
         for c in 0..<candidates where abs(residuals[c] - edge) <= 10 * tol { nearEdge += 1 }
 
-        return ReflexDecision(winner: winner, tiedSet: tiedSet, residuals: residuals, rMin: rMin, nearEdge: nearEdge)
+        return ReflexDecision(winner: winner, tiedSet: tiedSet, residuals: residuals, rMin: rMin,
+                               nearEdge: nearEdge, skipped: skipped)
     }
 
     public struct ReflexSummary: Equatable {
@@ -134,9 +218,13 @@ public struct DerivedViews {
         public let framesWithTie: Int
         public let nearEdgeTotal: Int
         public let wallMs: Double
+        /// Appended fields, audit C findings 41/42.
+        public let skippedTotal: Int
+        public let refusal: String?
 
         public init(hits: Int, oracleHits: Int, tieMin: Int, tieMedian: Double, tieMax: Int,
-                    framesWithTie: Int, nearEdgeTotal: Int, wallMs: Double) {
+                    framesWithTie: Int, nearEdgeTotal: Int, wallMs: Double,
+                    skippedTotal: Int = 0, refusal: String? = nil) {
             self.hits = hits
             self.oracleHits = oracleHits
             self.tieMin = tieMin
@@ -145,6 +233,8 @@ public struct DerivedViews {
             self.framesWithTie = framesWithTie
             self.nearEdgeTotal = nearEdgeTotal
             self.wallMs = wallMs
+            self.skippedTotal = skippedTotal
+            self.refusal = refusal
         }
     }
 
@@ -152,6 +242,12 @@ public struct DerivedViews {
     /// yTest[m] is in the tied set; tie sizes reduced to min/median(numpy)/
     /// max; framesWithTie = frames whose tied set has more than one member.
     public func reflexSummary(stations S: Int) -> ReflexSummary {
+        if let violation = stationsViolation(S) {
+            DerivedViews.refuse("reflexSummary", violation)
+            return ReflexSummary(hits: 0, oracleHits: 0, tieMin: 0, tieMedian: 0, tieMax: 0,
+                                  framesWithTie: 0, nearEdgeTotal: 0, wallMs: 0,
+                                  skippedTotal: 0, refusal: violation)
+        }
         let start = DispatchTime.now()
         var hits = 0
         var oracleHits = 0
@@ -159,10 +255,12 @@ public struct DerivedViews {
         tieSizes.reserveCapacity(fixture.testCount)
         var framesWithTie = 0
         var nearEdgeTotal = 0
+        var skippedTotal = 0
 
         for m in 0..<fixture.testCount {
             let frame = fixture.frame(test: m)
             let decision = reflex(frame: frame, stations: S)
+            skippedTotal += decision.skipped
             let label = fixture.yTest[m]
             if decision.winner == label { hits += 1 }
             if decision.tiedSet.contains(label) { oracleHits += 1 }
@@ -178,7 +276,7 @@ public struct DerivedViews {
 
         return ReflexSummary(hits: hits, oracleHits: oracleHits, tieMin: tieMin, tieMedian: tieMedian,
                               tieMax: tieMax, framesWithTie: framesWithTie, nearEdgeTotal: nearEdgeTotal,
-                              wallMs: elapsedMs)
+                              wallMs: elapsedMs, skippedTotal: skippedTotal)
     }
 
     /// numpy's median: sort, and for an even count average the two middle
@@ -198,6 +296,10 @@ public struct DerivedViews {
     /// centroid of the front window, (iv) log energy ratio of the second
     /// 16-sample window over the first.
     public static func features(frame: [[Float]], stations S: Int, fs: Double, eps: Double = 1e-12) -> [Double] {
+        if let violation = stationsViolation(S, frame: frame) {
+            refuse("features", violation)
+            return []
+        }
         let arr = DerivedViews.arrivals(frame: frame, stations: S)
 
         var frameEnergy = 0.0
@@ -261,12 +363,16 @@ public struct DerivedViews {
         public let std: [Double]
         public let centroids: [[Double]]
         public let wallMs: Double
+        /// Appended field, audit C finding 41 — see `Arrivals.refusal`.
+        public let refusal: String?
 
-        public init(mean: [Double], std: [Double], centroids: [[Double]], wallMs: Double) {
+        public init(mean: [Double], std: [Double], centroids: [[Double]], wallMs: Double,
+                    refusal: String? = nil) {
             self.mean = mean
             self.std = std
             self.centroids = centroids
             self.wallMs = wallMs
+            self.refusal = refusal
         }
     }
 
@@ -274,6 +380,10 @@ public struct DerivedViews {
     /// per feature, std floored at 1e-12; candidate centroid = mean of the
     /// standardized features over that candidate's 54 train frames.
     public func centroids(stations S: Int) -> Centroids {
+        if let violation = stationsViolation(S) {
+            DerivedViews.refuse("centroids", violation)
+            return Centroids(mean: [], std: [], centroids: [], wallMs: 0, refusal: violation)
+        }
         let start = DispatchTime.now()
         let n = fixture.trainCount
         let dim = 3 * S
@@ -330,11 +440,14 @@ public struct DerivedViews {
         public let hits: Int
         public let minMargin: Double
         public let wallMs: Double
+        /// Appended field, audit C finding 41 — see `Arrivals.refusal`.
+        public let refusal: String?
 
-        public init(hits: Int, minMargin: Double, wallMs: Double) {
+        public init(hits: Int, minMargin: Double, wallMs: Double, refusal: String? = nil) {
             self.hits = hits
             self.minMargin = minMargin
             self.wallMs = wallMs
+            self.refusal = refusal
         }
     }
 
@@ -345,6 +458,10 @@ public struct DerivedViews {
     /// floor: the minimum, over frames with a tie, of the gap between the
     /// second-best and best distance.
     public func rung(stations S: Int, centroids: Centroids) -> RungSummary {
+        if let violation = stationsViolation(S) ?? centroids.refusal {
+            DerivedViews.refuse("rung", violation)
+            return RungSummary(hits: 0, minMargin: .nan, wallMs: 0, refusal: violation)
+        }
         let start = DispatchTime.now()
         var hits = 0
         var margins: [Double] = []
@@ -394,13 +511,19 @@ public struct DerivedViews {
         public let groups: Int
         public let ceiling: Double
         public let exactTwinPairs: Int
+        /// Appended field, audit C findings 41 and 44 — see
+        /// `Arrivals.refusal`. Also carries the refusal for a non-finite
+        /// `k = 1/(speed·dt·os)`.
+        public let refusal: String?
 
-        public init(identifiable: Int, unique: Int, groups: Int, ceiling: Double, exactTwinPairs: Int) {
+        public init(identifiable: Int, unique: Int, groups: Int, ceiling: Double, exactTwinPairs: Int,
+                    refusal: String? = nil) {
             self.identifiable = identifiable
             self.unique = unique
             self.groups = groups
             self.ceiling = ceiling
             self.exactTwinPairs = exactTwinPairs
+            self.refusal = refusal
         }
     }
 
@@ -409,7 +532,23 @@ public struct DerivedViews {
     /// over max_s|A_i - A_j| < 1.0 (transitive closure); identifiable =
     /// unique (size-1 classes) + groups (size>=2 classes).
     public func ceiling(stations S: Int) -> Ceiling {
+        if let violation = stationsViolation(S) {
+            DerivedViews.refuse("ceiling", violation)
+            return Ceiling(identifiable: 0, unique: 0, groups: 0, ceiling: 0, exactTwinPairs: 0,
+                            refusal: violation)
+        }
+        // Audit C finding 44: `speed` and `dt` are read off the fixture and
+        // `CortexFixture` pins only FS and OS, so a zero or non-finite
+        // speed/dt made k infinite — every class size 1 and a ceiling of
+        // 1.0, silently. Refused by name, naming the three values.
         let k = 1.0 / (fixture.speed * fixture.dt * Double(fixture.os))
+        guard k.isFinite, k != 0 else {
+            let violation = "1/(speed x dt x os) is \(k) — speed \(fixture.speed), "
+                + "dt \(fixture.dt), os \(fixture.os) do not give a usable sample-per-metre scale"
+            DerivedViews.refuse("ceiling", violation)
+            return Ceiling(identifiable: 0, unique: 0, groups: 0, ceiling: 0, exactTwinPairs: 0,
+                            refusal: violation)
+        }
         let candidates = fixture.candidates
         let stride = fixture.stations
 

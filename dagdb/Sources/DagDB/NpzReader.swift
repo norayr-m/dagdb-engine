@@ -29,6 +29,13 @@ public enum NpzReader {
         case badDType(String, expected: String)
         case badShape(String)
         case truncated(String)
+        /// Audit C finding 22: the EOCD member count is u16 and the
+        /// central-directory size/offset and per-entry compressed size /
+        /// local-header offset are u32. An archive past 4 GiB or 65 535
+        /// members stores `0xFFFF` / `0xFFFFFFFF` in those fields and puts
+        /// the real value in a zip64 record this reader does not parse.
+        /// Named rather than reported as a generic truncation.
+        case zip64NotSupported(String)
     }
 
     private static let localSig: UInt32 = 0x0403_4b50
@@ -87,9 +94,24 @@ public enum NpzReader {
             throw NpzError.notZip
         }
 
-        let totalEntries = Int(try u16(data, eocdOff + 10))
-        let cdSize = Int(try u32(data, eocdOff + 12))
-        let cdOffset = Int(try u32(data, eocdOff + 16))
+        let rawTotalEntries = try u16(data, eocdOff + 10)
+        let rawCdSize = try u32(data, eocdOff + 12)
+        let rawCdOffset = try u32(data, eocdOff + 16)
+        // Finding 22: zip64 placeholders in the END-OF-CENTRAL-DIRECTORY
+        // record, refused by name (not as a generic truncation).
+        if rawTotalEntries == 0xFFFF {
+            throw NpzError.zip64NotSupported(
+                "end-of-central-directory member count is the zip64 placeholder 65535 "
+                + "(an archive with 65535 or more members); zip64 not supported")
+        }
+        if rawCdSize == 0xFFFF_FFFF || rawCdOffset == 0xFFFF_FFFF {
+            throw NpzError.zip64NotSupported(
+                "end-of-central-directory size/offset is the zip64 placeholder 4294967295 "
+                + "(an archive at or past 4 GiB); zip64 not supported")
+        }
+        let totalEntries = Int(rawTotalEntries)
+        let cdSize = Int(rawCdSize)
+        let cdOffset = Int(rawCdOffset)
 
         guard cdOffset >= 0, cdOffset + cdSize <= data.count else {
             throw NpzError.truncated("central directory out of bounds")
@@ -103,11 +125,21 @@ public enum NpzReader {
                 throw NpzError.truncated("central directory signature mismatch at \(off)")
             }
             let method = try u16(data, off + 10)
-            let compSize = Int(try u32(data, off + 20))
+            let rawCompSize = try u32(data, off + 20)
             let nameLen = Int(try u16(data, off + 28))
             let extraLen = Int(try u16(data, off + 30))
             let commentLen = Int(try u16(data, off + 32))
-            let localOffset = Int(try u32(data, off + 42))
+            let rawLocalOffset = try u32(data, off + 42)
+            // Finding 22: a CENTRAL record carrying a zip64 placeholder —
+            // the real value lives in an extra field this reader does not
+            // parse. Named, never silently taken at face value.
+            if rawCompSize == 0xFFFF_FFFF || rawLocalOffset == 0xFFFF_FFFF {
+                throw NpzError.zip64NotSupported(
+                    "central directory entry at \(off) carries the zip64 placeholder 4294967295 "
+                    + "for its compressed size or local-header offset; zip64 not supported")
+            }
+            let compSize = Int(rawCompSize)
+            let localOffset = Int(rawLocalOffset)
 
             let nameStart = data.startIndex + off + 46
             guard nameStart + nameLen <= data.endIndex else {
@@ -157,6 +189,19 @@ public enum NpzReader {
             }
         }
         let major = data[base + 6]
+        let minor = data[base + 7]
+        // Finding 20: only .npy 1.0, 2.0 and 3.0 exist. Every other major
+        // (0, 4, 255 …) previously fell through to the 4-byte header-length
+        // branch and parsed as if it were v2. Both bytes are now read and
+        // refused by name, naming the value found.
+        guard major == 1 || major == 2 || major == 3 else {
+            throw NpzError.badNpyHeader(
+                "\(name): .npy major version \(major) not supported (only 1, 2 and 3 exist)")
+        }
+        guard minor == 0 else {
+            throw NpzError.badNpyHeader(
+                "\(name): .npy minor version \(major).\(minor) not supported (only x.0 exists)")
+        }
         let headerLenFieldSize: Int
         let headerLen: Int
         if major == 1 {
@@ -172,8 +217,10 @@ public enum NpzReader {
             throw NpzError.badNpyHeader("\(name): header length past end")
         }
         let headerData = data.subdata(in: headerStart..<headerEnd)
-        guard let headerStr = String(data: headerData, encoding: .isoLatin1) else {
-            throw NpzError.badNpyHeader("\(name): header not decodable")
+        // Finding 20: v1/v2 declare latin-1 header dicts, v3 declares utf-8.
+        let headerEncoding: String.Encoding = (major >= 3) ? .utf8 : .isoLatin1
+        guard let headerStr = String(data: headerData, encoding: headerEncoding) else {
+            throw NpzError.badNpyHeader("\(name): header not decodable as \(major >= 3 ? "utf-8" : "latin-1")")
         }
 
         let descr = try extractQuoted(headerStr, key: "descr", name: name)
@@ -235,6 +282,12 @@ public enum NpzReader {
             guard let v = Int(p) else {
                 throw NpzError.badNpyHeader("\(name): non-integer shape component '\(p)'")
             }
+            // Finding 21: a negative component made `elementCount` negative
+            // and the payload-size guard then reported a size error instead
+            // of naming the bad shape.
+            guard v >= 0 else {
+                throw NpzError.badShape("\(name): negative shape component '\(p)'")
+            }
             shape.append(v)
         }
         return shape
@@ -242,8 +295,32 @@ public enum NpzReader {
 
     // MARK: - Typed accessors
 
-    private static func elementCount(_ shape: [Int]) -> Int {
-        shape.isEmpty ? 1 : shape.reduce(1, *)
+    /// Finding 21: `shape.reduce(1, *)` is a non-wrapping multiply — a
+    /// crafted shape such as (2^32, 2^32) TRAPPED the process. Every step
+    /// is overflow-reporting now, and the product (and the byte count it
+    /// implies) is refused by name instead.
+    private static func elementCount(_ shape: [Int], name: String) throws -> Int {
+        var n = 1
+        for d in shape {
+            guard d >= 0 else {
+                throw NpzError.badShape("\(name): negative shape component \(d)")
+            }
+            let (product, overflow) = n.multipliedReportingOverflow(by: d)
+            guard !overflow else {
+                throw NpzError.badShape("\(name): shape \(shape) overflows the element count")
+            }
+            n = product
+        }
+        return n
+    }
+
+    /// `elementCount * itemSize`, overflow-reported (finding 21).
+    private static func payloadBytes(_ n: Int, _ itemSize: Int, name: String) throws -> Int {
+        let (bytes, overflow) = n.multipliedReportingOverflow(by: itemSize)
+        guard !overflow else {
+            throw NpzError.badShape("\(name): \(n) elements x \(itemSize) bytes overflows the payload size")
+        }
+        return bytes
     }
 
     public static func float32(_ e: Entry) throws -> [Float] {
@@ -253,8 +330,9 @@ public enum NpzReader {
         guard !e.fortranOrder else {
             throw NpzError.badShape("\(e.name): fortran_order not supported")
         }
-        let n = elementCount(e.shape)
-        guard e.data.count == n * 4 else {
+        let n = try elementCount(e.shape, name: e.name)
+        let expectedBytes = try payloadBytes(n, 4, name: e.name)
+        guard e.data.count == expectedBytes else {
             throw NpzError.badShape("\(e.name): payload size \(e.data.count) != \(n) * 4")
         }
         var result = [Float](repeating: 0, count: n)
@@ -272,8 +350,9 @@ public enum NpzReader {
         guard !e.fortranOrder else {
             throw NpzError.badShape("\(e.name): fortran_order not supported")
         }
-        let n = elementCount(e.shape)
-        guard e.data.count == n * 8 else {
+        let n = try elementCount(e.shape, name: e.name)
+        let expectedBytes = try payloadBytes(n, 8, name: e.name)
+        guard e.data.count == expectedBytes else {
             throw NpzError.badShape("\(e.name): payload size \(e.data.count) != \(n) * 8")
         }
         var result = [Double](repeating: 0, count: n)
@@ -294,8 +373,9 @@ public enum NpzReader {
         guard !e.fortranOrder else {
             throw NpzError.badShape("\(e.name): fortran_order not supported")
         }
-        let n = elementCount(e.shape)
-        guard e.data.count == n * 8 else {
+        let n = try elementCount(e.shape, name: e.name)
+        let expectedBytes = try payloadBytes(n, 8, name: e.name)
+        guard e.data.count == expectedBytes else {
             throw NpzError.badShape("\(e.name): payload size \(e.data.count) != \(n) * 8")
         }
         var result = [Int64](repeating: 0, count: n)

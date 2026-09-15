@@ -95,10 +95,10 @@ final class TwinRegistryTests: XCTestCase {
 
     // MARK: - TwinRegistry: id format, uniqueness, restore path
 
-    func testOpenMintsPrefixedSequentialIds() {
+    func testOpenMintsPrefixedSequentialIds() throws {
         let reg = TwinRegistry<Int>(prefix: "s")
-        let id1 = reg.open(1)
-        let id2 = reg.open(2)
+        let id1 = try reg.open(1)
+        let id2 = try reg.open(2)
         XCTAssertEqual(id1, "s00000001")
         XCTAssertEqual(id2, "s00000002")
         XCTAssertEqual(reg.counter, 2)
@@ -138,7 +138,7 @@ final class TwinRegistryTests: XCTestCase {
             }
         }
         // a later live open must not collide with the restored id
-        let liveId = reg.open(4)
+        let liveId = try reg.open(4)
         XCTAssertEqual(liveId, "t00000006")
     }
 
@@ -157,10 +157,10 @@ final class TwinRegistryTests: XCTestCase {
         XCTAssertFalse(reg.close("s00000001"))
     }
 
-    func testCloseAllAndEntries() {
+    func testCloseAllAndEntries() throws {
         let reg = TwinRegistry<Int>(prefix: "s")
-        let a = reg.open(1)
-        let b = reg.open(2)
+        let a = try reg.open(1)
+        let b = try reg.open(2)
         XCTAssertEqual(Set(reg.ids), Set([a, b]))
         XCTAssertEqual(reg.entries, [a: 1, b: 2])
         reg.closeAll()

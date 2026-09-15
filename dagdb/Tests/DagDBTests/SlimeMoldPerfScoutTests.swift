@@ -189,7 +189,7 @@ final class SlimeMoldPerfScoutTests: XCTestCase {
 
         // ── Phase A: build state arrays directly (no DagDBGraph) ─────
         let tBuild0 = CFAbsoluteTimeGetCurrent()
-        let grid = HexGrid(width: gridSide, height: gridSide)
+        let grid = try HexGrid(width: gridSide, height: gridSide)
         var state = DagDBState(width: gridSide, height: gridSide)
 
         for idx in 0..<cellCount {
@@ -241,8 +241,8 @@ final class SlimeMoldPerfScoutTests: XCTestCase {
         // ── Phase D: register back-edges + is_register flags ─────────
         let tBE0 = CFAbsoluteTimeGetCurrent()
         for idx in 0..<cellCount {
-            engine.addBackEdgeUnchecked(src: UInt32(cellCount + idx),
-                                        dst: UInt32(idx))
+            try engine.addBackEdgeUnchecked(src: UInt32(cellCount + idx),
+                                            dst: UInt32(idx))
         }
         let tBE1 = CFAbsoluteTimeGetCurrent()
         let beMs = (tBE1 - tBE0) * 1000.0

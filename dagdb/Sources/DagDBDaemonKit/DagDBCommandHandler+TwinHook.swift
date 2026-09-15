@@ -100,11 +100,18 @@ extension DagDBCommandHandler {
             guard from >= 0, count >= 0 else {
                 return "ERROR out_of_range: from/count must be >= 0"
             }
-            let end = from + count
+            // D3 · `from + count` is an unchecked Int addition on two wire
+            // values; Int.max plus anything traps before the guard below.
+            guard let end = checkedSum(from, count) else {
+                return "ERROR out_of_range: range from=\(from) count=\(count) overflows Int;"
+                    + " ledger holds \(ledger.count) rows"
+            }
             guard from <= ledger.count, end <= ledger.count else {
                 return "ERROR out_of_range: range [\(from), \(end)) not in [0, \(ledger.count)]"
             }
-            let bytes = 8 + count * 40
+            guard let bytes = checkedProduct(count, 40).flatMap({ checkedSum(8, $0) }) else {
+                return overflowRefusal("HOOK LEDGER", "count=\(count)")
+            }
             guard bytes <= shmCapacityBytes else {
                 return "ERROR out_of_range: HOOK LEDGER \(bytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }

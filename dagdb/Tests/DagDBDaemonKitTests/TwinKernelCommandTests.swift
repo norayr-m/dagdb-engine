@@ -141,11 +141,19 @@ final class TwinKernelCommandTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("XCONV SEALED k00000001 1 0").hasPrefix("ERROR"))
     }
 
+    /// The subject is the `warmup < n` guard. The numbers are 100/100 rather
+    /// than 2048/2048 because post-merge follow-up F5 put
+    /// `KernelPair.checkedWarmup` ahead of this guard: a warmup of 2048 is
+    /// also at the kernels file's own `window_samples`, so that input is now
+    /// refused one step earlier (`ERROR bad_value: XCONV SEALED refused: …`,
+    /// gated in `PostMergeFollowUpTests`). 100 is inside the window and
+    /// reaches this guard.
     func testXConvSealedWarmupMustBeLessThanN() throws {
         let f = try HandlerFixture(side: 64, dataRoot: Self.fixturesDir.path)
         loadKernel(f)
-        let reply = f.handler.handle("XCONV SEALED k00000001 2048 2048")
+        let reply = f.handler.handle("XCONV SEALED k00000001 100 100")
         XCTAssertTrue(reply.hasPrefix("ERROR out_of_range"), reply)
+        XCTAssertTrue(reply.contains("warmup 100 must be < n 100"), reply)
     }
 
     func testXConvSealedUnknownIdIsNotFound() throws {
@@ -237,7 +245,7 @@ final class TwinKernelCommandTests: XCTestCase {
         loadKernel(f)
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 10, height: 10)
+        let grid = try HexGrid(width: 10, height: 10)
         let state = DagDBState(width: 10, height: 10)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)
@@ -353,4 +361,21 @@ final class TwinKernelCommandTests: XCTestCase {
         guard let trial = records["court_28"] else { return XCTFail("no court_28 trial in DAGDB_W1_RECORDS") }
         try assertXConvSealedMatchesLibrary(trial: trial)
     }
+
+    // MARK: - D3 · wire arithmetic cannot trap
+
+    /// Audit finding 23 — `XCONV SEALED`'s `inputBytes = 8 + 2 * n * 8` is
+    /// computed from an unbounded signed `Int` straight off the wire, and
+    /// Swift TRAPS on `Int` overflow, so the capacity guard right behind it
+    /// never got the chance to refuse.
+    func testXConvSealedByteCountOverflowIsRefusedNotTrapped() throws {
+        let f = try HandlerFixture(side: 64, dataRoot: Self.fixturesDir.path)
+        loadKernel(f)
+        let huge = 2_305_843_009_213_693_951      // 2^61 - 1; 2*n*8 overflows Int64
+        let reply = f.handler.handle("XCONV SEALED k00000001 \(huge)")
+        XCTAssertTrue(reply.hasPrefix("ERROR out_of_range"), reply)
+        XCTAssertTrue(f.handler.handle("STATUS").hasPrefix("OK STATUS"),
+                      "the handler did not survive the refusal")
+    }
+
 }

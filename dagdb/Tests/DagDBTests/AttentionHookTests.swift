@@ -64,7 +64,7 @@ final class AttentionHookTests: XCTestCase {
     func testFramesAndDone() throws {
         let records = try loadMiniRecords()
         let layout = SealedCourt.makeLayout()
-        var hook = AttentionHook(
+        var hook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: 100_000, delta: 3, policy: .allocator),
             records: records, layout: layout)
 
@@ -89,7 +89,7 @@ final class AttentionHookTests: XCTestCase {
         let budget = 100_000.0
 
         // Uniform: 3 warm-up rows, spend 472 excluded from cost.
-        var uniformHook = AttentionHook(
+        var uniformHook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget, delta: 3, policy: .uniform),
             records: records, layout: layout)
         for i in 1...3 {
@@ -115,7 +115,7 @@ final class AttentionHookTests: XCTestCase {
         XCTAssertEqual(uniformHook.result.cost, 472)
 
         // Allocator: 3 warm-up rows, spend 0.
-        var allocHook = AttentionHook(
+        var allocHook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget, delta: 3, policy: .allocator),
             records: records, layout: layout)
         for _ in 1...3 {
@@ -138,7 +138,7 @@ final class AttentionHookTests: XCTestCase {
         XCTAssertEqual(allocHook.result.cost, 0)
 
         // Greedy behaves the same as allocator on a quiet source.
-        var greedyHook = AttentionHook(
+        var greedyHook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget, delta: 3, policy: .greedy),
             records: records, layout: layout)
         _ = greedyHook.step(3)
@@ -156,7 +156,7 @@ final class AttentionHookTests: XCTestCase {
         let budget = 100_000.0
 
         for policy in AttentionHook.Policy.allCases {
-            var hook = AttentionHook(
+            var hook = try AttentionHook(
                 params: .init(alarmId: "a00000001", layoutId: nil, budget: budget, delta: 3, policy: policy),
                 records: records, layout: layout)
             hook.step(hook.frames)
@@ -190,7 +190,7 @@ final class AttentionHookTests: XCTestCase {
         for budget in [16164.352484758914, 3128.126645687496] {
             let expected = AllocatorCourt.run(records: records, budget: budget)
             for policy in AttentionHook.Policy.allCases {
-                var hook = AttentionHook(
+                var hook = try AttentionHook(
                     params: .init(alarmId: "a00000001", layoutId: nil, budget: budget, delta: SealedCourt.delta, policy: policy),
                     records: records, layout: layout)
                 hook.step(hook.frames)
@@ -216,7 +216,7 @@ final class AttentionHookTests: XCTestCase {
         for point in SealedCourt.budgetGrid {
             let expected = AllocatorCourt.run(records: fixture.records, budget: point.budget)
             for policy in AttentionHook.Policy.allCases {
-                var hook = AttentionHook(
+                var hook = try AttentionHook(
                     params: .init(alarmId: "a00000001", layoutId: nil, budget: point.budget,
                                   delta: SealedCourt.delta, policy: policy),
                     records: fixture.records, layout: layout)
@@ -237,7 +237,7 @@ final class AttentionHookTests: XCTestCase {
         let budget = SealedCourt.budgetGrid[0].budget  // richest point
 
         for policy: AttentionHook.Policy in [.allocator, .uniform] {
-            var hook = AttentionHook(
+            var hook = try AttentionHook(
                 params: .init(alarmId: "a00000001", layoutId: nil, budget: budget,
                               delta: SealedCourt.delta, policy: policy),
                 records: fixture.records, layout: layout)
@@ -261,7 +261,7 @@ final class AttentionHookTests: XCTestCase {
         }
 
         // H5's printed line for the richest point, asserted as data here.
-        var allocHook = AttentionHook(
+        var allocHook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget,
                           delta: SealedCourt.delta, policy: .allocator),
             records: fixture.records, layout: layout)
@@ -270,7 +270,7 @@ final class AttentionHookTests: XCTestCase {
         XCTAssertEqual(allocHook.result.misses, 0)
         XCTAssertEqual(allocHook.result.cost, 819218.0)
 
-        var uniformHook = AttentionHook(
+        var uniformHook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget,
                           delta: SealedCourt.delta, policy: .uniform),
             records: fixture.records, layout: layout)
@@ -287,7 +287,7 @@ final class AttentionHookTests: XCTestCase {
         let layout = SealedCourt.makeLayout()
         let budget = SealedCourt.budgetGrid[0].budget  // richest point
 
-        var hook = AttentionHook(
+        var hook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget,
                           delta: SealedCourt.delta, policy: .allocator),
             records: fixture.records, layout: layout)

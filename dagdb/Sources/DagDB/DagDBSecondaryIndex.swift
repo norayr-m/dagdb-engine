@@ -36,6 +36,18 @@ public final class TruthRankIndex {
     private var lists: [UInt8: [(rank: UInt64, node: Int)]] = [:]
     private var dirty: Bool = true
 
+    /// C6 · the last `nodeCount` this index was handed that it could not
+    /// honour, named, or nil when the last call agreed with the engine.
+    ///
+    /// `nodeCount` is used as the `capacity:` for `bindMemory` on the
+    /// engine's own buffers, so a larger one is a read past them (audit A,
+    /// finding 27). The engine's count is authoritative and the index is
+    /// built over it; the caller's number is refused by name here and on
+    /// stderr rather than obeyed or silently clamped. This is a property
+    /// rather than a throw because both entry points are called from
+    /// non-throwing predicates on the daemon's read path.
+    public private(set) var lastRefusal: String? = nil
+
     public init() {}
 
     public var isDirty: Bool { dirty }
@@ -56,13 +68,23 @@ public final class TruthRankIndex {
     /// Force a full rebuild from the engine state. O(N log N): scan + sort
     /// per truth bucket.
     public func rebuild(engine: DagDBEngine, nodeCount: Int) {
+        let n = engine.nodeCount
+        if nodeCount != n {
+            let why = "TruthRankIndex: caller passed nodeCount \(nodeCount) for an " +
+                      "engine holding \(n) nodes — the engine's count is " +
+                      "authoritative; the index covers \(n) nodes"
+            lastRefusal = why
+            FileHandle.standardError.write(Data(("WARN: " + why + "\n").utf8))
+        } else {
+            lastRefusal = nil
+        }
         let rank  = engine.rankBuf.contents().bindMemory(
-            to: UInt64.self, capacity: nodeCount)
+            to: UInt64.self, capacity: n)
         let truth = engine.truthStateBuf.contents().bindMemory(
-            to: UInt8.self, capacity: nodeCount)
+            to: UInt8.self, capacity: n)
 
         var buckets: [UInt8: [(rank: UInt64, node: Int)]] = [:]
-        for i in 0..<nodeCount {
+        for i in 0..<n {
             buckets[truth[i], default: []].append((rank[i], i))
         }
         for key in buckets.keys {

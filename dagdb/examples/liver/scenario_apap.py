@@ -58,7 +58,9 @@ def zone_firing_count(zone_range):
     # NODES doesn't take a range — we filter client-side by intersecting
     # the rank-4 firing list with the zone range.
     r = cmd("NODES AT RANK 4 WHERE truth=1")
-    # r = "OK NODES rows=N" — the daemon writes details to shared memory,
+    # r = "OK NODES rows=N omitted=M" — the daemon writes details to shared
+    # memory (omitted= counts the rank-0/truth-0 nodes NODES drops when no
+    # rank filter is given; it is always 0 here, since a rank IS given),
     # but for counting we'll just assume 200 per zone at healthy baseline.
     # For a real count we'd query each ID individually.
     return r

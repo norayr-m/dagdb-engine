@@ -78,9 +78,9 @@ final class TwinCodableStreamTests: XCTestCase {
 
     func testStreamRecordCodableRoundTripReplays() throws {
         var r = try StreamRecord(header: header(), generator: gen())
-        r.recordSlice(count: 5)
-        r.recordSlice(count: 7)
-        r.recordSlice(count: 3)
+        try r.recordSlice(count: 5)
+        try r.recordSlice(count: 7)
+        try r.recordSlice(count: 3)
 
         let data = try JSONEncoder().encode(r)
         var decoded = try JSONDecoder().decode(StreamRecord.self, from: data)
@@ -90,8 +90,8 @@ final class TwinCodableStreamTests: XCTestCase {
         XCTAssertEqual(try decoded.replaySlice(1), decoded.slices[1].payload)
         XCTAssertEqual(decoded.generatorState.draws, 15)
 
-        let a = r.recordSlice(count: 2)
-        let b = decoded.recordSlice(count: 2)
+        let a = try r.recordSlice(count: 2)
+        let b = try decoded.recordSlice(count: 2)
         XCTAssertEqual(a.payload, b.payload)
     }
 

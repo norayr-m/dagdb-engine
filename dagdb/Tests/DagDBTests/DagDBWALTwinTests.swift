@@ -68,7 +68,7 @@ final class DagDBWALTwinTests: XCTestCase {
     }
 
     private func makeEngine(side: Int) throws -> DagDBEngine {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         return try DagDBEngine(grid: grid, state: state, maxRank: 8)
     }
@@ -103,20 +103,20 @@ final class DagDBWALTwinTests: XCTestCase {
         XCTAssertEqual(ops.count, 12, "sanity: exactly the 12 TwinOp cases")
 
         for op in ops {
-            let (opcode, payload) = TwinWALCodec.encode(op)
+            let (opcode, payload) = try TwinWALCodec.encode(op)
             let decoded = TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload)
             XCTAssertEqual(decoded, op, "round trip mismatch for \(op)")
         }
     }
 
-    func testCodecDecodeRejectsTruncatedPayload() {
-        let (opcode, payload) = TwinWALCodec.encode(.clockOpen(id: "c00000001"))
+    func testCodecDecodeRejectsTruncatedPayload() throws {
+        let (opcode, payload) = try TwinWALCodec.encode(.clockOpen(id: "c00000001"))
         let truncated = payload.prefix(payload.count - 1)
         XCTAssertNil(TwinWALCodec.decode(opcode: opcode.rawValue, payload: Data(truncated)))
     }
 
-    func testCodecDecodeRejectsTrailingBytes() {
-        let (opcode, payload) = TwinWALCodec.encode(.clockOpen(id: "c00000001"))
+    func testCodecDecodeRejectsTrailingBytes() throws {
+        let (opcode, payload) = try TwinWALCodec.encode(.clockOpen(id: "c00000001"))
         var extended = payload
         extended.append(0xFF)
         XCTAssertNil(TwinWALCodec.decode(opcode: opcode.rawValue, payload: extended))
@@ -130,13 +130,13 @@ final class DagDBWALTwinTests: XCTestCase {
 
     func testBankOpenCodecRoundTrip() throws {
         let referenceOp = TwinOp.bankOpen(id: "w00000001", name: "mouth", spec: .reference)
-        let (refOpcode, refPayload) = TwinWALCodec.encode(referenceOp)
+        let (refOpcode, refPayload) = try TwinWALCodec.encode(referenceOp)
         XCTAssertEqual(TwinWALCodec.decode(opcode: refOpcode.rawValue, payload: refPayload), referenceOp)
 
         let tinySpec = WaveBank.Spec(samples: 64, sampleRate: 3000, f0: 60, harmonics: 3,
                                       gaborCenters: 0, gaborFreqs: 0, gaborSigmaFrac: 0.02)
         let tinyOp = TwinOp.bankOpen(id: "w00000002", name: "tiny", spec: tinySpec)
-        let (tinyOpcode, tinyPayload) = TwinWALCodec.encode(tinyOp)
+        let (tinyOpcode, tinyPayload) = try TwinWALCodec.encode(tinyOp)
         XCTAssertEqual(TwinWALCodec.decode(opcode: tinyOpcode.rawValue, payload: tinyPayload), tinyOp)
     }
 
@@ -159,7 +159,7 @@ final class DagDBWALTwinTests: XCTestCase {
     func testViewLoadCodecRoundTrip() throws {
         let op = TwinOp.viewLoad(id: "v00000001", path: "/data/cortex_v4_world.npz",
                                    sha256: String(repeating: "a", count: 64))
-        let (opcode, payload) = TwinWALCodec.encode(op)
+        let (opcode, payload) = try TwinWALCodec.encode(op)
         XCTAssertEqual(opcode, .twinViewLoad)
         XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
     }
@@ -184,7 +184,7 @@ final class DagDBWALTwinTests: XCTestCase {
         // what it was called with.
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         XCTAssertGreaterThan(data.count, DagDBWAL.headerSize, "sanity: the record was appended")
-        let (opcode, payload) = TwinWALCodec.encode(op)
+        let (opcode, payload) = try TwinWALCodec.encode(op)
         let decoded = TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload)
         XCTAssertEqual(decoded, op)
 
@@ -213,7 +213,7 @@ final class DagDBWALTwinTests: XCTestCase {
             tauA: 0.18227148035108542, tauB: 0.18382585465904366,
             sigmaSource: 0.02, declaredWarmup: 185
         )
-        let (opcode, payload) = TwinWALCodec.encode(op)
+        let (opcode, payload) = try TwinWALCodec.encode(op)
         XCTAssertEqual(opcode, .twinKernelLoad)
         XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
     }
@@ -224,7 +224,7 @@ final class DagDBWALTwinTests: XCTestCase {
             sha256: String(repeating: "b", count: 64),
             tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: nil
         )
-        let (opcode, payload) = TwinWALCodec.encode(op)
+        let (opcode, payload) = try TwinWALCodec.encode(op)
         XCTAssertEqual(opcode, .twinKernelLoad)
         XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
     }
@@ -236,7 +236,7 @@ final class DagDBWALTwinTests: XCTestCase {
             id: "k00000003", path: "/x.json", sha256: "deadbeef",
             tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: 42
         )
-        let (opcode, payload) = TwinWALCodec.encode(op)
+        let (opcode, payload) = try TwinWALCodec.encode(op)
         XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op)
     }
 
@@ -406,7 +406,7 @@ final class DagDBWALTwinTests: XCTestCase {
             id: "h00000001",
             params: AttentionHook.Params(alarmId: "a00000001", layoutId: "b00000001", budget: 16164.352484758914,
                                           delta: 3, policy: .allocator, clockId: "c00000001"))
-        let (opWith, payloadWith) = TwinWALCodec.encode(withBoth)
+        let (opWith, payloadWith) = try TwinWALCodec.encode(withBoth)
         XCTAssertEqual(opWith, .twinHookOpen)
         XCTAssertEqual(TwinWALCodec.decode(opcode: opWith.rawValue, payload: payloadWith), withBoth)
 
@@ -414,7 +414,7 @@ final class DagDBWALTwinTests: XCTestCase {
             id: "h00000002",
             params: AttentionHook.Params(alarmId: "a00000001", layoutId: nil, budget: 3128.126645687496,
                                           delta: 3, policy: .uniform, clockId: nil))
-        let (opWithout, payloadWithout) = TwinWALCodec.encode(withoutEither)
+        let (opWithout, payloadWithout) = try TwinWALCodec.encode(withoutEither)
         XCTAssertEqual(TwinWALCodec.decode(opcode: opWithout.rawValue, payload: payloadWithout), withoutEither)
 
         // Every policy byte round trips.
@@ -422,12 +422,12 @@ final class DagDBWALTwinTests: XCTestCase {
             let op = TwinOp.hookOpen(
                 id: "h00000003",
                 params: AttentionHook.Params(alarmId: "a00000001", layoutId: nil, budget: 100, delta: 3, policy: policy))
-            let (opcode, payload) = TwinWALCodec.encode(op)
+            let (opcode, payload) = try TwinWALCodec.encode(op)
             XCTAssertEqual(TwinWALCodec.decode(opcode: opcode.rawValue, payload: payload), op, "policy \(policy)")
         }
 
         let step = TwinOp.hookStep(id: "h00000001", count: 203)
-        let (stepOpcode, stepPayload) = TwinWALCodec.encode(step)
+        let (stepOpcode, stepPayload) = try TwinWALCodec.encode(step)
         XCTAssertEqual(stepOpcode, .twinHookStep)
         XCTAssertEqual(TwinWALCodec.decode(opcode: stepOpcode.rawValue, payload: stepPayload), step)
     }

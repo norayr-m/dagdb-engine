@@ -166,7 +166,7 @@ final class TwinClockCommandTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("CLOCK ADVANCE c00000001 10000").hasPrefix("OK CLOCK ADVANCE"))
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 4, height: 4)
+        let grid = try HexGrid(width: 4, height: 4)
         let state = DagDBState(width: 4, height: 4)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)

@@ -194,9 +194,13 @@ For approximation workloads that fit the "many identical
 microcircuits, one per physical node" pattern:
 
 - Million-node compile in seconds, not minutes.
-- Evaluation at the substrate's measured throughput (0.71 GCUPS at
-  1M nodes on M5 Max — see Benchmarks), parallel across all
-  physical nodes per tick.
+- Evaluation at the substrate's measured throughput — 0.81–1.69 GCUPS
+  at 1M nodes on M5 Max, the compacted rank tick (the default path
+  since July 2026) on the shallow 3-rank spread; 0.15–0.65 and
+  unstable on a 16-rank spread, `TICK_SYNC` ~3.5 stable, single runs
+  varying up to about 2× with thermal state (conditions in
+  `docs_perf_recovery/results.md`; see also Benchmarks) — parallel
+  across all physical nodes per tick.
 - Mid-tick introspection of any internal LUT state via `NODES AT
   RANK …` or reader-session snapshots — you can debug the
   microcircuit while it's running, which FPGA bitstreams cannot do.

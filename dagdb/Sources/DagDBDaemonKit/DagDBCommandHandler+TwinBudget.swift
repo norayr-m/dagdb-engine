@@ -26,11 +26,22 @@ extension DagDBCommandHandler {
             guard nA >= 0, nB >= 0, kA >= 0, kB >= 0, warmup >= 0 else {
                 return "ERROR out_of_range: XCONV CHECK counts must be non-negative"
             }
+            // D3 · every one of these offsets is a product/sum of unbounded
+            // wire integers. Compute them with overflow-reporting ops so the
+            // capacity guard below is reachable (audit B finding 23).
+            guard let totalElements = checkedSum(nA, nB, kA, kB),
+                  let payloadBytes = checkedProduct(totalElements, 4),
+                  let neededBytes = checkedSum(8, payloadBytes),
+                  let aBytes = checkedProduct(nA, 4),
+                  let bBytes = checkedProduct(nB, 4),
+                  let kABytes = checkedProduct(kA, 4) else {
+                return overflowRefusal("XCONV CHECK input",
+                                       "nA=\(nA) nB=\(nB) kA=\(kA) kB=\(kB)")
+            }
             let aOffset = 8
-            let bOffset = aOffset + nA * 4
-            let kAOffset = bOffset + nB * 4
-            let kBOffset = kAOffset + kA * 4
-            let neededBytes = 8 + (nA + nB + kA + kB) * 4
+            let bOffset = aOffset + aBytes
+            let kAOffset = bOffset + bBytes
+            let kBOffset = kAOffset + kABytes
             guard neededBytes <= shmCapacityBytes,
                   let a = readFloats(count: nA, at: aOffset),
                   let b = readFloats(count: nB, at: bOffset),
@@ -55,11 +66,16 @@ extension DagDBCommandHandler {
             guard nPockets >= 0, nTiers >= 0, nClasses >= 0 else {
                 return "ERROR out_of_range: BUDGET OPEN dimensions must be non-negative"
             }
-            let costBytes = nPockets * nTiers * 8
-            let minTierBytes = nClasses * 4
-            let neededBytes = 8 + costBytes + minTierBytes
+            // D3 · `nPockets * nTiers * 8` traps on overflow; so does the sum.
+            guard let cells = checkedProduct(nPockets, nTiers),
+                  let costBytes = checkedProduct(cells, 8),
+                  let minTierBytes = checkedProduct(nClasses, 4),
+                  let neededBytes = checkedSum(8, costBytes, minTierBytes) else {
+                return overflowRefusal("BUDGET OPEN input",
+                                       "nPockets=\(nPockets) nTiers=\(nTiers) nClasses=\(nClasses)")
+            }
             guard neededBytes <= shmCapacityBytes,
-                  let flatCost = readDoubles(count: nPockets * nTiers, at: 8),
+                  let flatCost = readDoubles(count: cells, at: 8),
                   let minTierRaw = readU32s(count: nClasses, at: 8 + costBytes) else {
                 return "ERROR out_of_range: BUDGET OPEN input \(neededBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }

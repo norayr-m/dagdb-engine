@@ -73,7 +73,13 @@ extension DagDBCommandHandler {
     /// Writes cross-tile BFS/ancestry rows to shm: `[u32 count][u32 16]`
     /// header, then 16-byte rows (u64 global id, u32 depth, 4 pad) — gate
     /// T5's `TILED BFS` shape, distinct from `writeU64Vector`'s 8-byte rows.
-    private func writeTiledBFSRows(_ rows: [(GlobalNodeID, UInt32)]) {
+    /// D2 · capacity-checked. The router's world size is
+    /// `manifest.globalNodeCount`, entirely independent of the `nodeCount`
+    /// that sized this daemon's mapping (audit B finding 9), so the fit is
+    /// never implied — it has to be checked. Returns nil when the rows fit.
+    @discardableResult
+    private func writeTiledBFSRows(_ rows: [(GlobalNodeID, UInt32)]) -> String? {
+        if let e = checkShmFits(rows: rows.count, rowSize: 16) { return e }
         let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
         headerPtr[0] = UInt32(rows.count)
         headerPtr[1] = 16
@@ -84,6 +90,7 @@ extension DagDBCommandHandler {
             rowPtr.advanced(by: 8).storeBytes(of: row.1, as: UInt32.self)
             rowPtr.advanced(by: 12).storeBytes(of: UInt32(0), as: UInt32.self)
         }
+        return nil
     }
 
     func handleTiled(_ cmd: DSLCommand, sessionId: String?) -> String {
@@ -103,12 +110,19 @@ extension DagDBCommandHandler {
             }
             do {
                 let report = try TiledGraphFiles.write(
-                    engine: engine, grid: grid, dataRoot: dataRoot, name: name, boundaries: boundaries
+                    engine: engine, grid: grid, dataRoot: dataRoot, name: name, boundaries: boundaries,
+                    tickCount: tickCount
                 )
                 return tiledResponse(
                     "SAVE TILED", sessionId: sessionId,
                     "dir=\(dir) tiles=\(report.tiles) nodes=\(report.nodes) crossings=\(report.crossings)"
                 )
+            } catch TiledGraphFiles.FilesError.crossTileBackEdge(let src, let dst) {
+                // Ticking gates W5: a back edge whose src/dst fall in
+                // different tiles under these boundaries — refused before
+                // any directory is written (the library-level check in
+                // `TiledGraphFiles.write` already ran before touching disk).
+                return "ERROR bad_value: back edge crosses a tile boundary (\(src)→\(dst))"
             } catch {
                 return "ERROR io: \(error)"
             }
@@ -120,18 +134,23 @@ extension DagDBCommandHandler {
             }
             let (dataRoot, name) = splitTiledDir(dir)
             do {
-                let (router, tiles, nodes) = try runTiledSync {
-                    () async throws -> (TiledGraphRouter, Int, UInt64) in
+                // Writer role (the default) — AMENDMENT 3: TILED OPEN
+                // recovers any dangling flush and completes a partial
+                // round before returning, so the daemon never hands out a
+                // router over a torn world.
+                let (router, tiles, nodes, recovered, completed) = try runTiledSync {
+                    () async throws -> (TiledGraphRouter, Int, UInt64, Int, Int) in
                     let r = try await TiledGraphRouter(dataRoot: dataRoot, graphName: name, maxResidentTiles: k)
                     let m = await r.manifest
-                    return (r, m.tiles.count, m.globalNodeCount)
+                    let report = await r.openReport
+                    return (r, m.tiles.count, m.globalNodeCount, report.recovered, report.completed)
                 }
                 tiledRouterCounter += 1
                 let id = String(format: "x%08x", tiledRouterCounter)
                 tiledRouters[id] = TiledRouterEntry(router: router, dir: dir, tiles: tiles, nodes: nodes, k: k)
                 return tiledResponse(
                     "TILED OPEN", sessionId: sessionId,
-                    "id=\(id) tiles=\(tiles) nodes=\(nodes) resident_max=\(k)"
+                    "id=\(id) tiles=\(tiles) nodes=\(nodes) resident_max=\(k) recovered=\(recovered) completed=\(completed)"
                 )
             } catch let err as RouterError {
                 return "ERROR io: \(err)"
@@ -156,7 +175,7 @@ extension DagDBCommandHandler {
                     return (r, s)
                 }
                 let sorted = rows.sorted { $0.0.raw < $1.0.raw }
-                writeTiledBFSRows(sorted)
+                if let e = writeTiledBFSRows(sorted) { return e }
                 return tiledResponse(
                     "TILED BFS", sessionId: sessionId,
                     "id=\(id) seed=\(globalIdRaw) depth=\(depth) back=\(backward ? 1 : 0) "
@@ -180,7 +199,7 @@ extension DagDBCommandHandler {
                 let ids = try runTiledSync {
                     try await router.runSelect(truth: truth, rankLo: lo, rankHi: hi)
                 }
-                writeU64Vector(ids.map { $0.raw })
+                if let e = writeU64Vector(ids.map { $0.raw }) { return e }
                 return tiledResponse(
                     "TILED SELECT", sessionId: sessionId,
                     "id=\(id) truth=\(truth) lo=\(lo) hi=\(hi) count=\(ids.count)"
@@ -203,7 +222,8 @@ extension DagDBCommandHandler {
             return tiledResponse(
                 "TILED STATUS", sessionId: sessionId,
                 "id=\(id) resident=\(s.residentTileCount)/\(s.maxResidentTiles) "
-                    + "loads=\(s.loads) evicts=\(s.evicts) refused=\(s.refused) last=\(lastStr)"
+                    + "loads=\(s.loads) evicts=\(s.evicts) refused=\(s.refused) last=\(lastStr) "
+                    + "epoch=\(s.epochMin)/\(s.epochMax)"
             )
 
         case .tiledList:
@@ -225,6 +245,52 @@ extension DagDBCommandHandler {
             }
             tiledRouters.removeValue(forKey: id)
             return tiledResponse("TILED CLOSE", sessionId: sessionId, "id=\(id) open=\(tiledRouters.count)")
+
+        case .tiledTick(let id, let n, let sync):
+            guard let entry = tiledRouters[id] else {
+                return "ERROR not_found: tiled router \(id) not found"
+            }
+            guard n >= 1 && n <= 10_000 else {
+                return "ERROR out_of_range: n \(n) not in 1...10000"
+            }
+            let router = entry.router
+            let mode: TickMode = sync ? .sync : .rank
+            do {
+                let report = try runTiledSync {
+                    try await router.worldTick(mode: mode, count: n)
+                }
+                return tiledResponse(
+                    "TILED TICK", sessionId: sessionId,
+                    "id=\(id) ticks=\(report.epoch) tiles_ticked=\(report.tilesTicked) "
+                        + "loads=\(report.loads) evicts=\(report.evicts) flushes=\(report.flushes) "
+                        + "halo_bytes=\(report.haloBytes)"
+                )
+            } catch let err as RouterError {
+                return "ERROR io: \(err)"
+            } catch {
+                return "ERROR io: \(error)"
+            }
+
+        case .tiledGetTruth(let id, let globalIdRaw):
+            guard let entry = tiledRouters[id] else {
+                return "ERROR not_found: tiled router \(id) not found"
+            }
+            let router = entry.router
+            let g = GlobalNodeID(raw: globalIdRaw)
+            do {
+                let t = try runTiledSync { try await router.truth(of: g) }
+                return tiledResponse(
+                    "TILED GET", sessionId: sessionId, "id=\(id) node=\(globalIdRaw) truth=\(t)"
+                )
+            } catch RouterError.crossTileBoundsExceeded(_) {
+                return "ERROR out_of_range: node \(globalIdRaw) not in 0..<\(entry.nodes)"
+            } catch is TiledGraphFiles.FilesError {
+                return "ERROR out_of_range: node \(globalIdRaw) not in 0..<\(entry.nodes)"
+            } catch let err as RouterError {
+                return "ERROR io: \(err)"
+            } catch {
+                return "ERROR io: \(error)"
+            }
 
         default:
             // Every case this family handler is dispatched (see `handle`'s

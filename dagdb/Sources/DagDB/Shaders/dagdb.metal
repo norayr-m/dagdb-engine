@@ -19,6 +19,22 @@ constant uint8_t NODE_GHOST   = 2;  // Skip-connection identity padding
 // ── LUT6 evaluation (the core primitive) ──
 // Given 6 input truth values as a 6-bit index (0-63),
 // return the output from the 64-bit programmable LUT.
+//
+// ── The UNDEFINED collapse, documented (audit A, finding 20) ──
+// This returns ONE BIT, and every tick writes 0 or 1 into truth_state,
+// while the truth state is tri-valued (TRUTH_UNDEFINED = 2 above, and
+// DagDBState.swift's doc). So a node holding UNDEFINED is collapsed to
+// FALSE by the next tick, in rank mode and in sync mode alike. The only
+// writer of 2 is DagDBEngine+Graph.tickWithResonance, at the
+// maxMicroTicks edge, and nothing preserves it after the following tick.
+//
+// This is the kernel's SEMANTICS, not an oversight, and it is written
+// down here rather than left to be rediscovered: an input's UNDEFINED is
+// read as 0 for the LUT index (see the gather loop below), and an
+// output is TRUE or FALSE. Preserving it would need a two-bit LUT result
+// and a truth lattice for the inputs — a design change, not a repair —
+// and the core-durability contract's "not promised" list rules it out of
+// that pass on purpose.
 inline uint8_t eval_lut6(uint32_t lut_low, uint32_t lut_high, uint8_t input_bits) {
     uint idx = uint(input_bits) & 0x3F;
     if (idx < 32) {
@@ -62,10 +78,17 @@ kernel void dagdb_tick_rank(
     constant uint32_t&      group_size   [[ buffer(6) ]],
     constant uint64_t&      current_rank [[ buffer(7) ]],
     device const uint8_t*   is_register  [[ buffer(8) ]],
+    constant uint32_t&      node_count   [[ buffer(9) ]],
     uint                    gid          [[ thread_position_in_grid ]]
 ) {
     if (gid >= group_size) return;
     uint node = group[gid];
+    // C4 · every index this kernel dereferences is checked against the node
+    // count, the same way dagdb_reset_rank and dagdb_tick_sync already do.
+    // A neighbour index at or past node_count is reachable from an
+    // unvalidated grid file, an unvalidated snapshot load, and the bulk
+    // neighbour install; it used to be dereferenced (audit A, finding 19).
+    if (node >= node_count) return;
 
     // Only process nodes at the current rank being evaluated
     if (rank[node] != current_rank) return;
@@ -79,7 +102,8 @@ kernel void dagdb_tick_rank(
     uint8_t input_bits = 0;
     for (int d = 0; d < 6; d++) {
         int32_t nb = neighbors[node * 6 + d];
-        if (nb < 0) continue;  // no neighbor in this direction
+        // An out-of-range slot is exactly an empty slot.
+        if (nb < 0 || uint(nb) >= node_count) continue;
 
         uint8_t nb_truth = truth_state[nb];
         // Treat UNDEFINED as 0 for LUT input (paradox horizon propagation)

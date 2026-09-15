@@ -9,13 +9,90 @@ ownership.
 > here come from a single M5 Max laptop, no controlled benchmark,
 > no peer review. Errors likely. Numbers speak.
 
-Last refreshed: 2026-09-10, branch `dag/tiling` (built on `main`, not
-yet merged to main; main: interface phase merged 2026-09-06, startup
-recovery merged 2026-09-09, fold API merged 2026-09-10, derived views
-merged 2026-09-10). Tiling, step one (`SAVE TILED`, `TILED
-OPEN/BFS/SELECT/STATUS/LIST/CLOSE`) landed on `dag/tiling` the same
-day — see the "Tiling" section below; it is NOT part of the twin-verb
-family count above (routers aren't a twin registry).
+Last refreshed: 2026-09-12, branches `dag/core-durability` and
+`dag/daemon-bounds` (see the core durability and daemon bounds sections
+below). Before that: 2026-09-10, branch
+`dag/ticking` (built on
+`dag/tiling`/`main`, not yet merged to main; main: interface phase
+merged 2026-09-06, startup recovery merged 2026-09-09, fold API merged
+2026-09-10, derived views merged 2026-09-10). Tiling, step one (`SAVE
+TILED`, `TILED OPEN/BFS/SELECT/STATUS/LIST/CLOSE`) landed on
+`dag/tiling` the same day; step two — ticking across tiles (`TILED
+TICK`/`TILED GET`, per-tile flush + crash recovery + partial-round
+completion at open) — landed on `dag/ticking` the same day too — see
+the "Tiling" and "Ticking across tiles" sections below; neither is
+part of the twin-verb family count above (routers aren't a twin
+registry).
+
+**Core durability — branch `dag/core-durability` (2026-09-12, not yet
+merged).** Audit A (`docs/contracts/AUDIT_A_engine_core.md`) read the
+engine core and the durable formats and found 48 defects, every one
+public in shipped v0.2.0. This branch closes the 38 of them that are not
+the backup family — findings 1–2, 34–40, and 45 (the fixture that gates
+finding 1) are being repaired on their own branch. Gate contract:
+`docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`. What changed, in the
+shapes an operator sees:
+
+- **WAL version 2.** `CONNECT`, `CLEAR <n> EDGES` and the three bulk
+  installs are now logged before the buffer write; until this they
+  bypassed the log entirely, so a crash after `CONNECT` and before
+  `SAVE` lost the graph's structure with no trace. A version-1 log still
+  replays; a version above 2 is refused by name.
+- **Replay says what it skipped.** `ReplayResult` carries
+  `recordsSkipped` with a bad-length / out-of-range / unknown-opcode
+  histogram and the file's version; startup prints them. A replay that
+  applied nothing used to return success in silence.
+- **A compressed `SAVE` that returns success can be `LOAD`ed.** The
+  compressor sized its output for the input size, so an incompressible
+  body encoded to zero bytes and the file was written, manifested and
+  reported as a success that no load could read.
+- **Every public engine entry point is bounded.** `clearBackEdges`,
+  `isRegister`, `addBackEdgeUnchecked`, `writeTruthStates` and the
+  engine `init` refuse out-of-range input by name; `dagdb_tick_rank`
+  takes `node_count` and treats a neighbour index past it as an empty
+  slot, like the other two kernels always did.
+- **Grid files have a magic and a version**, every section is
+  length-checked against the node count, and a grid the Morton layout
+  cannot encode is refused at construction rather than aliased.
+- **BFS is bounded and discloses**: `back_edges=excluded` on the result,
+  with the count of what was left out.
+- **Reader sessions copy all ten lanes and the back edges** — they
+  copied six, so every session saw registers as ordinary combinational
+  nodes.
+- **`EXPORT MORTON` writes eleven files, not six**, and `IMPORT MORTON`
+  resets what `LOAD` resets.
+- **Documented, not changed:** the UNDEFINED truth state collapses to
+  FALSE at the next tick in both tick modes. That is the kernel's
+  semantics; it is now written down in the shader and in CHANGES rather
+  than left to be rediscovered.
+
+Wire changes are appended fields only: the `VALIDATE` rank-bound line
+gains the dispatch's coverage and, when there is one, the count of nodes
+outside every dispatch; `OK EXPORT bytes=` reports what was actually
+written; the startup WAL line carries `skipped=`.
+
+**Daemon bounds — branch `dag/daemon-bounds` (2026-09-12, not yet
+merged).** Answers audit B (27 findings) through
+`docs/contracts/DAEMON_BOUNDS_GATES_FROZEN.md`. One family: values
+taken from the wire were bounded above but not below or not at all, the
+shared-memory read side checked capacity while the write side did not,
+two verbs sat on the reader allowlist and moved daemon-global state, one
+bulk installer skipped an invariant nothing could re-check, the socket
+parsed a truncated prefix as a whole command, and four loops ran
+unbounded on the single-threaded accept loop. The ruling applied
+everywhere is refuse or count, never silently, and name the true extent
+in the refusal: every node id, depth, count and offset is now checked on
+both sides before any pointer is touched; every shm writer checks
+capacity first; the four trapping byte-count sites use
+overflow-reporting arithmetic; the socket reads to the newline and
+answers `ERROR too_long` at 4,095 bytes without parsing; `FOLD RUN` is
+forbidden to reader sessions and off the web bridge's read-only set,
+along with `OPEN_READER`/`CLOSE_READER`, whose inner command the bridge
+now classifies; `SET_NEIGHBORS_BULK` range-checks its whole vector
+before writing a word; and `EVAL`, `NODES`, `ALARM CORRUPT` and both
+bulk installers say on the wire what they omitted or skipped.
+`SocketServer` moved into `DagDBDaemonKit` so the framing contract is
+driven over a real AF_UNIX socket in the suite.
 
 **Rank-bound correction — branch `dag/rank-bound` (2026-09-10, not
 yet merged).** Rank-mode `TICK` used to dispatch only the rank levels
@@ -39,6 +116,20 @@ rank in `[maxRank, nodeCount)` is accepted and computed. The load
 path still accepts a snapshot written under any bound. Gate contract:
 `docs/contracts/RANK_BOUND_GATES_FROZEN.md`. Full suite green: 761
 tests, 45 skipped.
+
+**Backup format 2 — branch `dag/backup-rank-width` (2026-09-12, not
+yet merged).** Backup diffs kept 4 of the engine's 8 rank bytes per
+node (so ranks for nodes `N/2..<N` were dropped on restore) and
+carried six of the ten buffers, losing every back edge, register,
+edge weight, activation and node value; `.diff` format 2 now covers
+all of them, a format-1 chain is refused by name on RESTORE/APPEND,
+and RESTORE/INFO print `rank_bytes=`/`format=`/`twin=not_covered`;
+the same pass stopped XOR from clamping mismatched lengths, made the
+header's sequence number (not the filename) order a replay, gave every
+diff a verified sha256 sidecar, and made COMPACT write its base from
+the chain's tip at the chain's tick count instead of from the caller's
+engine.
+Gate contract: `docs/contracts/BACKUP_RANK_WIDTH_GATES_FROZEN.md`.
 
 **Twin primitives merged to main 2026-09-05** (rollback tag
 `pre-merge-twin-r3-20260905`). Seven types (`NamedStream`,
@@ -156,9 +247,52 @@ directory on disk written by `SAVE TILED` IS the durable state, and
   `DagDBCommandHandler+Tiled.swift`) — a `DispatchSemaphore`-blocked
   `Task` per call; the daemon's existing one-command-at-a-time
   discipline is unchanged.
-- **Not done** (out of this contract's scope): pre-fetch, ticking
-  across tiles, the cold tier, thermal pauses, the 10¹¹-node run,
-  `TILED BACKUP`.
+- **Not done** (out of this contract's scope): pre-fetch, the cold
+  tier, thermal pauses, the 10¹¹-node run, `TILED BACKUP`. Ticking
+  across tiles is step two, below — no longer on this list.
+
+## Ticking across tiles, step two (2026-09-10, branch `dag/ticking`)
+
+`docs/tiled-streaming.md`'s build step 5 (minus the optional pre-fetch
+thread), gate contract `docs/contracts/TICKING_GATES_FROZEN.md`
+(W1–W6, amendments 1–3).
+
+- **Mechanism**: a world tick ticks every tile once with ghost inputs
+  for its cross-tile sources (register-flagged nodes appended to the
+  tile-local engine, rewriting `-2` slots to point at them); rank mode
+  ticks tiles in descending id order within one round so a tile's
+  cross-tile sources (always a higher-numbered tile) are already
+  fresh; sync mode's ghosts always come from the previous round's
+  committed strip. Each tile flushes atomically every round: BEGIN
+  (now carrying the mode as its third field) → body (atomic snapshot)
+  → halo strip → meta → manifest entry (`bodySHA256`, `tickEpoch` —
+  the per-tile authority, refreshed every flush, one check for both
+  the query path and the ticker) → COMMIT.
+- **Per-tile epochs, no router-global counter**: each manifest
+  `TileEntry` carries its own `tickEpoch`; the router's notion of "the
+  world's epoch" is the (min, max) over every tile's entry — equal
+  except mid-recovery. `TILED STATUS` prints `epoch=<min>/<max>`.
+- **Roles at open**: `TiledGraphRouter.init(role:)` — **writer**
+  (default, the daemon's `TILED OPEN`) recovers any dangling flush
+  then completes a partial round (a between-tiles crash, every
+  `flush.wal` clean but epochs mixed) before returning, reported as
+  `OpenReport(recovered:, completed:)`; **reader** refuses a torn
+  world outright (`RouterError.worldTorn`) rather than fixing it.
+  `worldTick` itself always starts from `min == max`.
+- **Daemon verbs (W5)**: `TILED TICK <id> [<n>] [SYNC]` → `OK TILED
+  TICK id=<id> ticks=<epoch after> tiles_ticked=<n> loads=<n>
+  evicts=<n> flushes=<n> halo_bytes=<n>`; `TILED GET <id> <globalId>
+  TRUTH` → `OK TILED GET id=<id> node=<globalId> truth=<0|1|2>`.
+  `TILED OPEN`'s OK line gained `recovered=<n> completed=<m>`. `SAVE
+  TILED` refuses a cross-tile BACK_EDGE before writing anything:
+  `ERROR bad_value: back edge crosses a tile boundary (<src>→<dst>)`.
+  Reader sessions may run `TILED GET`; `TILED TICK` is forbidden
+  there (flushes every tile to disk). MCP: `dagdb_tiled_tick`,
+  `dagdb_tiled_get_truth`; bridge.py's read-only allowlist gained
+  `TILED GET`.
+- **Not done** (out of this contract's scope): the pre-fetch thread
+  (optional — changes no result if added), the cold tier, thermal
+  pauses, the 10¹¹-node run, `TILED BACKUP`.
 
 ## Engine
 
@@ -279,6 +413,16 @@ directory on disk written by `SAVE TILED` IS the durable state, and
   XCTest cases: 45 skipped with neither fixture env set (unchanged),
   0 failures**. Gate contract: `docs/contracts/TILING_GATES_FROZEN.md`
   (T1–T6, amendments 1–2). See the "Tiling" section above.
+  On branch `dag/ticking` (2026-09-10, built on `dag/tiling`, not yet
+  merged): ticking step two — per-tile epochs, manifest refresh at
+  every flush, writer/reader roles at open with automatic recovery
+  and partial-round completion, `TILED TICK`/`TILED GET`
+  (`TiledGraphRouter`'s ticking path, `TiledGraphFiles`'s flush-WAL
+  and manifest helpers, `DagDBCommandHandler+Tiled.swift`) brings the
+  suite to **782 Swift XCTest cases: 45 skipped (unchanged), 0
+  failures**. Gate contract: `docs/contracts/TICKING_GATES_FROZEN.md`
+  (W1–W6, amendments 1–3). See the "Ticking across tiles" section
+  above.
   The 9 W2 skips are fixture-gated, not unconditional: three tests in
   `SealedGateTests` and six across `TwinAlarmCommandTests`/
   `DagDBSnapshotTwinTests`/etc. call `throw XCTSkip(...)` only when

@@ -59,37 +59,53 @@ extension DagDBCommandHandler {
     /// resolved once at handler init.
     var shmCapacityBytes: Int { configuredShmCapacityBytes }
 
+    /// How many u64s the `[u32 count][u32 8][u64 × count]` layout can hold
+    /// in THIS handler's mapping — the true extent behind `STREAM NEXT`'s
+    /// `n` and `RECORD SLICE`'s `count` (gate D2, audit B finding 20).
+    var maxU64VectorCount: Int { max(0, (shmCapacityBytes - 8) / 8) }
+
     /// Writes a u64 vector to shm as `[u32 count][u32 8][u64 × count]` —
     /// the layout `STREAM NEXT` and friends use for variable-length results.
-    func writeU64Vector(_ v: [UInt64]) {
+    /// D2 · capacity-checked, like the read side always was. Returns nil
+    /// when the vector fits, else the refusal line — nothing is written.
+    @discardableResult
+    func writeU64Vector(_ v: [UInt64]) -> String? {
+        if let e = checkShmFits(rows: v.count, rowSize: 8) { return e }
         let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
         headerPtr[0] = UInt32(v.count)
         headerPtr[1] = 8
         let dataPtr = shmBase.advanced(by: 8).bindMemory(to: UInt64.self, capacity: max(1, v.count))
         for (i, val) in v.enumerated() { dataPtr[i] = val }
+        return nil
     }
 
     /// Writes a Float32 vector to shm as `[u32 count][u32 4][f32 × count]` —
     /// the layout `BANK GENERATE`/`BANK FIT` and friends use for
     /// variable-length float results.
-    func writeFloatVector(_ v: [Float]) {
+    @discardableResult
+    func writeFloatVector(_ v: [Float]) -> String? {
+        if let e = checkShmFits(rows: v.count, rowSize: 4) { return e }
         let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
         headerPtr[0] = UInt32(v.count)
         headerPtr[1] = 4
         let dataPtr = shmBase.advanced(by: 8).bindMemory(to: Float.self, capacity: max(1, v.count))
         for (i, val) in v.enumerated() { dataPtr[i] = val }
+        return nil
     }
 
     /// Writes a Float64 vector to shm as `[u32 count][u32 8][f64 × count]` —
     /// the layout `FOLD TIER` uses for its Double tier answers (the ladder
     /// solves in Float64; only the fabric-stored operator/sources are
     /// Float32).
-    func writeDoubleVector(_ v: [Double]) {
+    @discardableResult
+    func writeDoubleVector(_ v: [Double]) -> String? {
+        if let e = checkShmFits(rows: v.count, rowSize: 8) { return e }
         let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
         headerPtr[0] = UInt32(v.count)
         headerPtr[1] = 8
         let dataPtr = shmBase.advanced(by: 8).bindMemory(to: Double.self, capacity: max(1, v.count))
         for (i, val) in v.enumerated() { dataPtr[i] = val }
+        return nil
     }
 
     /// Reads `count` little-endian Float32s starting at `byteOffset` into shm.

@@ -81,19 +81,26 @@ public struct AttentionHook: Equatable {
     private let byIndex: [Int: AlarmRecord]
     private let layout: BudgetLayout
 
-    public init(params: Params, records: [AlarmRecord], layout: BudgetLayout) {
+    /// Finding 49: a duplicate 1-based record index is refused by name
+    /// (`SealedCourt.CourtError.duplicateRecordIndex`) instead of trapping
+    /// inside `Dictionary(uniqueKeysWithValues:)`. A fixture that came
+    /// through `AlarmFixture.load` can never carry one.
+    public init(params: Params, records: [AlarmRecord], layout: BudgetLayout) throws {
+        if let dup = AllocatorCourt.duplicateRecordIndex(in: records) {
+            throw SealedCourt.CourtError.duplicateRecordIndex(dup)
+        }
         self.params = params
         self.recordsCount = records.count
         self.frames = records.count + params.delta
         self.byIndex = Dictionary(uniqueKeysWithValues: records.map { ($0.index, $0) })
         self.layout = layout
-        self.result = AllocatorCourt.newArmBucket()
+        self.result = AllocatorCourt.newArmBucket(delta: params.delta)
     }
 
     public var done: Bool { t >= frames }
 
     /// Advance one frame — nil (no-op) once `done`. Mirrors one iteration
-    /// of `AllocatorCourt.run`'s `for tfrm in 1...(200 + delta)` loop for
+    /// of `AllocatorCourt.run`'s `for tfrm in 1...(records.count + delta)` loop for
     /// this hook's single policy.
     @discardableResult
     public mutating func step() -> Row? {
@@ -149,9 +156,11 @@ public struct AttentionHook: Equatable {
             if let claim = src.claim {
                 let hit = SealedCourt.value(claim.row, tier: SealedCourt.uniformTier) == 1
                 if hit { result.served += 1 } else { result.misses += 1 }
-                if hit { result.perClass[src.rawClass]?.served += 1 } else { result.perClass[src.rawClass]?.missed += 1 }
+                if hit { result.perClass[src.rawClass, default: AllocatorCourt.Tally()].served += 1 }
+                else { result.perClass[src.rawClass, default: AllocatorCourt.Tally()].missed += 1 }
                 if let ear = src.ear {
-                    if hit { result.perEar[ear.rawValue]?.served += 1 } else { result.perEar[ear.rawValue]?.missed += 1 }
+                    if hit { result.perEar[ear.rawValue, default: AllocatorCourt.Tally()].served += 1 }
+                    else { result.perEar[ear.rawValue, default: AllocatorCourt.Tally()].missed += 1 }
                 }
                 result.servedTrialIds.append(srcIdx)
                 if src.pocket == SealedCourt.concentrationPocket {
@@ -173,7 +182,7 @@ public struct AttentionHook: Equatable {
             }
         } else if let claim = src.claim {
             if params.policy == .allocator {
-                let (r, c) = AllocatorCourt.cheapestValue1Tier(
+                let (r, c) = AllocatorCourt.cheapestValue1TierTotal(
                     row: claim.row, pocket: claim.pocket, budget: params.budget, layout: layout)
                 let hit = r != nil
                 let spend = hit ? c : 0
@@ -184,7 +193,7 @@ public struct AttentionHook: Equatable {
             } else {
                 // greedy: deepest affordable tier in the SOURCE alarm's
                 // pocket (no "loudest" from residuals — one alarm per frame).
-                let (r, c) = AllocatorCourt.deepestAffordableTier(pocket: claim.pocket, budget: params.budget)
+                let (r, c) = AllocatorCourt.deepestAffordableTierTotal(pocket: claim.pocket, budget: params.budget)
                 let hit = (r != nil) && (SealedCourt.value(claim.row, tier: r!) == 1)
                 let spend = r != nil ? c : 0
                 AllocatorCourt.recordOutcome(&result, src, hit: hit, spend: spend, tierBought: r, budget: params.budget)

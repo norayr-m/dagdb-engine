@@ -113,7 +113,14 @@ public enum DagDBStartup {
             do {
                 let r = try DagDBWAL.replay(engine: engine, nodeCount: nodeCount, path: wp, twin: twin)
                 replay = r
-                log("  WAL: replayed \(r.recordsAfterCheckpoint) records past epoch \(r.checkpointEpoch)")
+                // C1b · a replay that skipped anything is never silent. The
+                // count is on the line whether or not it is zero, so an
+                // operator reading two boots side by side sees the change;
+                // the reason histogram only appears when there is one.
+                log("  WAL: replayed \(r.recordsAfterCheckpoint) records past epoch \(r.checkpointEpoch) (log v\(r.fileVersion), skipped=\(r.recordsSkipped))")
+                if r.recordsSkipped > 0 {
+                    log("  WAL: skipped \(r.recordsSkipped) record(s) — \(r.skipReasons.line)")
+                }
                 if let off = r.truncatedAtOffset {
                     log("  WAL: dropped truncated tail at offset \(off)")
                 }

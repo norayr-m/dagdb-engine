@@ -52,11 +52,19 @@ public final class TwinRegistry<Entry> {
     }
 
     /// Open a fresh entry under a freshly minted id (`"<prefix>%08x"` of
-    /// the counter, post-increment). Always succeeds.
+    /// the counter, post-increment).
+    ///
+    /// Finding 59: the id formats only the low 32 bits of the counter, so
+    /// past 2^32 opens a minted id can land on a live entry. That case now
+    /// refuses by name — `duplicateId`, exactly as the explicit-id path
+    /// does — instead of silently overwriting the entry that holds it.
     @discardableResult
-    public func open(_ entry: Entry) -> String {
+    public func open(_ entry: Entry) throws -> String {
         counter &+= 1
         let id = TwinIdFormat.format(prefix: prefix, counter)
+        guard storage[id] == nil else {
+            throw RegistryError.duplicateId(id)
+        }
         storage[id] = entry
         return id
     }

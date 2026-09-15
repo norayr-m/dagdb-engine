@@ -78,11 +78,30 @@ final class TwinStreamCommandTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 0").hasPrefix("ERROR out_of_range"))
     }
 
+    /// D9 · this check could not fail. `tooMany` used to be
+    /// `f.handler.nodeCount * 3 + 1` — the SAME expression the handler used
+    /// for its bound, so it compared the bound to itself and could never
+    /// detect drift from the real shm capacity (audit B finding 20). The
+    /// limit is now derived from the fixture's OWN buffer size.
     func testStreamNextTooLargeIsOutOfRange() throws {
         let f = try HandlerFixture(side: 4)
         _ = f.handler.handle(openLine)
-        let tooMany = f.handler.nodeCount * 3 + 1
-        XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 \(tooMany)").hasPrefix("ERROR out_of_range"))
+        let fitsExactly = (f.shmBytes - 8) / 8       // u64s the buffer can hold
+        XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 \(fitsExactly)").hasPrefix("OK STREAM NEXT"))
+        let reply = f.handler.handle("STREAM NEXT s00000001 \(fitsExactly + 1)")
+        XCTAssertTrue(reply.hasPrefix("ERROR out_of_range"), reply)
+        XCTAssertTrue(reply.contains("\(f.shmBytes)"),
+                      "the refusal must name the real capacity, not a restatement: \(reply)")
+    }
+
+    /// The same independence for a `shmBytes:`-built handler, where the old
+    /// `nodeCount * 3` bound and the real capacity are different numbers.
+    func testStreamNextBoundTracksAShrunkenMapping() throws {
+        let f = try HandlerFixture(side: 4, shmBytes: 64)
+        _ = f.handler.handle(openLine)
+        XCTAssertEqual(f.handler.nodeCount * 3, 48, "the old bound")
+        XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 8").hasPrefix("ERROR out_of_range"))
+        XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 7").hasPrefix("OK STREAM NEXT"))
     }
 
     func testStreamNextUnknownIdIsNotFound() throws {
@@ -165,7 +184,7 @@ final class TwinStreamCommandTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 6").hasPrefix("OK STREAM NEXT"))
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 4, height: 4)
+        let grid = try HexGrid(width: 4, height: 4)
         let state = DagDBState(width: 4, height: 4)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)

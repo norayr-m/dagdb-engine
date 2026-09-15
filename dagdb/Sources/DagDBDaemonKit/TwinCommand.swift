@@ -156,6 +156,7 @@ public enum TwinCommand: Equatable {
 
     /// Read-only iff the verb's second token is one of
     /// STATE/LIST/INFO/CHECK/REPLAY/VERIFY/RECALL/ALLOCATE/FRAME/COURT/SUCCESSOR/CORRUPT/LEDGER
+    /// — plus `FOLD KEPT/SOURCE/TIER/INFO`, and NOT `FOLD RUN` (D5)
     /// (§0.13 — twin registries are daemon-global; a reader session may only
     /// look, never mutate).
     public var isReadOnly: Bool {
@@ -172,7 +173,7 @@ public enum TwinCommand: Equatable {
              .bankGenerate, .bankFit, .bankNoise, .bankBench, .bankInfo, .bankList,
              .viewReflex, .viewRung, .viewCeiling, .viewFeatures, .viewInfo, .viewList,
              .kernelInfo, .kernelList,
-             .foldRun, .foldKept, .foldSource, .foldTier, .foldInfo,
+             .foldKept, .foldSource, .foldTier, .foldInfo,
              .hookState, .hookLedger, .hookInfo, .hookList:
             return true
 
@@ -186,7 +187,15 @@ public enum TwinCommand: Equatable {
              .bankOpen, .bankClose,
              .viewLoad, .viewClose,
              .kernelLoad, .kernelClose,
-             .hookOpen, .hookStep, .hookClose:
+             .hookOpen, .hookStep, .hookClose,
+             // D5 · `FOLD RUN` assigns daemon-global `lastFold`
+             // (DagDBCommandHandler+TwinFold.swift), which every other FOLD
+             // verb reads — so a reader session, or a browser through the
+             // web bridge, overwrote what the primary saw (audit B finding
+             // 18). Nothing is minted and nothing is persisted, but the
+             // handler's state moves, and that is what read-only means here.
+             // The four look-only FOLD verbs stay read-only above.
+             .foldRun:
             return false
         }
     }

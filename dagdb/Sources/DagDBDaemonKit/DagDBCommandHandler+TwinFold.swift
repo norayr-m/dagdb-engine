@@ -77,10 +77,23 @@ extension DagDBCommandHandler {
 
             let schedule = LadderFold.Schedule(maxRank: maxRank, keepRank: keepRank, checkpoints: checkpoints)
             let sources = LadderFold.Sources(f1: f1, f2: f2, f3: f3)
-            let result = LadderFold.run(object: object, schedule: schedule, sources: sources)
+            // F5 · alpha's throwing door. `run` reports a refusal as an
+            // empty result plus a stderr line, which this handler printed as
+            // `OK FOLD RUN kept=0`; `runChecked` throws instead, so the
+            // refusal reaches the wire and no empty result is left behind in
+            // `lastFold` for FOLD KEPT/SOURCE/TIER to read.
+            let result: LadderFold.Result
+            do {
+                result = try LadderFold.runChecked(object: object, schedule: schedule, sources: sources)
+            } catch let e as LadderFold.FoldError {
+                guard case .refused(let why) = e else { return "ERROR bad_value: FOLD RUN refused: \(e)" }
+                return "ERROR bad_value: FOLD RUN refused: \(why)"
+            } catch {
+                return "ERROR bad_value: FOLD RUN refused: \(error)"
+            }
             lastFold = result
 
-            writeFloatVector(result.finalOperator)
+            if let e = writeFloatVector(result.finalOperator) { return e }
             return twinResponse(
                 "FOLD RUN", sessionId: sessionId,
                 "kept=\(result.keptCount) folds=\(result.log.count) bytes=\(result.finalBytes) wall_ms=\(result.totalWallMs)"
@@ -88,7 +101,7 @@ extension DagDBCommandHandler {
 
         case .foldKept:
             guard let result = lastFold else { return "ERROR not_found: no fold result yet" }
-            writeU64Vector(result.keptNodes.map { UInt64($0) })
+            if let e = writeU64Vector(result.keptNodes.map { UInt64($0) }) { return e }
             return twinResponse("FOLD KEPT", sessionId: sessionId, "kept=\(result.keptCount)")
 
         case .foldSource(let which):
@@ -99,7 +112,7 @@ extension DagDBCommandHandler {
             case 2: vec = result.foldedF2
             default: vec = result.foldedF3   // no f3 ⇒ the library holds it as a vector of zeros.
             }
-            writeFloatVector(vec)
+            if let e = writeFloatVector(vec) { return e }
             return twinResponse("FOLD SOURCE", sessionId: sessionId, "which=\(which) kept=\(result.keptCount)")
 
         case .foldTier(let level, let which):
@@ -117,7 +130,7 @@ extension DagDBCommandHandler {
                 }
                 vec = f3
             }
-            writeDoubleVector(vec)
+            if let e = writeDoubleVector(vec) { return e }
             return twinResponse("FOLD TIER", sessionId: sessionId, "level=\(level) which=\(which) count=\(vec.count)")
 
         case .foldInfo:

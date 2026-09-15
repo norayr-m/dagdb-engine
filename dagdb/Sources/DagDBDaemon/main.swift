@@ -58,7 +58,7 @@ print("  Max rank: \(maxRank)")
 // ── Initialize engine ──
 
 print("\n  Initializing hex grid...")
-let grid = HexGrid(width: width, height: height)
+let grid = try HexGrid(width: width, height: height)
 print("  7-coloring: \(grid.colorGroups.map { $0.count })")
 
 var state = DagDBState(width: width, height: height)
@@ -308,7 +308,7 @@ let handler = DagDBCommandHandler(
 
 // ── Socket server ──
 //
-// Serialization guarantee: the SocketServer accept loop (SocketServer.swift:64-71)
+// Serialization guarantee: the SocketServer accept loop (DagDBDaemonKit/SocketServer.swift)
 // is single-threaded and handles one client at a time. Each command runs fully
 // through handleCommand() before the next accept. DagDBEngine.tick() calls
 // waitUntilCompleted() (DagDBEngine.swift:159) so the GPU finishes before the

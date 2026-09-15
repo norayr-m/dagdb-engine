@@ -316,7 +316,7 @@ final class DagDBTests: XCTestCase {
         for i in 0..<6 { try g.connect(from: i, to: root) }
 
         let gridSide = 4
-        let grid = HexGrid(width: gridSide, height: gridSide)
+        let grid = try HexGrid(width: gridSide, height: gridSide)
         let state = try g.exportState(grid: grid)
 
         // Encode
@@ -431,11 +431,11 @@ final class DagDBTests: XCTestCase {
         for i in 0..<6 { try g.connect(from: i, to: root) }
 
         let gridSide = 4
-        let grid = HexGrid(width: gridSide, height: gridSide)
+        let grid = try HexGrid(width: gridSide, height: gridSide)
         let state = try g.exportState(grid: grid)
 
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 2)
-        let neighbors = g.exportNeighborTable(nodeCount: grid.nodeCount)
+        let neighbors = try g.exportNeighborTable(nodeCount: grid.nodeCount)
         let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: grid.nodeCount * 6)
         for i in 0..<neighbors.count { nbPtr[i] = neighbors[i] }
 
@@ -503,7 +503,7 @@ final class DagDBTests: XCTestCase {
         try g.connect(from: gate, to: root)
 
         // Export to state
-        let grid = HexGrid(width: 4, height: 4)
+        let grid = try HexGrid(width: 4, height: 4)
         let state = try g.exportState(grid: grid)
 
         // Verify state has correct values
@@ -515,7 +515,7 @@ final class DagDBTests: XCTestCase {
         XCTAssertEqual(state.getLUT6(at: gate), LUT6Preset.or6, "Gate LUT should be OR6")
 
         // Verify neighbor table
-        let nb = g.exportNeighborTable(nodeCount: grid.nodeCount)
+        let nb = try g.exportNeighborTable(nodeCount: grid.nodeCount)
         // Gate should have 6 neighbors (the leaves)
         var gateNeighborCount = 0
         for d in 0..<6 {
@@ -543,7 +543,7 @@ final class DagDBTests: XCTestCase {
 
         print("  Building 1M grid (\(width)x\(height))...")
         let t0 = CFAbsoluteTimeGetCurrent()
-        let grid = HexGrid(width: width, height: height)
+        let grid = try HexGrid(width: width, height: height)
         let gridTime = CFAbsoluteTimeGetCurrent() - t0
         print("  Grid built in \(String(format: "%.1f", gridTime))s")
 
@@ -1011,7 +1011,7 @@ final class DagDBTests: XCTestCase {
         XCTAssertEqual(engine.readTruthStates()[reg], 0)
 
         // Clear the back-edge into reg.
-        engine.clearBackEdges(toNode: UInt32(reg))
+        try engine.clearBackEdges(toNode: UInt32(reg))
         XCTAssertEqual(engine.backEdgeCount, 0)
 
         // Next tick: kernel should re-evaluate reg's leaf-LUT (const1 → 1),

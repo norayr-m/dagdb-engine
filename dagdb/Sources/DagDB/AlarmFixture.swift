@@ -76,24 +76,48 @@ public struct AlarmFixture {
         case unknownClass(key: String, value: String)
     }
 
+    /// Reason prefix carried by `badEntry` when two entries reconstruct to
+    /// the same (class block, suffix) position — the courts' frame key
+    /// would otherwise depend on dictionary iteration order (findings 24,
+    /// 49). Kept as a `badEntry` reason rather than a new enum case so the
+    /// daemon's existing exhaustive `FixtureError` switch is untouched.
+    public static let duplicatePositionReason = "duplicate reconstructed position"
+
+    /// Reason prefix carried by `badEntry` when a key's `class` field
+    /// disagrees with its own `<block>_<n>` prefix (finding 25).
+    public static let classPrefixMismatchReason = "class disagrees with key prefix"
+
+    /// Emitted once per process when a caller opts out of the SHA pin
+    /// (finding 23). Package-internal so tests can observe the opt-out.
+    static var unpinnedWarningEmitted = false
+
     private static let blockRank: [String: Int] = ["quiet": 0, "liar": 1, "deep": 2, "drift": 3]
 
     /// Load and classify the fixture at `path`. SHA-256 is always
-    /// computed and returned; when `expectedSHA256` is given it must
-    /// match or the load throws. Waveform arrays (`a`,`b`,`c`, 2048
+    /// computed and returned; `expectedSHA256` DEFAULTS to `sealedSHA256`
+    /// and must match or the load throws. Passing nil is an explicit
+    /// opt-out that prints `WARN unpinned fixture` once (finding 23).
+    /// Waveform arrays (`a`,`b`,`c`, 2048
     /// floats each in the sealed file) are decoded only when
     /// `includeWaveforms` is true — otherwise they are read by
     /// `JSONSerialization` like everything else but never converted, so
     /// the 29 MB file loads in a fraction of a second either way.
-    public static func load(path: String, expectedSHA256: String?,
+    public static func load(path: String, expectedSHA256: String? = sealedSHA256,
                             includeWaveforms: Bool = false) throws -> AlarmFixture {
         guard FileManager.default.fileExists(atPath: path) else {
             throw FixtureError.fileNotFound(path)
         }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let actualSHA = DagDBSnapshot.sha256Hex(data)
-        if let expected = expectedSHA256, expected != actualSHA {
-            throw FixtureError.shaMismatch(expected: expected, actual: actualSHA)
+        if let expected = expectedSHA256 {
+            if expected != actualSHA {
+                throw FixtureError.shaMismatch(expected: expected, actual: actualSHA)
+            }
+        } else if !unpinnedWarningEmitted {
+            // Finding 23: the pin now DEFAULTS to `sealedSHA256`; passing
+            // nil is an explicit opt-out, said out loud once.
+            unpinnedWarningEmitted = true
+            FileHandle.standardError.write(Data("WARN unpinned fixture\n".utf8))
         }
 
         guard let top = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -123,18 +147,48 @@ public struct AlarmFixture {
                 throw FixtureError.badEntry(key: key, reason: "key is not '<block>_<n>'")
             }
 
+            // Finding 25: the class field must agree with the key's own
+            // block prefix — `quiet_1` carrying class `liar` is refused,
+            // not silently re-sorted into the liar block. Checked AFTER
+            // the class name itself is recognised, so an unknown class is
+            // still reported as `unknownClass`, not as a prefix mismatch.
+            let prefix = String(key[key.startIndex..<underscore])
+            func requirePrefixAgreement() throws {
+                guard prefix == rawClass else {
+                    throw FixtureError.badEntry(
+                        key: key,
+                        reason: "\(Self.classPrefixMismatchReason): declared '\(rawClass)', prefix '\(prefix)'")
+                }
+            }
+
             switch rawClass {
             case "cal0":
+                try requirePrefixAgreement()
                 guard control == nil else {
                     throw FixtureError.badEntry(key: key, reason: "duplicate cal0 control entry")
                 }
                 control = ControlEntry(key: key, rawClass: rawClass)
             case "quiet", "liar", "deep", "drift":
+                try requirePrefixAgreement()
                 positioned.append(Positioned(key: key, rank: blockRank[rawClass]!,
                                              suffix: suffix, entry: entry, rawClass: rawClass))
             default:
                 throw FixtureError.unknownClass(key: key, value: rawClass)
             }
+        }
+
+        // Findings 24 / 49: two entries at the same reconstructed position
+        // make `index` — the courts' frame key — depend on dictionary
+        // iteration order, and a duplicate index traps the court's
+        // `byIndex` build. Refuse the collision by name at the door.
+        var positions: [String: [String]] = [:]
+        for p in positioned {
+            positions["\(p.rawClass)_\(p.suffix)", default: []].append(p.key)
+        }
+        for (slot, keys) in positions.sorted(by: { $0.key < $1.key }) where keys.count > 1 {
+            throw FixtureError.badEntry(
+                key: keys.sorted().joined(separator: ", "),
+                reason: "\(Self.duplicatePositionReason) '\(slot)'")
         }
 
         positioned.sort {

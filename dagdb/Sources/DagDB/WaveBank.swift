@@ -90,21 +90,66 @@ public struct WaveBank: Equatable, Codable {
     /// fixture (`.reference`, which does alias) must stay buildable by the
     /// library; only the daemon's OPEN verb refuses it without `ALIASED`.
     public static func aliasingViolation(_ s: Spec) -> String? {
-        let topFreq = Double(s.harmonics) * s.f0
         let nyquist = s.sampleRate / 2.0
-        guard topFreq >= nyquist - 1e-9 else { return nil }
-        // First k with k·f0 > nyquist: content exactly at Nyquist does not
-        // alias (the boundary is real and representable), only content
-        // strictly above it folds back — hence floor(nyquist/f0) + 1, not a
-        // direct reuse of the (looser, <=) spec-level threshold above. The
-        // +1e-9 nudge guards the exact-multiple case (nyquist/f0 landing on
-        // an integer) against a float division that comes in a hair under
-        // that integer.
-        let k = Int(floor(nyquist / s.f0 + 1e-9)) + 1
-        let freq = Double(k) * s.f0
-        return "harmonic \(k) at \(WaveBank.formatHz(freq)) Hz reaches Nyquist "
-            + "\(WaveBank.formatHz(nyquist)) Hz (fs \(WaveBank.formatHz(s.sampleRate))); the top "
-            + "harmonic must stay below fs/2 — write ALIASED to allow"
+        let topFreq = Double(s.harmonics) * s.f0
+        if topFreq >= nyquist - 1e-9 {
+            // First k with k·f0 > nyquist: content exactly at Nyquist does
+            // not alias (the boundary is real and representable), only
+            // content strictly above it folds back — hence
+            // floor(nyquist/f0) + 1, not a direct reuse of the (looser, <=)
+            // spec-level threshold above. The +1e-9 nudge guards the
+            // exact-multiple case (nyquist/f0 landing on an integer)
+            // against a float division that comes in a hair under that
+            // integer.
+            //
+            // Audit C finding 32: that +1 could name `H + 1`, an atom the
+            // bank does not contain (exactly the case H·f0 == fs/2). The
+            // named harmonic is clamped into 1…H, so the message always
+            // points at a column that exists.
+            let raw = Int(floor(nyquist / s.f0 + 1e-9)) + 1
+            let k = Swift.min(Swift.max(raw, 1), s.harmonics)
+            let freq = Double(k) * s.f0
+            return "harmonic \(k) at \(WaveBank.formatHz(freq)) Hz reaches Nyquist "
+                + "\(WaveBank.formatHz(nyquist)) Hz (fs \(WaveBank.formatHz(s.sampleRate))); the top "
+                + "harmonic must stay below fs/2 — write ALIASED to allow"
+        }
+        return gaborAliasingViolation(s)
+    }
+
+    /// Audit C finding 31 (contract ruling: "the bank's Nyquist rule covers
+    /// every atom family"). The bank's other half is
+    /// `2 · gaborCenters · gaborFreqs` Gabor columns on the frequency grid
+    /// `geomspace(f0, fs/4, gaborFreqs)` — no Nyquist rule covered them.
+    ///
+    /// A Gabor atom is not a line: it is a Gaussian envelope of time width
+    /// σ_t = gaborSigmaFrac · T / fs seconds, whose spectrum is a Gaussian
+    /// of width σ_f = 1/(2π σ_t) Hz about its centre frequency. The ruling's
+    /// rule — "the highest Gabor centre plus its bandwidth against fs/2" —
+    /// is therefore `max(grid) + σ_f >= fs/2`, refused with the same
+    /// `ALIASED` opt-out the harmonic rule offers.
+    ///
+    /// The grid's top is `fs/4` by construction, so this fires only for a
+    /// bandwidth wider than fs/4 — a very short envelope (a small
+    /// `gaborSigmaFrac` on a short bank). Both sealed fixtures stay clean
+    /// of it: at the reference rates σ_f is about 5.8 Hz against an
+    /// fs/4 = 750 Hz grid top.
+    public static func gaborAliasingViolation(_ s: Spec) -> String? {
+        guard s.gaborCenters > 0, s.gaborFreqs > 0 else { return nil }
+        let nyquist = s.sampleRate / 2.0
+        let sigmaT = s.gaborSigmaFrac * Double(s.samples) / s.sampleRate
+        guard sigmaT > 0, sigmaT.isFinite else {
+            return "gabor envelope width \(sigmaT) s is not a usable time constant"
+        }
+        let sigmaF = 1.0 / (2.0 * Double.pi * sigmaT)
+        // `geomspace(f0, fs/4, gf)`'s top entry is fs/4 exactly for gf > 1,
+        // and f0 for gf == 1 (the one-point grid the builder emits).
+        let topCenter = s.gaborFreqs == 1 ? s.f0 : s.sampleRate / 4.0
+        let reach = topCenter + sigmaF
+        guard reach >= nyquist - 1e-9 else { return nil }
+        return "gabor atom at \(WaveBank.formatHz(topCenter)) Hz with bandwidth "
+            + "\(WaveBank.formatHz(sigmaF)) Hz reaches \(WaveBank.formatHz(reach)) Hz, at or past "
+            + "Nyquist \(WaveBank.formatHz(nyquist)) Hz (fs \(WaveBank.formatHz(s.sampleRate))); every "
+            + "atom family must stay below fs/2 — write ALIASED to allow"
     }
 
     /// Formats a value that is, in every call site here, mathematically a
@@ -277,7 +322,46 @@ public struct WaveBank: Equatable, Codable {
     /// `atoms` (column-major Φ, T×K) is, read as row-major, exactly Φ^T
     /// (K×T) — so the sgemm call transposes it in place via a flag rather
     /// than copying into a new layout.
+    /// Audit C finding 34: `generate` had no ceiling on M — `T * M` sized
+    /// an uninitialized allocation and `Int32(M)` TRAPPED above 2^31, while
+    /// `bench` had clamped M at 100 000 all along. That clamp is the
+    /// declared ceiling; the public entry point refuses past it by name
+    /// rather than allocating.
+    public static let maxGenerateColumns = 100_000
+
+    /// nil iff `(coefficients, M)` is a bank product this bank can make:
+    /// M in `1...maxGenerateColumns` and exactly `K * M` coefficients
+    /// (findings 34 and 35).
+    public func generateViolation(coefficients: [Float], columns M: Int) -> String? {
+        if M < 1 { return "columns \(M) must be >= 1" }
+        if M > WaveBank.maxGenerateColumns {
+            return "columns \(M) exceeds the ceiling \(WaveBank.maxGenerateColumns) "
+                + "(the product would be \(T) x \(M) floats)"
+        }
+        if coefficients.count != K * M {
+            return "coefficient count \(coefficients.count) != K x M (\(K) x \(M) = \(K * M))"
+        }
+        return nil
+    }
+
+    /// Finding 35's refusing door: a length or column-count mismatch is a
+    /// thrown, named error instead of an empty array indistinguishable from
+    /// an empty request.
+    public func generateChecked(coefficients: [Float], columns M: Int) throws -> [Float] {
+        if let violation = generateViolation(coefficients: coefficients, columns: M) {
+            throw BankError.badSpec(violation)
+        }
+        return generate(coefficients: coefficients, columns: M)
+    }
+
     public func generate(coefficients: [Float], columns M: Int) -> [Float] {
+        // Findings 34/35: the empty return is kept for the callers that
+        // already read it that way, but it is no longer SILENT — the value
+        // and the true extent go to stderr as a named ERROR line.
+        if let violation = generateViolation(coefficients: coefficients, columns: M) {
+            FileHandle.standardError.write(Data("ERROR wave_bank generate: \(violation)\n".utf8))
+            return []
+        }
         guard M >= 1, coefficients.count == K * M else { return [] }
         // Uninitialized on purpose: sgemm with beta = 0 writes every entry,
         // and a zero-fill pass over a 164 MB output (M = 10000) would cost
@@ -400,12 +484,22 @@ public struct WaveBank: Equatable, Codable {
         public let conditionNumber: Double
         public let sigmaMax: Double
         public let sigmaMin: Double
+        /// Appended fields, audit C finding 33: the LAPACK `info` the two
+        /// `dgesdd_` calls returned (0 = success), and a message naming the
+        /// failure when this declaration is not a trustworthy one (a LAPACK
+        /// failure, or a zero smallest singular value making the condition
+        /// number non-finite). `nil` on the ordinary path.
+        public let lapackInfo: Int
+        public let refusal: String?
 
-        public init(rank: Int, conditionNumber: Double, sigmaMax: Double, sigmaMin: Double) {
+        public init(rank: Int, conditionNumber: Double, sigmaMax: Double, sigmaMin: Double,
+                    lapackInfo: Int = 0, refusal: String? = nil) {
             self.rank = rank
             self.conditionNumber = conditionNumber
             self.sigmaMax = sigmaMax
             self.sigmaMin = sigmaMin
+            self.lapackInfo = lapackInfo
+            self.refusal = refusal
         }
     }
 
@@ -445,8 +539,54 @@ public struct WaveBank: Equatable, Codable {
         let sigmaMin = s.last ?? 0
         let threshold = sigmaMax * 1e-9
         let rank = s.reduce(0) { $0 + ($1 > threshold ? 1 : 0) }
-        let conditionNumber = sigmaMax / sigmaMin
-        return Declaration(rank: rank, conditionNumber: conditionNumber, sigmaMax: sigmaMax, sigmaMin: sigmaMin)
+        // Audit C finding 33: `info` from BOTH dgesdd_ calls was discarded
+        // (`fit` guards its own), and σ_max/σ_min had no zero guard — a
+        // LAPACK failure or a rank-deficient bank returned rank 0 and a
+        // NaN/inf condition number dressed as a valid Declaration. The
+        // failure is now NAMED on stderr and carried in the Declaration
+        // itself (`lapackInfo`, `refusal`), and `declarationChecked()`
+        // refuses to hand one back at all.
+        let conditionNumber = sigmaMin > 0 ? sigmaMax / sigmaMin : Double.infinity
+        var refusal: String? = nil
+        if info != 0 {
+            refusal = "dgesdd_ failed with info=\(info) over a \(T)x\(K) bank"
+        } else if !(sigmaMin > 0) {
+            refusal = "smallest singular value is \(sigmaMin): the bank is rank deficient "
+                + "(rank \(rank) of \(K)) and its condition number is not finite"
+        }
+        if let refusal = refusal {
+            FileHandle.standardError.write(Data("ERROR wave_bank declaration: \(refusal)\n".utf8))
+        }
+        return Declaration(rank: rank, conditionNumber: conditionNumber,
+                            sigmaMax: sigmaMax, sigmaMin: sigmaMin,
+                            lapackInfo: Int(info), refusal: refusal)
+    }
+
+    /// Finding 33's refusing door: a declaration whose CONDITION NUMBER is
+    /// a usable statement, or a named refusal. That is stricter than
+    /// `declaration()`'s own `refusal`, which fires only on a LAPACK
+    /// failure or a literally zero / non-finite smallest singular value:
+    /// LAPACK returns its own floor (a value near 1e-17) rather than an
+    /// exact zero for a bank with duplicated columns, and sigmaMax/sigmaMin
+    /// is then a finite number that means nothing. The threshold is the one
+    /// `rank` already uses — sigmaMax·1e-9, the twin lane's rule.
+    ///
+    /// `declaration()` itself keeps its shape and stays silent about mere
+    /// rank deficiency, because the sealed 160-atom CONTROL bank is
+    /// deliberately rank deficient (146 of 160) and its printed numbers are
+    /// a gate of their own.
+    public func declarationChecked() throws -> Declaration {
+        let d = declaration()
+        if let refusal = d.refusal {
+            throw BankError.badSpec(refusal)
+        }
+        guard d.sigmaMin > d.sigmaMax * 1e-9 else {
+            throw BankError.badSpec(
+                "smallest singular value \(d.sigmaMin) is at or below the rank threshold "
+                + "\(d.sigmaMax * 1e-9) (rank \(d.rank) of \(K)); the condition number "
+                + "\(d.conditionNumber) is not a usable statement about this bank")
+        }
+        return d
     }
 
     // MARK: - Reference probe

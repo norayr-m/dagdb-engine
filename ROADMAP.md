@@ -158,10 +158,23 @@ held exactly at S = 2/4/6/8. 570 tests on that branch.
    surface — `SAVE TILED`, `TILED OPEN/BFS/SELECT/STATUS/LIST/CLOSE`
    (T5) — plus the MCP/bridge wrappers. Gate contract:
    `docs/contracts/TILING_GATES_FROZEN.md` (T1–T6, amendments 1–2).
-   Still open (steps 2 and beyond, explicitly not promised by the
-   step-one contract): pre-fetch, ticking across tiles, the cold tier,
-   thermal pauses, the 10¹¹-node run, `TILED BACKUP`; routing scheme
-   itself (hex hierarchy) unchanged from before.
+   **Step two DONE** (2026-09-10, branch `dag/ticking`): ticking
+   across tiles — ghost registers as inputs for cross-tile sources,
+   descending-rank world ticks with fresh halos each round, per-tile
+   flush (BEGIN/body/strip/meta/manifest entry/COMMIT) with crash
+   recovery at both crash points, per-tile epochs (no router-global
+   counter — the router's epoch is the (min, max) over every tile),
+   writer/reader roles at open (a writer recovers and completes any
+   partial round before answering; a reader refuses a torn world by
+   name), and the daemon surface — `TILED TICK`/`TILED GET`, `TILED
+   OPEN`'s `recovered=/completed=`, `SAVE TILED`'s cross-tile-
+   BACK_EDGE refusal — plus the MCP/bridge wrappers. Gate contract:
+   `docs/contracts/TICKING_GATES_FROZEN.md` (W1–W6, amendments 1–3).
+   Still open (explicitly not promised by either contract): the
+   pre-fetch thread (optional — the letters say it changes no result
+   if added), the cold tier, thermal pauses, the 10¹¹-node run,
+   `TILED BACKUP`; routing scheme itself (hex hierarchy) unchanged
+   from before.
 9. **Liver twin plugin surface.** Blocked on that twin's spec (state
    model, kernels, observables). Placeholder until it lands.
 10. **Spec 9 / hex seam.** Handover of hex-attention artefacts to a

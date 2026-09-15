@@ -80,8 +80,14 @@ nested network is exact.
 
 ## Performance framing (honest numbers)
 
-Evaluation runs at the substrate's measured rate — **0.71 GCUPS at
-1M nodes** on an M5 Max (see [Benchmarks](Benchmarks.md)) — in
+Evaluation runs at the substrate's measured rate — **0.81–1.69 GCUPS
+at 1M nodes** on an M5 Max, the compacted rank tick that has been the
+default path since July 2026, measured on the shallow 3-rank spread;
+the same path measures 0.15–0.65 GCUPS and unstable on a 16-rank
+spread, and `TICK_SYNC` holds ~3.5 GCUPS stable. A single run varies up
+to about 2× with thermal state, which is why these are ranges (the
+receipt, with its conditions, is `docs_perf_recovery/results.md`; see
+also [Benchmarks](Benchmarks.md)) — in
 parallel across every microcircuit instance on the graph. The win is
 not per-gate speed; it is that a compiled network evaluates *in place,
 on graph data, next to the rest of the DAG*, with mid-tick

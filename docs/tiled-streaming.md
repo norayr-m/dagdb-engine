@@ -167,6 +167,13 @@ Each tile lives on disk as a directory:
 > this spec's key names are a shape. The rest of this section (byte
 > layout, tile-local IDs, the `-2` cross-tile sentinel) is unchanged.
 
+> **AMENDMENT (docs/contracts/TICKING_GATES_FROZEN.md, step two,
+> 2026-09-10).** A ticked tile's `body.dags` — and its manifest entry's
+> `bodySHA256`/`tickEpoch` — changes every world tick; see that
+> contract's mechanism letter and amendment 1 for the write-time
+> ordering (BEGIN, body, halo strip, meta, manifest entry, COMMIT) this
+> section's static description doesn't cover.
+
 Unchanged from the current `DagDBSnapshot` v3 format at the time this
 spec was written (see the amendment above for what "current" means
 today):
@@ -217,6 +224,88 @@ doesn't match the router's current epoch. The router refuses
 to tick tile A against a halo_lower/halo_upper whose
 `tick_epoch` is older than A's own last-ticked epoch.
 
+> **AMENDMENT (subsystems bounds, audit C findings 1 and 14,
+> 2026-09-12).** Two corrections to this strip.
+>
+> - **The version is now refused, not ignored.** Version 1 is the only
+>   version of THIS format; the reader used to parse any version with
+>   the v1 layout, even though a `badVersion` refusal already existed
+>   for it. A strip stamped anything else is refused by name, naming
+>   the version found. (The parity strips of §4.2.1 are a different
+>   format at version 2 and already refused their own; their
+>   `strip_kind` is now refused too — 0 is the only kind the writer
+>   stamps.)
+> - **`source_tile_id` / `target_tile_id` mean what this document says
+>   they mean.** The field is documented as "the most-referenced
+>   foreign tile", and a tile whose crossings span more than one
+>   foreign tile (the far 3-ring draw can skip a tile on a narrow
+>   tiling) had the FIRST one recorded instead. It is the mode now,
+>   ties broken to the lowest tile id so the choice is deterministic.
+>   The halo file remains a cache; `manifest.json` / `meta.json`
+>   crossings are the source of truth.
+
+These two files are written ONCE, at tiling time (`SAVE TILED`),
+and are read by the query path only. The ticker never reads them;
+it reads and writes the PARITY strips of §4.2.1 below.
+
+### 4.2.1 `halo_lower.<parity>.bin` — the ticking strips (v2, two truth bytes)
+
+The world ticker does not use `halo_lower.bin`. Each tile writes,
+once per world tick, a **ping-pong pair by epoch parity** —
+`halo_lower.0.bin` and `halo_lower.1.bin`, parity = `k mod 2` —
+so the strip of round `k − 1` survives the write of round `k`
+(sync mode still needs it). One entry per DISTINCT local node
+that any lower tile references (the distinct `localNode` set of
+this tile's `crossingsIn`), ascending by local id:
+
+```
+offset  bytes  field
+0       4      magic "DAHA"
+4       4      u32 version = 2      <- v1 carried ONE truth byte
+8       4      u32 strip_kind = 0   (lower)
+12      4      u32 nodeCount (distinct cross-tile sources in this tile)
+16      8      u64 source_tile_id  (the tile that wrote this strip)
+24      8      u64 target_tile_id  (same; a lower strip serves every lower tile)
+32      8      u64 tick_epoch      (the world tick this strip belongs to)
+40      16*N   per-entry: u64 local_id + u8 truth_pre + u8 truth_post
+                          + u8 type + 5 pad
+```
+
+**Which byte a reader takes** (ticking gates, AMENDMENT 8). One
+file serves two readers, and before v2 they contradicted each
+other on its single byte:
+
+- `truth_post` is the node's value AFTER that round's latch — the
+  world's vector at `tick_epoch`. A **sync-mode** reader at round
+  `k` opens the parity `(k − 1) mod 2` file and takes
+  `truth_post`: sync evaluates everything from the previous world
+  tick's vector.
+- `truth_pre` is its value BEFORE that round's latch. A
+  **rank-mode** reader at round `k` opens the parity `k mod 2`
+  file (written earlier in its own round by the source tile) and
+  takes `truth_pre`. The untiled engine evaluates every rank and
+  only THEN latches its back edges, so a node reading a register
+  sees the value that register held before this tick's latch,
+  while the tiled ticker latches each tile at the end of its own
+  tick and flushes.
+- For a **combinational** node the two bytes are equal by
+  construction: the kernel writes it during the pass and the latch
+  never touches it. They differ only on **registers** (back-edge
+  destinations), where `truth_pre` is the register's value at
+  `tick_epoch − 1`.
+
+`SAVE TILED` writes both parity strips with `truth_pre ==
+truth_post ==` the saved truth: at rest there is no round, so no
+latch to be before or after. The two repair paths that rebuild a
+strip from a committed body at `k` (crash-recovery case (ii) and
+stale-strip regeneration, §7.2) take `truth_post` from that body
+and, for a register, `truth_pre` from the SAME source's
+`truth_post` in the previous-parity strip — its value at `k − 1`
+is its pre-latch value at `k`; at `k == 0` both bytes are the
+saved truth. If a register entry needs that previous strip and it
+is missing or itself behind, the repair refuses by name rather
+than writing a byte it cannot justify.
+
 ### 4.3 `meta.json` shape
 
 ```json
@@ -245,6 +334,37 @@ loading tile 7, for these boundary nodes go consult those
 foreign tiles". `crossings_in` is the symmetric "here's who
 expects my halo strips". Both are sorted by (foreign_tile_id,
 foreign_local_id) for binary-search lookup at hot path.
+
+> **AMENDMENT (subsystems bounds, audit C findings 2, 4-7 and 12,
+> 2026-09-12) — three counts, one truth.** A tile's node count is
+> written in three independent places: the manifest entry's
+> `nodeCount`, `meta.json`'s `node_count_local`, and `body.dags`'s own
+> 32-bit header field. Nothing compared them: the tile-local engine
+> was sized from the MANIFEST's (an unbounded `u64` out of a JSON
+> file — above `Int.max` the conversion trapped, and below it an
+> arbitrarily large Metal allocation preceded the body's own check),
+> while every buffer bound afterwards used META's. All three must now
+> agree, and the check runs BEFORE any engine is allocated — the body
+> header's count is read directly, and a manifest count above the
+> graph's `globalNodeCount` is refused without touching the body at
+> all. The refusal names all three.
+>
+> Four more structural fields are checked at the same door:
+>
+> - `manifest.json`'s own `format` and `version` are read back and
+>   refused by name. They were stamped by the writer and never read.
+> - A crossing naming a local id at or past the tile's own node count
+>   is refused — it used to index past the end of the tile's Metal
+>   buffers, and what it found was written into the parity strip.
+> - The number of `-2` slots a local carries in `body.dags` must equal
+>   the number of `crossings_out` entries `meta.json` lists for that
+>   same local. They are two independent file-derived numbers: more
+>   slots than crossings trapped, and fewer wired the graph wrong,
+>   ignored the surplus and left a sentinel in place.
+> - A manifest entry's `engineIndexOf` (the per-tile map back to the
+>   untiled engine's index order) must have one entry per node, each
+>   inside `globalNodeCount`. It is validated once at router open,
+>   before any tile is touched.
 
 ### 4.4 Data root
 
@@ -549,6 +669,71 @@ Worst case on crash: lose one world-tick's worth of
 propagation (the one that was mid-flush). Recover by
 re-running the interrupted tile tick; rank monotonicity
 guarantees no duplicate state.
+
+> **AMENDMENT (docs/contracts/TICKING_GATES_FROZEN.md, step two,
+> amendments 1–3, 2026-09-10).** Built as described above, with three
+> refinements the contract makes exact: the `TILE_FLUSH_BEGIN` record
+> carries the mode as a third field (`<tile_id> <epoch> <rank|sync>`),
+> so recovery needs nothing outside the tile directory; the tile-epoch
+> authority is the MANIFEST's per-tile `tickEpoch` (not a single
+> graph-level counter — the router's own epoch is the (min, max) over
+> every tile), refreshed atomically before every flush's COMMIT, and
+> checked by the query path and the ticker alike; and a crash BETWEEN
+> two tiles' flushes (every WAL clean, epochs merely mixed) is a
+> distinct case from mid-flush — the router opens with a role
+> (`TiledGraphRouter.init(role:)`), a writer recovering any dangling
+> flush and then completing that partial round before it will answer
+> a query, a reader refusing to open at all over a torn world.
+>
+> **AMENDMENT 4 (same contract, letter 1, 2026-09-11).** `SAVE TILED`
+> writes ONE epoch everywhere — the saved tick count `k` goes on the
+> manifest entry, `meta.json`, the `body.dags` header AND both parity
+> strips (parity `k mod 2` at `k`; the other parity carries the same
+> truths with its own recorded epoch `k − 1`, both at 0 when `k = 0`) —
+> so a graph saved from a non-zero tick count can be sync-ticked at
+> once, instead of refusing `haloStale` over a `k − 1` strip that was
+> never written.
+>
+> **AMENDMENT 8 (same contract, 2026-09-11).** A parity strip entry
+> carries TWO truth bytes, `truth_pre` and `truth_post` (§4.2.1), and
+> the strip format version is 2. One file serves a rank-mode reader at
+> `k` (which wants a register's pre-latch value) and a sync-mode reader
+> at `k + 1` (which wants the post-latch vector at `k`); with a single
+> byte, consecutive rounds of DIFFERENT modes read a byte that is wrong
+> for one of them, and a strip rebuilt from a committed body could not
+> produce the pre-latch byte at all — which a rank-mode partial-round
+> completion after crash-recovery case (ii) then reads. Both repair
+> paths now reconstruct both bytes: `truth_post` from the body at `k`,
+> `truth_pre` for a register from the same source's `truth_post` in the
+> previous-parity strip. An independent parser must read both bytes and
+> take the one its own mode calls for.
+
+> **AMENDMENT (subsystems bounds, audit C findings 9-11, 2026-09-12).**
+> Three corrections to the per-tile WAL and the epoch it carries.
+>
+> - **A torn `flush.wal` is torn, not clean.** The file is unfsynced
+>   appended text, and the reader returned "clean" for anything that
+>   was not a well-formed four-field `TILE_FLUSH_BEGIN` — so a final
+>   record cut off mid-write, an unknown verb, and a three-field BEGIN
+>   predating the mode field all read as committed and the tile
+>   loaded. The last record is now classified as clean / pending /
+>   TORN, and a torn wal is refused by name at tile load and at router
+>   open. It is not recoverable: the epoch the interrupted flush was
+>   writing is exactly what the torn record failed to record.
+> - **A `BEGIN` at epoch 0 is refused, not underflowed.** Recovery
+>   compares `bodyEpoch == beginEpoch - 1` on a `u64`; a hand-written
+>   `TILE_FLUSH_BEGIN <tile> 0 rank` underflowed it. Every flush
+>   writes an epoch of at least 1, so a BEGIN at 0 is classified torn.
+> - **An epoch that does not fit the body header is refused at
+>   flush.** The epoch is `u64` in the manifest, in `meta.json` and in
+>   `flush.wal`, but `body.dags`'s tick field is 32 bits (§4.1), and
+>   both the tick call and the save truncated silently. Past 2^32 the
+>   body-vs-meta equality check would then refuse every subsequent
+>   load of the whole world. The flush now refuses by name, before the
+>   BEGIN record is appended, so a refused flush leaves the wal
+>   untouched. **Widening that header field to 64 bits is a
+>   core-format letter for a later window**, recorded here rather than
+>   done under a bounds pass.
 
 **What we don't promise**: surviving simultaneous crashes of
 both the source and target tile of a halo. If tile A is

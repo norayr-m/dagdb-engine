@@ -21,9 +21,9 @@ final class StreamRecordTests: XCTestCase {
 
     func testMiddleSliceReplaysAloneBitForBit() throws {
         var r = try StreamRecord(header: header(), generator: gen())
-        r.recordSlice(count: 5)
-        let middle = r.recordSlice(count: 7)
-        r.recordSlice(count: 3)
+        try r.recordSlice(count: 5)
+        let middle = try r.recordSlice(count: 7)
+        try r.recordSlice(count: 3)
         let replayed = try r.replaySlice(1)
         XCTAssertEqual(replayed, middle.payload)
         XCTAssertEqual(middle.entryDraws, 5)
@@ -34,8 +34,8 @@ final class StreamRecordTests: XCTestCase {
         // Slicing must not perturb the stream: concatenated slices equal
         // one unsliced run of the same generator.
         var r = try StreamRecord(header: header(), generator: gen())
-        r.recordSlice(count: 4)
-        r.recordSlice(count: 4)
+        try r.recordSlice(count: 4)
+        try r.recordSlice(count: 4)
         var g = gen()
         let whole = (0..<8).map { _ in g.next64() }
         XCTAssertEqual(r.slices.flatMap(\.payload), whole)
@@ -43,10 +43,10 @@ final class StreamRecordTests: XCTestCase {
 
     func testShiftedStreamDivergesAndRangeIsGuarded() throws {
         var r = try StreamRecord(header: header(), generator: gen())
-        r.recordSlice(count: 6)
+        try r.recordSlice(count: 6)
         var shifted = gen(); _ = shifted.next64()
         var r2 = try StreamRecord(header: header(), generator: shifted)
-        r2.recordSlice(count: 6)
+        try r2.recordSlice(count: 6)
         XCTAssertNotEqual(r2.slices[0].payload, r.slices[0].payload)
         XCTAssertTrue(r2.verify().isEmpty) // honest record still verifies
         XCTAssertThrowsError(try r.replaySlice(9))

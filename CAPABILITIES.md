@@ -313,9 +313,10 @@ Last refreshed: 2026-09-10, against main (interface phase merged
 ### Tiling, step one (2026-09-10)
 - Branch `dag/tiling`, built on `main`, not yet merged. Gate contract:
   `docs/contracts/TILING_GATES_FROZEN.md` (T1–T6, amendments 1–2) —
-  `docs/tiled-streaming.md` build steps 3–4 (steps 5–6: pre-fetch,
-  ticking across tiles, the cold tier, thermal pauses, the 10¹¹-node
-  run, `TILED BACKUP` — explicitly not promised by this contract).
+  `docs/tiled-streaming.md` build steps 3–4 (step 5, ticking across
+  tiles, is done — see below; step 6, the cold tier, thermal pauses,
+  the 10¹¹-node run, `TILED BACKUP` — explicitly not promised by
+  either contract).
 - `TiledGraphFiles.write` splits a DAG by rank range into
   `tile_<lo>_<hi>/{body.dags, halo_lower.bin, halo_upper.bin,
   meta.json}` plus a graph `manifest.json`. Two entry points: over a
@@ -352,6 +353,72 @@ Last refreshed: 2026-09-10, against main (interface phase merged
   socket-level cross-check against the daemon's own `BFS`/`SELECT`
   verbs on the side-44 object; T6 (bytes/write-time/crossing counts)
   printed, not gated.
+
+### Ticking across tiles, step two (2026-09-10)
+- Branch `dag/ticking`, built on `dag/tiling`, not yet merged. Gate
+  contract: `docs/contracts/TICKING_GATES_FROZEN.md` (W1–W6,
+  amendments 1–3) — `docs/tiled-streaming.md` build step 5, minus the
+  optional pre-fetch thread (not promised by this contract; adding it
+  later changes no result).
+- `TiledGraphRouter.worldTick(mode:count:)` ticks every tile once per
+  world tick with ghost register inputs for its cross-tile sources
+  (rank mode: descending tile-id order within a round, so a source
+  tile — always higher-numbered — is already fresh; sync mode: ghosts
+  always come from the previous round's committed strip). Halos are
+  ping-pong files by epoch parity (`halo_lower.<epoch mod 2>.bin`) so
+  the prior epoch's strip survives the current write. Each strip entry
+  carries TWO truth bytes (format v2, ticking amendment 8):
+  `truth_pre`, the source's value BEFORE that round's latch, which a
+  rank-mode reader at `k` takes, and `truth_post`, its value after,
+  which a sync-mode reader of the same file at `k + 1` takes. They are
+  equal for every combinational source and differ only on registers —
+  one file, two readers, so consecutive rounds of different modes each
+  get the byte that is right for them. Each tile
+  flushes atomically every round: `TILE_FLUSH_BEGIN <tile> <epoch>
+  <rank|sync>` → body (atomic snapshot) → halo strip → meta →
+  manifest entry (`bodySHA256`, `tickEpoch` — the per-tile authority,
+  refreshed before every COMMIT, checked by both the query path's
+  `loadTile` and the ticker's `loadTileWithGhosts`) → `TILE_FLUSH_COMMIT`.
+- No router-global tick counter: each manifest `TileEntry` carries its
+  own `tickEpoch`; the router's world epoch is the (min, max) over
+  every tile's entry.
+- `TiledGraphRouter.init(role:)`: **writer** (default, the daemon's
+  `TILED OPEN`) recovers any tile whose `flush.wal` ends in a dangling
+  `TILE_FLUSH_BEGIN` (case i: body behind, re-ticks with the
+  interrupted tick's own ghost inputs; case ii: body already there,
+  regenerates strip/meta/manifest from it), THEN completes a partial
+  round (a between-tiles crash — every `flush.wal` clean but epochs
+  mixed — ticks the tiles still behind up to the max epoch, in the
+  mode read off the tiles already there, refusing
+  `partialRoundModeMismatch` if they disagree), before returning —
+  reported as `OpenReport(recovered:, completed:)`. **reader** refuses
+  a torn world outright (`RouterError.worldTorn(min, max)`) rather
+  than fixing it. `worldTick` itself only ever starts from `min ==
+  max`.
+- Reachable over the daemon socket and MCP as `TILED TICK <id> [<n>]
+  [SYNC]` → `OK TILED TICK id=<id> ticks=<epoch after>
+  tiles_ticked=<n> loads=<n> evicts=<n> flushes=<n> halo_bytes=<n>`
+  and `TILED GET <id> <globalId> TRUTH` → `OK TILED GET id=<id>
+  node=<globalId> truth=<0|1|2>`; `TILED OPEN`'s OK line gained
+  `recovered=<n> completed=<m>`; `TILED STATUS` gained
+  `epoch=<min>/<max>`; `SAVE TILED` refuses a cross-tile BACK_EDGE
+  before writing anything (`ERROR bad_value: back edge crosses a tile
+  boundary (<src>→<dst>)`, checked in `TiledGraphFiles.write` itself
+  so the library path refuses too). Reader sessions may run `TILED
+  GET`; `TILED TICK` is forbidden there (flushes every tile to disk).
+  MCP: `dagdb_tiled_tick`, `dagdb_tiled_get_truth`.
+- Gate contract: W1/W2 (rank/sync world ticks equal the untiled engine,
+  bit for bit) held across sides 16/44/128 × tilings 2/4/8 × K ∈
+  {1,2}, N ∈ {1,2,5,12}; W3 (halo epochs, staleness detection +
+  regeneration, costed exactly) held; W4 (crash mid-flush, both crash
+  points, both modes) held; W5 (daemon verbs, daemon ticks equal
+  router ticks bit for bit including 64 seeded `TILED GET` checks, the
+  cross-tile BACK_EDGE refusal, the partial-round-at-open case) held;
+  W6 (tick/flush ms, halo bytes, loads/evicts) printed, not gated —
+  this session's numbers, side 128 × 8 tiles, K = 1: rank mode
+  tick_ms_per_tile(max)=5.210 flush_ms_per_tile(max)=42.923
+  halo_bytes=41440; sync mode tick_ms_per_tile(max)=3.819
+  flush_ms_per_tile(max)=42.250 halo_bytes=41440.
 
 ### Weight lanes (E1, 2026-08-22)
 - Edge-weight lane, activation lane, and a Float `nodeValue` lane
@@ -424,11 +491,12 @@ its own unit tests:
   collection fails from this worktree layout on a module-path issue;
   do not cite a green Python test count until it's repaired
   (see `CURRENT_STATE.md`).
-- **Tiled graph router is scaffold stubs.** `TiledGraphRouter` and
-  `TileHalo` establish the public surface (types, signatures, a
-  minimum-viable initializer); live tile load/evict/pre-fetch,
-  halo bookkeeping, and the multi-engine memory budget are not
-  implemented.
+- **Tiled graph router: pre-fetch and the cold tier are the open
+  pieces.** Live tile load/evict/halo bookkeeping and ticking across
+  tiles ARE implemented (steps one and two, above); the pre-fetch
+  thread (a background load-ahead, optional per the ticking contract —
+  it would change no result), the cold tier, and the multi-engine
+  memory budget beyond simple LRU are not.
 - **No distributed mode.** One machine holds the world; there is no
   multi-machine or clustered operation.
 - **Single machine, uncontrolled benchmarking.** Every number above

@@ -18,28 +18,29 @@ extension DagDBEngine {
         // Round up to next even number for hex grid symmetry
         let gridSide = side + (side % 2)
 
-        let grid = HexGrid(width: gridSide, height: gridSide)
+        let grid = try HexGrid(width: gridSide, height: gridSide)
         let state = try graph.exportState(grid: grid)
         let rank = maxRank ?? (graph.maxRank + 1)
 
         try self.init(grid: grid, state: state, maxRank: rank)
 
         // Override neighbor buffer with logical edges from graph
-        let logicalNeighbors = graph.exportNeighborTable(nodeCount: grid.nodeCount)
+        let logicalNeighbors = try graph.exportNeighborTable(nodeCount: grid.nodeCount)
         let ptr = neighborsBuf.contents().bindMemory(to: Int32.self, capacity: grid.nodeCount * 6)
         for i in 0..<min(logicalNeighbors.count, grid.nodeCount * 6) {
             ptr[i] = logicalNeighbors[i]
         }
 
-        // Seed BACK_EDGEs from the exported state. Bypass the throwing
-        // validator on this path: the graph already validated each entry
-        // when it was added via `connectBack`.
-        let regPtr = isRegisterBuf.contents().bindMemory(to: UInt8.self,
-                                                         capacity: grid.nodeCount)
+        // Seed BACK_EDGEs from the exported state. The FAN-IN rule is still
+        // bypassed here — the graph enforced it when the entry was added via
+        // `connectBack` — but the index RANGE is not.
+        // C4 · through the checked installer, not straight into `regPtr`:
+        // this was the one back-edge path with no range check at all, and
+        // `latchBackEdges` then indexes the truth buffer by whatever it
+        // seeded, on every tick (audit A, findings 16 and 17).
         for i in 0..<state.backEdgeSrcs.count {
-            backEdgeSrcs.append(state.backEdgeSrcs[i])
-            backEdgeDsts.append(state.backEdgeDsts[i])
-            regPtr[Int(state.backEdgeDsts[i])] = 1
+            try addBackEdgeUnchecked(src: state.backEdgeSrcs[i],
+                                     dst: state.backEdgeDsts[i])
         }
     }
 
@@ -91,6 +92,8 @@ extension DagDBEngine {
                     var currentRank = UInt64(rankLevel)
                     enc.setBytes(&currentRank, length: 8, index: 7)
                     enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
+                    var kernelNodeCount = UInt32(nodeCount)
+                    enc.setBytes(&kernelNodeCount, length: 4, index: 9)
 
                     let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
                     enc.dispatchThreadgroups(
@@ -142,11 +145,18 @@ extension DagDBEngine {
     }
 
     /// Write a complete truth state snapshot (for save/restore).
-    public func writeTruthStates(_ states: [UInt8]) {
-        let ptr = truthStateBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
-        for i in 0..<min(states.count, nodeCount) {
-            ptr[i] = states[i]
+    ///
+    /// C4 · "complete" is now enforced. The old clamp accepted a short array
+    /// and left the tail at its previous values, so a caller restoring a
+    /// snapshot got a graph that was part old and part new, with no sign of
+    /// it anywhere (audit A, finding 18).
+    public func writeTruthStates(_ states: [UInt8]) throws {
+        guard states.count == nodeCount else {
+            throw EngineError.shortBuffer(what: "writeTruthStates",
+                                          given: states.count, nodeCount: nodeCount)
         }
+        let ptr = truthStateBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
+        for i in 0..<nodeCount { ptr[i] = states[i] }
     }
 
     /// Read rank buffer back to CPU.

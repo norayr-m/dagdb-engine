@@ -35,9 +35,10 @@ Tools:
   dagdb_twin_list/dagdb_twin_close         — cross-registry list/close by id prefix
   dagdb_fold_run/kept/source/tier/info     — gate F4 tier-ladder fold over the CURRENT fabric lanes (no registry, nothing persisted)
 
-  Tiled (step one, gate T5, docs/contracts/TILING_GATES_FROZEN.md — NOT a twin registry):
-  dagdb_save_tiled                         — split the daemon's CURRENT graph into tile files by rank range
-  dagdb_tiled_open/bfs/select/status/close — cross-tile router: load-on-demand tiles, BFS/ancestry/select across them
+  Tiled (steps one and two, gate T5 + ticking across tiles — NOT a twin registry):
+  dagdb_save_tiled                            — split the daemon's CURRENT graph into tile files by rank range
+  dagdb_tiled_open/bfs/select/status/close    — cross-tile router: load-on-demand tiles, BFS/ancestry/select across them
+  dagdb_tiled_tick/get_truth                  — advance the world across tiles (durable, per-tile flush) / read one node's truth
 
 Usage: python3 mcp_server.py
 Requires: pip install mcp
@@ -65,6 +66,14 @@ except ImportError:
 
 DAEMON_SOCK = os.environ.get("DAGDB_SOCK", "/tmp/dagdb.sock")
 
+# Gate D4, audit B findings 1 and 27. The daemon frames a command at
+# MAX_COMMAND_BYTES plus a newline; a line that reaches the cap without a
+# newline is refused, never parsed. Before that fix the daemon answered OK
+# over the truncated prefix, so this client could not tell a complete
+# command from a truncated one. It refuses here, in the daemon's wording.
+MAX_COMMAND_BYTES = 4095
+TOO_LONG = f"ERROR too_long: command exceeds {MAX_COMMAND_BYTES} bytes"
+
 def query_daemon(cmd: str) -> str:
     """Send a command to the daemon and return the response."""
     # Reject control characters (Fable review S3, defense-in-depth). The
@@ -73,6 +82,8 @@ def query_daemon(cmd: str) -> str:
     # and paths never contain control chars.
     if any(ord(c) < 0x20 and c not in "\t" for c in cmd.strip()):
         return "ERROR: command contains control characters"
+    if len(cmd.strip().encode()) > MAX_COMMAND_BYTES:
+        return TOO_LONG
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
@@ -197,29 +208,45 @@ def dagdb_query(command: str) -> str:
             header + f32 standardized features) |
         VIEW INFO <id> * | VIEW LIST * | VIEW CLOSE <id>
 
-    Tiled (step one, gate T5, docs/contracts/TILING_GATES_FROZEN.md — NOT a
-        twin registry: a router is never persisted, never WAL-logged, never
-        part of a snapshot; the tile directory on disk written by SAVE
-        TILED IS the durable state, and TILED OPEN only rebuilds an
-        in-memory view of it. Ids are "x%08x" from a handler-local counter
-        — a different shape from the twin registries' letter prefixes, and
-        not listed by dagdb_twin_list/closed by dagdb_twin_close):
+    Tiled (steps one AND two — gate T5, docs/contracts/TILING_GATES_FROZEN.md,
+        and ticking across tiles, docs/contracts/TICKING_GATES_FROZEN.md —
+        NOT a twin registry: a router is never persisted, never WAL-logged,
+        never part of a snapshot; the tile directory on disk written by
+        SAVE TILED IS the durable state, and TILED OPEN only rebuilds an
+        in-memory view of it (recovering any dangling flush and completing
+        a partial round first, so it never hands out a router over a torn
+        world). Ids are "x%08x" from a handler-local counter — a different
+        shape from the twin registries' letter prefixes, and not listed by
+        dagdb_twin_list/closed by dagdb_twin_close):
         SAVE TILED <dir> <b1,b2,...> (rank boundaries, ascending, no spaces;
-            splits the daemon's CURRENT engine) |
-        TILED OPEN <dir> [<K>] (K resident tiles, default 2, 1...64) |
+            splits the daemon's CURRENT engine; refused with "ERROR
+            bad_value: back edge crosses a tile boundary (<src>→<dst>)" if
+            any BACK_EDGE would cross the given boundaries) |
+        TILED OPEN <dir> [<K>] (K resident tiles, default 2, 1...64; reply
+            gains "recovered=<n> completed=<m>" — dangling-flush recoveries
+            and partial-round catch-up ticks the open performed) |
         TILED BFS <id> <globalId> <depth> [BACK] * (depth 0...12; shm out:
             [u32 count][u32 16] header + rows u64 globalId, u32 depth, 4
             pad) |
         TILED SELECT <id> <truth> <lo> <hi> * (shm out: [u32 count][u32 8]
             header + u64 ids, sorted) |
-        TILED STATUS <id> * (resident/loads/evicts/refused/last) |
-        TILED LIST * | TILED CLOSE <id>
+        TILED STATUS <id> * (resident/loads/evicts/refused/last, plus
+            "epoch=<min>/<max>" — the (min, max) world epoch over every
+            tile; equal except mid-recovery) |
+        TILED LIST * | TILED CLOSE <id> |
+        TILED TICK <id> [<n>] [SYNC] (advance the world <n> ticks, default
+            1, checked 1...10000; rank mode unless SYNC trails; every tile
+            flushed durably with BEGIN/COMMIT each round) |
+        TILED GET <id> <globalId> TRUTH * (one node's current truth byte,
+            decimal)
         Router errors reply "ERROR io: <detail>" (a torn tile body's
         sha256 mismatch included); an unknown id is "ERROR not_found";
         a malformed number is "ERROR out_of_range" or "ERROR bad_value".
-        Reader sessions may run BFS/SELECT/STATUS/LIST (*); OPEN/CLOSE/
-        SAVE TILED are forbidden there. Not yet built (step one only):
-        pre-fetch, ticking across tiles, the cold tier, the 10^11 run.
+        Reader sessions may run BFS/SELECT/STATUS/LIST/GET (*); OPEN/
+        CLOSE/SAVE TILED/TICK are forbidden there (TICK mutates — it
+        flushes every tile to disk). Remaining, not yet built: the
+        pre-fetch thread (optional — changes no result if added), the
+        cold tier, the 10^11 run.
 
     Fold (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md — a pure
         computation over the daemon's CURRENT fabric lanes: neighbors, edge
@@ -253,7 +280,10 @@ def dagdb_nodes(rank: int = 0) -> str:
 
 @mcp.tool()
 def dagdb_traverse(node: int, depth: int = 2) -> str:
-    """Walk the graph from a starting node to a given depth. Returns visited nodes with their truth states."""
+    """Walk the graph from a starting node to a given depth. Returns visited
+    nodes with their truth states — each node once, however many depths it is
+    reachable at. `node` and `depth` are both bounded by nodeCount; outside
+    that the daemon answers "ERROR out_of_range: <name> <v> not in 0..<N"."""
     return query_daemon(f"TRAVERSE FROM {node} DEPTH {depth}")
 
 @mcp.tool()
@@ -323,7 +353,12 @@ def dagdb_graph_info() -> str:
 
 @mcp.tool()
 def dagdb_eval() -> str:
-    """Evaluate the graph (tick + return root nodes)."""
+    """Evaluate the graph (tick + return root nodes).
+
+    Returns: "OK EVAL rows=<k> tick=<t> scope=roots nodes_computed=<n>"
+    plus "ranks=<r> bound=<M>" when the graph reaches past the configured
+    rank bound. EVAL ticks the WHOLE graph and reports only rank-0 roots —
+    scope=roots is that disclosure."""
     return query_daemon("EVAL")
 
 @mcp.tool()
@@ -601,8 +636,14 @@ def dagdb_set_neighbors_bulk() -> str:
         2. Write it to /tmp/dagdb_shm_file starting at byte offset 8.
         3. Call this tool. The daemon memcpys into neighborsBuf.
 
-    Bypasses rank-monotonicity validation (matches SET_RANKS_BULK) —
-    run dagdb_validate afterwards if you don't fully trust the table."""
+    Every element must be -1 or a valid node id: the WHOLE vector is
+    range-checked before a single word is written, so a bad slot leaves the
+    table exactly as it was and the refusal names the first offender. The
+    read is size-checked against the mapping first.
+
+    Still bypasses the BACK_EDGE/register invariant CONNECT enforces — the
+    reply says so ("validation=skipped skipped=back_edge_register_fanin
+    recheck=VALIDATE"); run dagdb_validate afterwards."""
     return query_daemon("SET_NEIGHBORS_BULK")
 
 @mcp.tool()
@@ -1014,7 +1055,10 @@ def dagdb_alarm_corrupt(id: str, idx: int, eps_m: float, eps_s: float, eps_n: fl
     (row is 0=L, 1=D; unused claim slots beyond nClaims are zero-filled).
 
     Returns: "OK ALARM CORRUPT id=<id> idx=<idx> outcomes=<count>
-    weight_sum=<w>" (w is exactly 1.0 over the full enumeration)."""
+    weight_sum=<w> shm_bytes=<40n> claims_truncated=<t>" (w is exactly 1.0
+    over the full enumeration; t is how many rows lost a claim to the row's
+    five slots — 0 under the sealed model, whose widest outcome is exactly
+    five). Refuses by name if the rows do not fit this daemon's shm."""
     err = _bad_twin_id(id)
     if err:
         return err
@@ -1431,7 +1475,9 @@ def dagdb_fold_run(max_rank: int, keep_rank: int, f1: int, f2: int, f3: int = -1
     ring eliminated per fold via dense symmetric solve + Schur complement.
     Replaces the daemon's one stored fold result (`lastFold`) — every other
     FOLD verb reads back from this call, and errors "not_found" before the
-    first one.
+    first one. Because it replaces daemon-global state, FOLD RUN is NOT
+    allowed inside a READER session (the other four FOLD verbs are), and it
+    is not on the web bridge's read-only allowlist.
 
     Args:
         max_rank: highest rank ring to start folding from.
@@ -1511,18 +1557,23 @@ def dagdb_fold_info() -> str:
     return query_daemon("FOLD INFO")
 
 # --------------------------------------------------------------------
-# Tiled (step one, gate T5, docs/contracts/TILING_GATES_FROZEN.md).
+# Tiled — steps one (gate T5, docs/contracts/TILING_GATES_FROZEN.md) AND
+# two (ticking across tiles, docs/contracts/TICKING_GATES_FROZEN.md).
 # Cross-tile query routers over tile directories split from the daemon's
 # CURRENT engine by rank range. Deliberately NOT a twin registry: a router
 # is never persisted, never WAL-logged, never part of a snapshot — the
 # tile directory on disk IS the durable state; TILED OPEN only rebuilds an
-# in-memory view of it (reads manifest.json, loads no tile bodies yet).
+# in-memory view of it, recovering any dangling flush and completing a
+# partial round first (so it never hands out a router over a torn world),
+# THEN loading no tile bodies until the first query touches them.
 # Ids are "x%08x" from a handler-local counter (a different shape from the
 # twin registries' single-letter prefixes) — dagdb_twin_list/dagdb_twin_close
 # do not reach them; use dagdb_query("TILED LIST") / dagdb_tiled_close
-# instead. Not yet built: pre-fetch, ticking across tiles, the cold tier,
-# thermal pauses, the 10^11 run (docs/contracts/TILING_GATES_FROZEN.md's
-# "Not promised" list).
+# instead. Ticking (TILED TICK) is now built — durable per-tile flush,
+# BEGIN/COMMIT each round, crash recovery and partial-round completion at
+# open. Remaining, not yet built: the pre-fetch thread (optional — changes
+# no result if added), the cold tier, thermal pauses, the 10^11 run
+# (docs/contracts/TICKING_GATES_FROZEN.md's "Not promised" list).
 # --------------------------------------------------------------------
 
 @mcp.tool()
@@ -1539,23 +1590,31 @@ def dagdb_save_tiled(dir: str, boundaries: str) -> str:
             e.g. "5,11,17" for 4 tiles. At least one boundary is required.
 
     Returns: "OK SAVE TILED dir=<dir> tiles=<n> nodes=<N> crossings=<c>" or
-    "ERROR bad_value: ..." (empty/unsorted/duplicate boundaries) or
+    "ERROR bad_value: ..." (empty/unsorted/duplicate boundaries, OR a
+    BACK_EDGE whose src and dst would fall in different tiles — "ERROR
+    bad_value: back edge crosses a tile boundary (<src>→<dst>)", checked
+    and refused BEFORE any directory is written) or
     "ERROR io: ..." (path/write failure)."""
     return query_daemon(f"SAVE TILED {dir} {boundaries}")
 
 @mcp.tool()
 def dagdb_tiled_open(dir: str, k: int = 2) -> str:
     """Open a cross-tile query router over a directory `dagdb_save_tiled`
-    already wrote (reads `<dir>/manifest.json`; loads no tile bodies yet —
-    those load lazily on the first query that touches them).
+    already wrote (reads `<dir>/manifest.json`; recovers any tile whose
+    last flush crashed mid-way and completes a partial round left by a
+    between-tiles interruption BEFORE returning — a torn world is never
+    handed out — then loads no tile bodies until the first query touches
+    them).
 
     Args:
         dir: the tile directory (same path passed to `dagdb_save_tiled`).
         k: max resident tiles (LRU eviction beyond this), 1...64, default 2.
 
-    Returns: "OK TILED OPEN id=x%08x tiles=<n> nodes=<N> resident_max=<K>"
-    or "ERROR out_of_range: K ..." or "ERROR io: ..." (missing/corrupt
-    manifest)."""
+    Returns: "OK TILED OPEN id=x%08x tiles=<n> nodes=<N> resident_max=<K>
+    recovered=<n> completed=<m>" (recovered: tiles whose dangling
+    TILE_FLUSH_BEGIN was fixed; completed: tiles ticked to catch a partial
+    round up to the others) or "ERROR out_of_range: K ..." or "ERROR io:
+    ..." (missing/corrupt manifest, or an unresolvable tear)."""
     return query_daemon(f"TILED OPEN {dir} {k}")
 
 @mcp.tool()
@@ -1600,14 +1659,54 @@ def dagdb_tiled_select(id: str, truth: int, rank_lo: int, rank_hi: int) -> str:
 
 @mcp.tool()
 def dagdb_tiled_status(id: str) -> str:
-    """One router's residency/load/evict/refusal counters.
+    """One router's residency/load/evict/refusal counters, plus its world
+    epoch.
 
     Returns: "OK TILED STATUS id=<id> resident=<n>/<K> loads=<n>
-    evicts=<n> refused=<n> last=<error|none>" or "ERROR not_found: ...".
+    evicts=<n> refused=<n> last=<error|none> epoch=<min>/<max>" (min/max
+    over every tile's own last-flushed epoch — equal for a router, which
+    never opens or answers over a tear) or "ERROR not_found: ...".
     `dagdb_status`'s own STATUS line carries `tiled_open=<n>` (routers are
     NOT counted in that line's `twin_open`, since they aren't a twin
     registry)."""
     return query_daemon(f"TILED STATUS {id}")
+
+@mcp.tool()
+def dagdb_tiled_tick(id: str, n: int = 1, sync: bool = False) -> str:
+    """Advance the tiled world `n` ticks — durable: every tile is ticked
+    and flushed to disk (BEGIN, body, halo strip, meta, manifest entry,
+    COMMIT, in that order) each round, so a crash mid-flush is detected
+    and recovered the next time the directory is opened. Rank mode
+    (leaves-up, ranks max→0 within one world tick) unless `sync=True`
+    (ping-pong, one hop per world tick).
+
+    Args:
+        id: router id from `dagdb_tiled_open`.
+        n: ticks to run, 1...10000, default 1.
+        sync: True for sync mode instead of rank mode.
+
+    Returns: "OK TILED TICK id=<id> ticks=<epoch after> tiles_ticked=<n>
+    loads=<n> evicts=<n> flushes=<n> halo_bytes=<n>" or "ERROR
+    out_of_range: n ..." or "ERROR not_found: ..." or "ERROR io: ..."
+    (a router error — a stale halo strip that couldn't regenerate, a
+    manifest/sidecar sha256 disagreement on a clean tile, etc.)."""
+    suffix = " SYNC" if sync else ""
+    return query_daemon(f"TILED TICK {id} {n}{suffix}")
+
+@mcp.tool()
+def dagdb_tiled_get_truth(id: str, global_id: int) -> str:
+    """One node's current truth byte through an open router — a cheap
+    readback that doesn't need a BFS/SELECT.
+
+    Args:
+        id: router id from `dagdb_tiled_open`.
+        global_id: the packed GlobalNodeID (raw u64) — same form
+            `dagdb_tiled_bfs`/`dagdb_tiled_select` take and return.
+
+    Returns: "OK TILED GET id=<id> node=<global_id> truth=<0|1|2>" or
+    "ERROR out_of_range: node ..." (no such node) or "ERROR not_found:
+    ..." (unknown router id)."""
+    return query_daemon(f"TILED GET {id} {global_id} TRUTH")
 
 @mcp.tool()
 def dagdb_tiled_list() -> str:

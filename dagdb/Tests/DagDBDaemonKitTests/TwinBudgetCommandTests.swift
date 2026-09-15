@@ -209,7 +209,7 @@ final class TwinBudgetCommandTests: XCTestCase {
         let f = try HandlerFixture(side: 6)
         let nPockets = 25
         let layout = BudgetLayout(cost: [[Double]](repeating: [1.0], count: nPockets), minTier: [0])
-        let id = f.handler.twin.layouts.open(layout)
+        let id = try f.handler.twin.layouts.open(layout)
 
         let claims = (0..<21).map { "\($0):0" }.joined(separator: " ")
         let reply = f.handler.handle("BUDGET ALLOCATE \(id) 1000 \(claims)")
@@ -235,7 +235,7 @@ final class TwinBudgetCommandTests: XCTestCase {
         let beforeInfo = f.handler.handle("BUDGET INFO b00000001")
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 6, height: 6)
+        let grid = try HexGrid(width: 6, height: 6)
         let state = DagDBState(width: 6, height: 6)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)

@@ -51,7 +51,7 @@ final class E2Object {
     init(side: Int, profile: String) throws {
         self.side = side
         self.n = side * side
-        self.grid = HexGrid(width: side, height: side)
+        self.grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         self.engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
 

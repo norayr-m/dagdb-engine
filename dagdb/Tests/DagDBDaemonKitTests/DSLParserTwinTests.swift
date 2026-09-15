@@ -736,8 +736,9 @@ final class DSLParserTwinTests: XCTestCase {
             .kernelInfo(id: "k00000001"),
             .kernelList,
             // FOLD (gate F4): pure computation over CURRENT lanes, nothing
-            // persisted — ALL five verbs are read-only, RUN included.
-            .foldRun(maxRank: 6, keepRank: 3, f1: 78, f2: 78, f3: -1, checkpoints: []),
+            // persisted. RUN moved to the mutating list at gate D5 (audit B
+            // finding 18): it assigns the daemon-global last-fold result
+            // these four read.
             .foldKept,
             .foldSource(which: 1),
             .foldTier(level: "final", which: 1),
@@ -773,6 +774,7 @@ final class DSLParserTwinTests: XCTestCase {
             .budgetClose(id: "b00000001"),
             .alarmLoad(path: "/x.json", sha256: nil),
             .alarmClose(id: "a00000001"),
+            .foldRun(maxRank: 6, keepRank: 3, f1: 78, f2: 78, f3: -1, checkpoints: []),
             .bankOpen(name: "n", spec: nil, aliased: false),
             .bankClose(id: "w00000001"),
             .viewLoad(path: "/x.npz", sha256: nil),

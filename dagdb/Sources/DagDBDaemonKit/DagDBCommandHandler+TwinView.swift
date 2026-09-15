@@ -92,7 +92,7 @@ extension DagDBCommandHandler {
             guard outputBytes <= shmCapacityBytes else {
                 return "ERROR out_of_range: VIEW FEATURES output \(outputBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
-            writeFloatVector(z)
+            if let e = writeFloatVector(z) { return e }
             return twinResponse(
                 "VIEW FEATURES", sessionId: sessionId,
                 "id=\(id) frame=\(frame) S=\(s) count=\(z.count)"
@@ -130,11 +130,22 @@ extension DagDBCommandHandler {
 
     /// nil iff `s` is a valid station-subset size for `set`'s fixture
     /// (1...stations, fixed at 8 by CortexFixture.load).
+    /// F5 · every VIEW verb's station bound goes through `DerivedViews`'
+    /// own throwing door, so the daemon and the library cannot drift apart
+    /// about what `S` the fixture admits. The existing `ERROR out_of_range:
+    /// S <s> not in [1, N]` line is kept and the library's own named reason
+    /// appended after it.
     private func stationsRangeError(_ s: Int, _ set: TwinState.ViewSet) -> String? {
-        guard s >= 1 && s <= set.views.fixture.stations else {
-            return "ERROR out_of_range: S \(s) not in [1, \(set.views.fixture.stations)]"
+        do {
+            try set.views.checkStations(s)
+            return nil
+        } catch let e as CortexFixture.FixtureError {
+            let why: String
+            if case .badLayout(let m) = e { why = m } else { why = "\(e)" }
+            return "ERROR out_of_range: S \(s) not in [1, \(set.views.fixture.stations)] — \(why)"
+        } catch {
+            return "ERROR out_of_range: S \(s) not in [1, \(set.views.fixture.stations)] — \(error)"
         }
-        return nil
     }
 
     // MARK: - Error formatting

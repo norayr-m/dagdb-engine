@@ -84,7 +84,9 @@ extension DagDBCommandHandler {
             return twinResponse("CLOCK OPEN", sessionId: sessionId, "id=\(id) tick=0")
 
         case .clockAdvance(let id, let n, let value):
-            guard n >= 0 else { return "ERROR out_of_range: n must be >= 0" }
+            // D1 · `n` drives an n-tick loop inside `TwinState.apply` on the
+            // single-threaded accept loop; same ceiling TILED TICK carries.
+            if let e = checkCap("n", n, 0, DagDBCommandHandler.clockAdvanceCap) { return e }
             guard twin.clocks.get(id) != nil else { return "ERROR not_found: \(id)" }
             let v = value ?? 0
             guard v.isFinite else { return "ERROR bad_value: value must be finite" }

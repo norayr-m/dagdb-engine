@@ -37,14 +37,14 @@ final class LadderFoldTests: XCTestCase {
     }
 
     private func makeControlEngine() throws -> (DagDBEngine, HexGrid) {
-        let grid = HexGrid(width: 12, height: 12)
+        let grid = try HexGrid(width: 12, height: 12)
         let state = DagDBState(width: 12, height: 12)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
         return (engine, grid)
     }
 
     private func makeCourtEngine() throws -> (DagDBEngine, HexGrid) {
-        let grid = HexGrid(width: 44, height: 44)
+        let grid = try HexGrid(width: 44, height: 44)
         let state = DagDBState(width: 44, height: 44)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
         return (engine, grid)

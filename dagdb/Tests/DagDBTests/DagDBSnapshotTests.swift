@@ -19,7 +19,7 @@ final class DagDBSnapshotTests: XCTestCase {
 
     /// Build a tiny engine and return it along with its grid dims.
     private func makeEngine(side: Int) throws -> (DagDBEngine, Int, Int) {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         return (engine, side, side)

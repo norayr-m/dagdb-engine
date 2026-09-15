@@ -98,6 +98,14 @@ final class DerivedViewsTests: XCTestCase {
             XCTAssertEqual(summary.tieMedian, DerivedViewsTests.v3TieMedian[i], "V3 tieMedian at S=\(S)")
             XCTAssertEqual(summary.tieMax, DerivedViewsTests.v3TieMax[i], "V3 tieMax at S=\(S)")
             XCTAssertEqual(summary.framesWithTie, DerivedViewsTests.v3FramesWithTie[i], "V3 framesWithTie at S=\(S)")
+
+            // Audit C finding 42's receipt on the SEALED fixture: a failed
+            // least-squares fit is now skipped and counted instead of being
+            // scored from a fabricated (alpha, beta) = (0, 0). Nothing is
+            // skipped here, which is why none of the literals above can
+            // have moved because of it.
+            XCTAssertEqual(summary.skippedTotal, 0, "V1-V3 skipped candidates at S=\(S)")
+            XCTAssertNil(summary.refusal, "V1-V3 refusal at S=\(S)")
         }
     }
 
@@ -112,7 +120,14 @@ final class DerivedViewsTests: XCTestCase {
             print("S=\(S) rung hits=\(rung.hits) minMargin=\(rung.minMargin) wall_ms=\(rung.wallMs)")
 
             XCTAssertEqual(rung.hits, DerivedViewsTests.v4Hits[i], "V4 hits at S=\(S)")
+            XCTAssertNil(centroids.refusal, "V4 centroids refusal at S=\(S)")
+            XCTAssertNil(rung.refusal, "V4 rung refusal at S=\(S)")
         }
+
+        // Finding 41: the same call one station past the fixture's own
+        // count is refused by name rather than reading into the next
+        // candidate's row.
+        XCTAssertNotNil(views.reflexSummary(stations: fixture.stations + 1).refusal)
     }
 
     func testV5Ceiling() throws {

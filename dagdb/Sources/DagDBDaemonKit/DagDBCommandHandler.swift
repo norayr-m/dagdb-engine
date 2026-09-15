@@ -103,6 +103,99 @@ public final class DagDBCommandHandler {
         return nil
     }
 
+    /// Backup replies for a failed call. The refusals the format contract
+    /// names — a format-1 chain, a segment of the wrong length, a gap or a
+    /// duplicate in the diff sequence, an occupied APPEND slot, a diff that
+    /// fails its sidecar — come back as their own sentence, not a wrapped
+    /// error string, because the operator's next move is in that sentence.
+    /// Everything else keeps the old `verb: error` shape.
+    func backupErrorReply(_ error: Error, verb: String) -> String {
+        if let be = error as? DagDBBackup.BackupError, be.isNamedRefusal {
+            return "ERROR \(be)"
+        }
+        return "ERROR io: \(verb): \(error)"
+    }
+
+    // MARK: - D1 · every wire integer bounded on BOTH sides
+
+    /// Caps for the counts that drive loops on the single-threaded accept
+    /// loop (gates D1 and D8, `docs/contracts/DAEMON_BOUNDS_GATES_FROZEN.md`).
+    /// `TILED TICK` already carried `1...10000`; `TICK`, `TICK_SYNC` and
+    /// `CLOCK ADVANCE` now carry the same ceiling, and the two remaining
+    /// unbounded loops (`BANK NOISE`'s seed skip, `SIMILAR_DECISIONS`'s
+    /// candidate pool) carry one of their own. A cap is a REFUSAL, not a
+    /// clip: the daemon never silently does less than it was asked.
+    public static let tickCap = 10_000
+    public static let clockAdvanceCap = 10_000
+    public static let bankNoiseSeedCap = 1_000_000
+    public static let similarDecisionsCandidateCap = 4_096
+
+    /// The one refusal wording for a wire integer that missed its half-open
+    /// range. Names the value AND the true extent, so a client never has to
+    /// guess which side it fell off (audit B findings 2-4: the old
+    /// `node <v> out of range` named neither bound, and the domain it was
+    /// checked against was `Int.min ..< nodeCount`).
+    func rangeRefusal(_ name: String, _ v: Int, upTo hi: Int) -> String {
+        "ERROR out_of_range: \(name) \(v) not in 0..<\(hi)"
+    }
+
+    /// Both sides, before any pointer touch. Returns nil when `v` is in
+    /// `0..<hi`, else the refusal line to return to the wire.
+    func checkRange(_ name: String, _ v: Int, upTo hi: Int) -> String? {
+        (v >= 0 && v < hi) ? nil : rangeRefusal(name, v, upTo: hi)
+    }
+
+    /// Closed-range cap refusal, in `TILED TICK`'s existing vocabulary.
+    func checkCap(_ name: String, _ v: Int, _ lo: Int, _ hi: Int) -> String? {
+        (v >= lo && v <= hi) ? nil : "ERROR out_of_range: \(name) \(v) not in \(lo)...\(hi)"
+    }
+
+    // MARK: - D3 · wire arithmetic cannot trap
+
+    /// Sums and products of wire integers, computed with overflow-reporting
+    /// operations. Swift TRAPS on `Int` overflow, so a byte count built from
+    /// unbounded wire values used to kill the daemon BEFORE the capacity
+    /// guard that existed to refuse it could run (audit B finding 23).
+    /// Returns the value, or nil when it does not fit `Int`.
+    func checkedProduct(_ factors: Int...) -> Int? {
+        var acc = 1
+        for f in factors {
+            let (v, over) = acc.multipliedReportingOverflow(by: f)
+            if over { return nil }
+            acc = v
+        }
+        return acc
+    }
+
+    func checkedSum(_ terms: Int...) -> Int? {
+        var acc = 0
+        for t in terms {
+            let (v, over) = acc.addingReportingOverflow(t)
+            if over { return nil }
+            acc = v
+        }
+        return acc
+    }
+
+    /// The refusal an overflowed byte count prints. It names the operands
+    /// rather than a nonsense product.
+    func overflowRefusal(_ what: String, _ operands: String) -> String {
+        "ERROR out_of_range: \(what) byte count overflows Int for \(operands);"
+            + " shm holds \(shmCapacityBytes)"
+    }
+
+    /// `tickCount` stays `UInt32` — it is written into the snapshot header
+    /// (`DagDBSnapshot.save(tickCount:)`) and into the WAL checkpoint epoch,
+    /// so widening it is an on-disk format change, not a daemon change. The
+    /// price of keeping the width is that the overflow must be refused BY
+    /// NAME rather than trapping on the `+= 1` (audit B finding 5).
+    func checkTickHeadroom(_ count: Int) -> String? {
+        let projected = UInt64(tickCount) + UInt64(count)
+        guard projected > UInt64(UInt32.max) else { return nil }
+        return "ERROR out_of_range: tick total \(tickCount)+\(count) not in 0...\(UInt32.max)"
+            + " — tickCount is a 32-bit field in the snapshot header; SAVE and restart to reset it"
+    }
+
     /// Write a snapshot and then a WAL checkpoint, in that order. Used by
     /// the `SAVE` verb (after `guardPath`) and by the daemon's autosave on
     /// graceful shutdown. The checkpoint must follow every durable snapshot:
@@ -181,6 +274,8 @@ public final class DagDBCommandHandler {
             return "OK STATUS nodes=\(nodeCount) ticks=\(tickCount) gpu=\(engine.device.name) grid=\(width)x\(height) maxRank=\(maxRank) ranks=\(engine.effectiveRankCount) rank_max=\(engine.highestRankPresent) twin_open=\(twin.totalOpen) tiled_open=\(tiledRouters.count)"
 
         case .tick(let count):
+            if let e = checkCap("count", count, 0, Self.tickCap) { return e }
+            if let e = checkTickHeadroom(count) { return e }
             let t0 = CFAbsoluteTimeGetCurrent()
             for _ in 0..<count {
                 engine.tick(tickNumber: tickCount)
@@ -191,6 +286,8 @@ public final class DagDBCommandHandler {
                 + rankWorkSuffix(nodesComputed: engine.rankDispatchNodeCount() * count, rankDispatched: true)
 
         case .tickSync(let count):
+            if let e = checkCap("count", count, 0, Self.tickCap) { return e }
+            if let e = checkTickHeadroom(count) { return e }
             let t0 = CFAbsoluteTimeGetCurrent()
             for _ in 0..<count {
                 engine.tickSync(tickNumber: tickCount)
@@ -201,6 +298,7 @@ public final class DagDBCommandHandler {
                 + rankWorkSuffix(nodesComputed: nodeCount * count, rankDispatched: false)
 
         case .eval(let predicate, _, _):
+            if let e = checkTickHeadroom(1) { return e }
             engine.tick(tickNumber: tickCount)
             tickCount += 1
             let roots = engine.readRoots()  // [(Int, UInt8)]
@@ -210,26 +308,45 @@ public final class DagDBCommandHandler {
             if let pred = predicate {
                 rows = rows.filter { pred.evaluate(truth: $0.2, rank: $0.1, nodeType: $0.3) }
             }
-            writeResults(rows)
-            return "OK EVAL rows=\(rows.count) tick=\(tickCount)"
+            if let e = writeResults(rows) { return e }
+            // D7 · the reply says what it omitted. EVAL ticks the whole
+            // graph but reports only rank-0 roots (`engine.readRoots`), and
+            // it dispatched by rank exactly as TICK did — so it carries
+            // TICK's `nodes_computed`/`ranks=`/`bound=` disclosure too.
+            return "OK EVAL rows=\(rows.count) tick=\(tickCount) scope=roots"
+                + rankWorkSuffix(nodesComputed: engine.rankDispatchNodeCount(), rankDispatched: true)
 
         case .nodes(let rank, let predicate):
             let truth = engine.readTruthStates()
             let ranks = engine.readRanks()
             var rows: [(Int, UInt64, UInt8, UInt8)] = []
+            var omitted = 0
             for i in 0..<nodeCount {
                 if let r = rank, ranks[i] != UInt64(r) { continue }
                 if let pred = predicate, !pred.evaluate(truth: truth[i], rank: ranks[i], nodeType: 0) { continue }
                 // Skip nodes with rank 0 and truth 0 and no explicit rank (likely unused)
-                if rank == nil && ranks[i] == 0 && truth[i] == 0 { continue }
+                if rank == nil && ranks[i] == 0 && truth[i] == 0 { omitted += 1; continue }
                 rows.append((i, ranks[i], truth[i], 0))
             }
-            writeResults(rows)
-            return "OK NODES rows=\(rows.count)"
+            if let e = writeResults(rows) { return e }
+            // D7 · `omitted=` is the count this default filter dropped —
+            // rank-0, truth-0 nodes. The filter is disclosed, not changed.
+            return "OK NODES rows=\(rows.count) omitted=\(omitted)"
 
         case .traverse(let fromNode, let depth):
-            guard fromNode < nodeCount else { return "ERROR out_of_range: node \(fromNode) out of range" }
+            if let e = checkRange("node", fromNode, upTo: nodeCount) { return e }
+            // D1 · depth drove the frontier loop unbounded. No path in a DAG
+            // on N nodes is longer than N-1 hops, so `nodeCount` IS the true
+            // extent of a useful depth.
+            if let e = checkRange("depth", depth, upTo: nodeCount) { return e }
             var visited: [(Int, UInt64, UInt8, UInt8)] = []
+            // D2 · a GLOBAL visited set. Without it a node reachable at
+            // several depths was appended once per level, so `rows.count`
+            // was Σ|frontier_d| — unbounded in `depth` and unrelated to the
+            // shm mapping's `nodeCount` rows (audit B finding 6). With it
+            // the row count is bounded by `nodeCount` by construction, and
+            // `writeResults` checks the bytes anyway.
+            var seen: Set<Int> = []
             var frontier: Set<Int> = [fromNode]
             let truth = engine.readTruthStates()
             let ranks = engine.readRanks()
@@ -237,21 +354,23 @@ public final class DagDBCommandHandler {
             for _ in 0..<depth {
                 var nextFrontier: Set<Int> = []
                 for node in frontier {
-                    visited.append((node, ranks[node], truth[node], 0))
+                    if seen.insert(node).inserted {
+                        visited.append((node, ranks[node], truth[node], 0))
+                    }
                     for d in 0..<6 {
                         let nb = grid.neighbors[node * 6 + d]
-                        if nb >= 0 && !frontier.contains(Int(nb)) {
+                        if nb >= 0 && !seen.contains(Int(nb)) {
                             nextFrontier.insert(Int(nb))
                         }
                     }
                 }
                 frontier = nextFrontier
             }
-            writeResults(visited)
+            if let e = writeResults(visited) { return e }
             return "OK TRAVERSE rows=\(visited.count) from=\(fromNode) depth=\(depth)"
 
         case .setTruth(let node, let value):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             // Log-first: append to WAL (fsync'd) before touching engine buffer.
             // If WAL fails, abort the mutation so the log and engine stay in sync.
             if let wal = walAppender {
@@ -265,7 +384,7 @@ public final class DagDBCommandHandler {
             return "OK SET node=\(node) truth=\(value)"
 
         case .setWeight(let node, let dir, let value):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             guard dir >= 0 && dir < 6 else { return "ERROR out_of_range: dir \(dir) not in 0..5" }
             guard value.isFinite else { return "ERROR bad_value: weight must be finite" }
             if let wal = walAppender {
@@ -277,7 +396,7 @@ public final class DagDBCommandHandler {
             return "OK SET node=\(node) weight[\(dir)]=\(value)"
 
         case .setValue(let node, let value):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             guard value.isFinite else { return "ERROR bad_value: value must be finite" }
             if let wal = walAppender {
                 do { _ = try wal.setNodeValue(node: UInt32(node), value: value) }
@@ -288,7 +407,7 @@ public final class DagDBCommandHandler {
             return "OK SET node=\(node) value=\(value)"
 
         case .setRank(let node, let value):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             // R3 · the door. No valid DAG on N nodes holds a rank of N or
             // more, and a typo there would turn the rank loop into a denial
             // of service. A rank in [maxRank, nodeCount) is ACCEPTED and
@@ -307,7 +426,7 @@ public final class DagDBCommandHandler {
             return "OK SET node=\(node) rank=\(value)"
 
         case .setLUT(let node, let preset):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             let lut: UInt64
             switch preset {
             case "AND", "AND6": lut = LUT6Preset.and6
@@ -346,13 +465,22 @@ public final class DagDBCommandHandler {
             return "OK SET node=\(node) lut=\(preset)"
 
         case .clearEdges(let node):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            // D-bounds · both sides of the range, named refusal, before any
+            // pointer touch. Subsumes the incoming side's one-sided guard.
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
+            // Log-first (C1a): this writes neighborsBuf, and until the v2
+            // opcode existed it did so with no record at all.
+            if let wal = walAppender {
+                do { _ = try wal.clearEdges(node: UInt32(node)) }
+                catch { return "ERROR wal: append: \(error)" }
+            }
             let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: nodeCount * 6)
             for d in 0..<6 { nbPtr[node * 6 + d] = -1 }
             return "OK CLEAR node=\(node) edges"
 
         case .connect(let src, let dst):
-            guard src < nodeCount && dst < nodeCount else { return "ERROR out_of_range: node out of range" }
+            if let e = checkRange("src", src, upTo: nodeCount) { return e }
+            if let e = checkRange("dst", dst, upTo: nodeCount) { return e }
             if src == dst { return "ERROR schema: self-loop: src == dst (\(src))" }
             // BACK_EDGE invariant: a register (back-edge dst) must not gain
             // combinational fan-in. Reject the connect to keep the latch
@@ -366,62 +494,77 @@ public final class DagDBCommandHandler {
             guard srcRank > dstRank else {
                 return "ERROR schema: rank violation: src(\(src)) rank=\(srcRank) must be > dst(\(dst)) rank=\(dstRank) — edges flow leaves→roots"
             }
-            // Find first empty neighbor slot on dst; reject duplicates
+            // Find first empty neighbor slot on dst; reject duplicates.
+            // The slot is resolved BEFORE the log append (C1a) so the record
+            // names the slot it will occupy: replay then reproduces the table
+            // without re-deriving "first free slot" from a different state.
             let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: nodeCount * 6)
-            var connected = false
             for d in 0..<6 {
                 if nbPtr[dst * 6 + d] == Int32(src) {
                     return "ERROR schema: duplicate edge: \(src) → \(dst)"
                 }
             }
-            for d in 0..<6 {
-                if nbPtr[dst * 6 + d] < 0 {
-                    nbPtr[dst * 6 + d] = Int32(src)
-                    connected = true
-                    break
-                }
-            }
-            if connected {
-                return "OK CONNECT from=\(src) to=\(dst)"
-            } else {
+            var slot = -1
+            for d in 0..<6 where nbPtr[dst * 6 + d] < 0 { slot = d; break }
+            guard slot >= 0 else {
                 return "ERROR schema: node \(dst) already has 6 edges (6-bounded)"
             }
+            if let wal = walAppender {
+                do { _ = try wal.connect(dst: UInt32(dst), slot: UInt8(slot), src: Int32(src)) }
+                catch { return "ERROR wal: append: \(error)" }
+            }
+            nbPtr[dst * 6 + slot] = Int32(src)
+            return "OK CONNECT from=\(src) to=\(dst)"
 
         case .connectBack(let src, let dst):
-            guard src < nodeCount && dst < nodeCount else { return "ERROR out_of_range: node out of range" }
+            if let e = checkRange("src", src, upTo: nodeCount) { return e }
+            if let e = checkRange("dst", dst, upTo: nodeCount) { return e }
             if src == dst { return "ERROR schema: self-loop: src == dst (\(src))" }
-            // Validate first (cheap, in-memory) so we don't write a WAL record
-            // for a mutation the engine would reject.
+            // C12 · validate, then log, then apply — the order the WAL file
+            // header promises for EVERY mutation. Validation touches nothing,
+            // so a refused edge writes no record; the append comes next, so a
+            // log that will not take the record leaves the engine unchanged;
+            // the buffer is written last.
+            //
+            // (This used to apply first and append afterwards, excused by a
+            // comment claiming `addBackEdge` is idempotent on duplicates. It
+            // is not — it appends a second entry — and the excuse is
+            // withdrawn.)
             do {
-                try engine.addBackEdge(src: UInt32(src), dst: UInt32(dst))
+                try engine.validateBackEdge(src: UInt32(src), dst: UInt32(dst))
             } catch let err as DagDBEngine.BackEdgeError {
                 return "ERROR schema: \(err)"
             } catch {
                 return "ERROR schema: \(error)"
             }
-            // Log-after-apply is acceptable here: addBackEdge is idempotent on
-            // already-registered duplicates, and a WAL append failure now would
-            // leave a one-tick window of un-logged state. Append immediately to
-            // close that window.
             if let wal = walAppender {
                 do { _ = try wal.connectBack(src: UInt32(src), dst: UInt32(dst)) }
                 catch { return "ERROR wal: append: \(error)" }
             }
+            do {
+                try engine.registerValidatedBackEdge(src: UInt32(src), dst: UInt32(dst))
+            } catch {
+                return "ERROR schema: \(error)"
+            }
             return "OK CONNECT BACK from=\(src) to=\(dst)"
 
         case .clearBackEdges(let node):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             if let wal = walAppender {
                 do { _ = try wal.clearBackEdges(dst: UInt32(node)) }
                 catch { return "ERROR wal: append: \(error)" }
             }
             let before = engine.backEdgeCount
-            engine.clearBackEdges(toNode: UInt32(node))
+            // C4 made the engine call refuse an out-of-range node by name.
+            // The guard above already covers it; the catch is what the new
+            // signature requires, not a second policy.
+            do { try engine.clearBackEdges(toNode: UInt32(node)) }
+            catch { return "ERROR out_of_range: \(error)" }
             let removed = before - engine.backEdgeCount
             return "OK CLEAR node=\(node) back_edges removed=\(removed)"
 
         case .getTruth(let node):
-            guard node < nodeCount else { return "ERROR out_of_range: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             let truth = engine.truthStateBuf.contents()
                 .bindMemory(to: UInt8.self, capacity: nodeCount)[node]
             return "OK GET node=\(node) truth=\(truth)"
@@ -570,9 +713,9 @@ public final class DagDBCommandHandler {
                     engine: engine, nodeCount: nodeCount,
                     gridW: width, gridH: height, dir: dir
                 )
-                return "OK BACKUP_APPEND bytes=\(r.diffBytes) elapsed=\(String(format: "%.1f", r.elapsedMs))ms path=\(r.diffPath)"
+                return "OK BACKUP_APPEND bytes=\(r.diffBytes) elapsed=\(String(format: "%.1f", r.elapsedMs))ms path=\(r.diffPath) format=\(DagDBBackup.diffVersion)"
             } catch {
-                return "ERROR io: backup_append: \(error)"
+                return backupErrorReply(error, verb: "backup_append")
             }
 
         case .backupRestore(let dir):
@@ -584,31 +727,37 @@ public final class DagDBCommandHandler {
                 )
                 truthRankIndex.markDirty()
                 engine.markRankTopologyDirty()
-                return "OK BACKUP_RESTORE diffs_replayed=\(r.diffsReplayed) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
+                return "OK BACKUP_RESTORE diffs_replayed=\(r.diffsReplayed) elapsed=\(String(format: "%.1f", r.elapsedMs))ms rank_bytes=\(r.rankBytes) twin=not_covered"
             } catch {
-                return "ERROR io: backup_restore: \(error)"
+                return backupErrorReply(error, verb: "backup_restore")
             }
 
         case .backupCompact(let dir):
             if let err = guardPath(dir) { return err }
             do {
+                // The new base comes from the chain's own replayed tip, at the
+                // chain's own tick count — never from this live engine, which
+                // COMPACT does not read and does not change.
                 let r = try DagDBBackup.compact(
-                    engine: engine, nodeCount: nodeCount,
-                    gridW: width, gridH: height,
-                    tickCount: tickCount, dir: dir
+                    nodeCount: nodeCount,
+                    gridW: width, gridH: height, dir: dir
                 )
                 return "OK BACKUP_COMPACT prior_diffs=\(r.priorDiffCount) new_base_bytes=\(r.newBaseBytes) elapsed=\(String(format: "%.1f", r.elapsedMs))ms"
             } catch {
-                return "ERROR io: backup_compact: \(error)"
+                return backupErrorReply(error, verb: "backup_compact")
             }
 
         case .backupInfo(let dir):
             if let err = guardPath(dir) { return err }
             do {
                 let r = try DagDBBackup.info(dir: dir)
-                return "OK BACKUP_INFO base=\(r.baseExists) base_bytes=\(r.baseSizeBytes) diffs=\(r.diffCount) total_diff_bytes=\(r.totalDiffBytes)"
+                // INFO is read-only: a format-1 chain is named, never refused.
+                let caveat = r.isLegacyFormat
+                    ? " caveat=\(DagDBBackup.legacyFormatMessage)"
+                    : ""
+                return "OK BACKUP_INFO base=\(r.baseExists) base_bytes=\(r.baseSizeBytes) diffs=\(r.diffCount) total_diff_bytes=\(r.totalDiffBytes) format=\(r.formatVersion) twin=not_covered\(caveat)"
             } catch {
-                return "ERROR io: backup_info: \(error)"
+                return backupErrorReply(error, verb: "backup_info")
             }
 
         case .setRanksBulk:
@@ -623,22 +772,33 @@ public final class DagDBCommandHandler {
             // so a bad entry leaves every rank exactly as it was, and the
             // refusal names the first offending node. Ranks in
             // [maxRank, nodeCount) pass — they are computed, not refused.
+            if let e = checkShmFits(rows: nodeCount, rowSize: 8) { return e }
             let src = shmBase.advanced(by: 8).bindMemory(to: UInt64.self, capacity: nodeCount)
             for i in 0..<nodeCount where src[i] >= UInt64(nodeCount) {
                 return "ERROR out_of_range: node \(i) rank \(src[i]) not in 0..<\(nodeCount)"
+            }
+            if let wal = walAppender {
+                do { _ = try wal.setRanksBulk(src, count: nodeCount) }
+                catch { return "ERROR wal: append: \(error)" }
             }
             let dst = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: nodeCount)
             for i in 0..<nodeCount { dst[i] = src[i] }
             truthRankIndex.markDirty()
             engine.markRankTopologyDirty()
             return "OK SET_RANKS_BULK nodes=\(nodeCount)"
+                + " validation=skipped skipped=rank_monotonicity recheck=VALIDATE"
 
         case .setLutsBulk:
             // Read u64[nodeCount] LUT vector from shm offset 8 and commit
             // each entry to lut6Low/lut6High (low 32 = bits 0-31, high 32 =
             // bits 32-63). Compiles a million-node microcircuit's LUT vector
             // in one round-trip; pair with SAVE if you need durability.
+            if let e = checkShmFits(rows: nodeCount, rowSize: 8) { return e }
             let src = shmBase.advanced(by: 8).bindMemory(to: UInt64.self, capacity: nodeCount)
+            if let wal = walAppender {
+                do { _ = try wal.setLutsBulk(src, count: nodeCount) }
+                catch { return "ERROR wal: append: \(error)" }
+            }
             let low = engine.lut6LowBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
             let high = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
             for i in 0..<nodeCount {
@@ -653,27 +813,42 @@ public final class DagDBCommandHandler {
             // and memcpy to neighborsBuf. Bypasses rank-monotonicity check;
             // run VALIDATE after if you do not trust the writer.
             let count = nodeCount * 6
+            // D6 · the READ side of this verb never consulted the mapping's
+            // real size — `configuredShmCapacityBytes` may be smaller than
+            // the default `8 + nodeCount * 24` (audit B finding 12).
+            if let e = checkShmFits(rows: count, rowSize: 4) { return e }
             let src = shmBase.advanced(by: 8).bindMemory(to: Int32.self, capacity: count)
+            // D6 · range-check the WHOLE vector before writing one word, as
+            // SET_RANKS_BULK already did: a bad slot leaves every neighbour
+            // exactly as it was, and the refusal names the first offender.
+            // -1 is the empty-slot sentinel the Metal kernel tolerates.
+            for i in 0..<count where src[i] < -1 || src[i] >= Int32(clamping: nodeCount) {
+                return "ERROR out_of_range: slot \(i) (node \(i / 6) dir \(i % 6))"
+                    + " neighbour \(src[i]) not in -1..<\(nodeCount)"
+            }
+            // Log-first (C1): the vector is validated above, so a refused
+            // install writes no record; the append precedes the memcpy, so a
+            // log that will not take the record leaves neighborsBuf unchanged.
+            if let wal = walAppender {
+                do { _ = try wal.setNeighborsBulk(src, count: nodeCount) }
+                catch { return "ERROR wal: append: \(error)" }
+            }
             let dst = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: count)
             for i in 0..<count { dst[i] = src[i] }
+            // D6 · the verb bypasses the BACK_EDGE/register invariant that
+            // CONNECT enforces; say so rather than let a caller assume the
+            // install validated what CONNECT validates.
             return "OK SET_NEIGHBORS_BULK nodes=\(nodeCount) edges_slot=\(count)"
+                + " validation=skipped skipped=back_edge_register_fanin recheck=VALIDATE"
 
         case .composeLUT(let op, let src1, let src2, let dst):
             // Bitwise composition of LUTs into dst's LUT.
             // Caller is responsible for the assumption that src1, src2, dst
             // share a common input vector — the engine just performs the
             // bitwise op on the 64-bit LUT integers. Mutates only dst's LUT.
-            guard src1 >= 0 && src1 < nodeCount else {
-                return "ERROR out_of_range: src1 \(src1) out of range"
-            }
-            guard dst >= 0 && dst < nodeCount else {
-                return "ERROR out_of_range: dst \(dst) out of range"
-            }
-            if let s2 = src2 {
-                guard s2 >= 0 && s2 < nodeCount else {
-                    return "ERROR out_of_range: src2 \(s2) out of range"
-                }
-            }
+            if let e = checkRange("src1", src1, upTo: nodeCount) { return e }
+            if let e = checkRange("dst", dst, upTo: nodeCount) { return e }
+            if let s2 = src2, let e = checkRange("src2", s2, upTo: nodeCount) { return e }
             let lowPtr  = engine.lut6LowBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
             let highPtr = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
             let aLow  = lowPtr[src1]
@@ -718,6 +893,7 @@ public final class DagDBCommandHandler {
                 engine: engine, nodeCount: nodeCount
             )
             // Write node IDs as Int32[] to shm at offset 8 (same layout as BFS_DEPTHS)
+            if let e = checkShmFits(rows: matches.count, rowSize: 4) { return e }
             let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
             headerPtr[0] = UInt32(matches.count)
             headerPtr[1] = 0
@@ -729,12 +905,14 @@ public final class DagDBCommandHandler {
             return "OK SELECT truth=\(truthVal) rank=\(lo)-\(hi) matches=\(matches.count) bucket_size=\(bucketInfo) shm_bytes=\(matches.count * 4)"
 
         case .bfsDepths(let seed, let undirected):
+            if let e = checkRange("node", seed, upTo: nodeCount) { return e }
             do {
                 let r = undirected
                     ? try DagDBBFS.bfsDepthsUndirected(engine: engine, nodeCount: nodeCount, from: seed)
                     : try DagDBBFS.bfsDepthsBackward(engine: engine, nodeCount: nodeCount, from: seed)
                 // Write depths[0..<nodeCount] to shared memory as raw Int32[].
                 // Layout: [4:nodeCount][4:reserved][Int32 × nodeCount]
+                if let e = checkShmFits(rows: nodeCount, rowSize: 4) { return e }
                 let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
                 headerPtr[0] = UInt32(nodeCount)
                 headerPtr[1] = 0
@@ -743,7 +921,7 @@ public final class DagDBCommandHandler {
                     for i in 0..<nodeCount { dataPtr[i] = buf[i] }
                 }
                 let dir = undirected ? "undirected" : "backward"
-                return "OK BFS_DEPTHS seed=\(seed) dir=\(dir) reached=\(r.reached) max_depth=\(r.maxDepth) elapsed=\(String(format: "%.1f", r.elapsedMs))ms shm_bytes=\(nodeCount * 4)"
+                return "OK BFS_DEPTHS seed=\(seed) dir=\(dir) reached=\(r.reached) max_depth=\(r.maxDepth) elapsed=\(String(format: "%.1f", r.elapsedMs))ms shm_bytes=\(nodeCount * 4) \(r.disclosure) back_edge_count=\(r.backEdgeCount)"
             } catch {
                 return "ERROR bfs: depths: \(error)"
             }
@@ -794,12 +972,8 @@ public final class DagDBCommandHandler {
                                   sessionId: session.id)
 
         case .ancestry(let node, let depth):
-            guard node >= 0 && node < nodeCount else {
-                return "ERROR out_of_range: node \(node) not in [0, \(nodeCount))"
-            }
-            guard depth >= 0 else {
-                return "ERROR dsl_parse: depth must be non-negative, got \(depth)"
-            }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
+            if let e = checkRange("depth", depth, upTo: nodeCount) { return e }
             do {
                 let r = try DagDBBFS.bfsDepthsBackward(
                     engine: engine, nodeCount: nodeCount, from: node)
@@ -812,6 +986,7 @@ public final class DagDBCommandHandler {
                     }
                 }
                 pairs.sort { $0.1 < $1.1 }
+                if let e = checkShmFits(rows: pairs.count, rowSize: 8) { return e }
 
                 let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
                 headerPtr[0] = UInt32(pairs.count)
@@ -827,12 +1002,9 @@ public final class DagDBCommandHandler {
             }
 
         case .similarDecisions(let seed, let depth, let k, let truthFilter):
-            guard seed >= 0 && seed < nodeCount else {
-                return "ERROR out_of_range: seed \(seed) not in [0, \(nodeCount))"
-            }
-            guard depth >= 0, k > 0 else {
-                return "ERROR dsl_parse: depth must be non-negative and k positive"
-            }
+            if let e = checkRange("node", seed, upTo: nodeCount) { return e }
+            if let e = checkRange("depth", depth, upTo: nodeCount) { return e }
+            if let e = checkCap("k", k, 1, nodeCount) { return e }
             let t0 = Date()
 
             // 1. Query subgraph — seed + ancestors up to depth.
@@ -859,6 +1031,12 @@ public final class DagDBCommandHandler {
             for i in 0..<nodeCount where i != seed {
                 if let t = truthFilter, truthPtr[i] != t { continue }
                 candidates.append(i)
+            }
+            guard candidates.count <= Self.similarDecisionsCandidateCap else {
+                return "ERROR out_of_range: SIMILAR_DECISIONS candidate pool \(candidates.count)"
+                    + " not in 0...\(Self.similarDecisionsCandidateCap)"
+                    + " — one backward BFS runs per candidate on the single-threaded accept loop;"
+                    + " narrow the pool with AMONG TRUTH <t>"
             }
 
             // 3. Score each candidate by WL-1 L1 distance on its local subgraph.
@@ -890,6 +1068,7 @@ public final class DagDBCommandHandler {
             let topK = Array(scores.prefix(k))
 
             // 4. Serialize results: [4:count][4:reserved][(u32 node, f32 dist) × N]
+            if let e = checkShmFits(rows: topK.count, rowSize: 8) { return e }
             let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
             headerPtr[0] = UInt32(topK.count)
             headerPtr[1] = 0
@@ -905,7 +1084,8 @@ public final class DagDBCommandHandler {
         case .twin(let t):
             return handleTwin(t, sessionId: nil)
 
-        case .saveTiled, .tiledOpen, .tiledBFS, .tiledSelect, .tiledStatus, .tiledList, .tiledClose:
+        case .saveTiled, .tiledOpen, .tiledBFS, .tiledSelect, .tiledStatus, .tiledList, .tiledClose,
+             .tiledTick, .tiledGetTruth:
             return handleTiled(cmd, sessionId: nil)
 
         case .unknown(let raw):
@@ -940,37 +1120,42 @@ public final class DagDBCommandHandler {
             let truth = engine.readTruthStates()
             let ranks = engine.readRanks()
             var rows: [(Int, UInt64, UInt8, UInt8)] = []
+            var omitted = 0
             for i in 0..<nodeCount {
                 if let r = rank, ranks[i] != UInt64(r) { continue }
                 if let pred = predicate, !pred.evaluate(truth: truth[i], rank: ranks[i], nodeType: 0) { continue }
-                if rank == nil && ranks[i] == 0 && truth[i] == 0 { continue }
+                if rank == nil && ranks[i] == 0 && truth[i] == 0 { omitted += 1; continue }
                 rows.append((i, ranks[i], truth[i], 0))
             }
-            writeResults(rows)
-            return "OK NODES session=\(sessionId) rows=\(rows.count)"
+            if let e = writeResults(rows) { return e }
+            return "OK NODES session=\(sessionId) rows=\(rows.count) omitted=\(omitted)"
 
         case .traverse(let fromNode, let depth):
-            guard fromNode < nodeCount else { return "ERROR reader: node \(fromNode) out of range" }
+            if let e = checkRange("node", fromNode, upTo: nodeCount) { return e }
+            if let e = checkRange("depth", depth, upTo: nodeCount) { return e }
             var visited: [(Int, UInt64, UInt8, UInt8)] = []
+            var seen: Set<Int> = []
             var frontier: Set<Int> = [fromNode]
             let truth = engine.readTruthStates()
             let ranks = engine.readRanks()
             for _ in 0..<depth {
                 var nextFrontier: Set<Int> = []
                 for node in frontier {
-                    visited.append((node, ranks[node], truth[node], 0))
+                    if seen.insert(node).inserted {
+                        visited.append((node, ranks[node], truth[node], 0))
+                    }
                     let nb = engine.neighborsBuf.contents()
                         .bindMemory(to: Int32.self, capacity: nodeCount * 6)
                     for d in 0..<6 {
                         let src = nb[node * 6 + d]
-                        if src >= 0 && !frontier.contains(Int(src)) {
+                        if src >= 0 && !seen.contains(Int(src)) {
                             nextFrontier.insert(Int(src))
                         }
                     }
                 }
                 frontier = nextFrontier
             }
-            writeResults(visited)
+            if let e = writeResults(visited) { return e }
             return "OK TRAVERSE session=\(sessionId) rows=\(visited.count) from=\(fromNode) depth=\(depth)"
 
         case .validateGraph:
@@ -981,10 +1166,12 @@ public final class DagDBCommandHandler {
             }
 
         case .bfsDepths(let seed, let undirected):
+            if let e = checkRange("node", seed, upTo: nodeCount) { return e }
             do {
                 let r = undirected
                     ? try DagDBBFS.bfsDepthsUndirected(engine: engine, nodeCount: nodeCount, from: seed)
                     : try DagDBBFS.bfsDepthsBackward(engine: engine, nodeCount: nodeCount, from: seed)
+                if let e = checkShmFits(rows: nodeCount, rowSize: 4) { return e }
                 let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
                 headerPtr[0] = UInt32(nodeCount)
                 headerPtr[1] = 0
@@ -993,7 +1180,7 @@ public final class DagDBCommandHandler {
                     for i in 0..<nodeCount { dataPtr[i] = buf[i] }
                 }
                 let dir = undirected ? "undirected" : "backward"
-                return "OK BFS_DEPTHS session=\(sessionId) seed=\(seed) dir=\(dir) reached=\(r.reached) max_depth=\(r.maxDepth) elapsed=\(String(format: "%.1f", r.elapsedMs))ms shm_bytes=\(nodeCount * 4)"
+                return "OK BFS_DEPTHS session=\(sessionId) seed=\(seed) dir=\(dir) reached=\(r.reached) max_depth=\(r.maxDepth) elapsed=\(String(format: "%.1f", r.elapsedMs))ms shm_bytes=\(nodeCount * 4) \(r.disclosure) back_edge_count=\(r.backEdgeCount)"
             } catch {
                 return "ERROR bfs: reader_depths: \(error)"
             }
@@ -1012,7 +1199,7 @@ public final class DagDBCommandHandler {
             return "OK STATUS session=\(sessionId) nodes=\(nodeCount) grid=\(gridW)x\(gridH)"
 
         case .getTruth(let node):
-            guard node < nodeCount else { return "ERROR reader: node \(node) out of range" }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
             let truth = engine.truthStateBuf.contents()
                 .bindMemory(to: UInt8.self, capacity: nodeCount)[node]
             return "OK GET session=\(sessionId) node=\(node) truth=\(truth)"
@@ -1026,6 +1213,7 @@ public final class DagDBCommandHandler {
                 truth: truthVal, rankLo: lo, rankHi: hi,
                 engine: engine, nodeCount: nodeCount
             )
+            if let e = checkShmFits(rows: matches.count, rowSize: 4) { return e }
             let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
             headerPtr[0] = UInt32(matches.count)
             headerPtr[1] = 0
@@ -1036,9 +1224,8 @@ public final class DagDBCommandHandler {
             return "OK SELECT session=\(sessionId) truth=\(truthVal) rank=\(lo)-\(hi) matches=\(matches.count) shm_bytes=\(matches.count * 4)"
 
         case .ancestry(let node, let depth):
-            guard node >= 0 && node < nodeCount else {
-                return "ERROR out_of_range: node \(node) not in [0, \(nodeCount))"
-            }
+            if let e = checkRange("node", node, upTo: nodeCount) { return e }
+            if let e = checkRange("depth", depth, upTo: nodeCount) { return e }
             do {
                 let r = try DagDBBFS.bfsDepthsBackward(
                     engine: engine, nodeCount: nodeCount, from: node)
@@ -1048,6 +1235,7 @@ public final class DagDBCommandHandler {
                     if d >= 0 && d <= Int32(depth) { pairs.append((Int32(i), d)) }
                 }
                 pairs.sort { $0.1 < $1.1 }
+                if let e = checkShmFits(rows: pairs.count, rowSize: 8) { return e }
                 let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
                 headerPtr[0] = UInt32(pairs.count)
                 headerPtr[1] = 0
@@ -1061,12 +1249,13 @@ public final class DagDBCommandHandler {
                 return "ERROR bfs: reader: \(error)"
             }
 
-        case .tiledBFS, .tiledSelect, .tiledStatus, .tiledList:
+        case .tiledBFS, .tiledSelect, .tiledStatus, .tiledList, .tiledGetTruth:
             // Routers are daemon-global like twin registries (see
             // `tiledRouters`'s doc comment) — a reader session may run the
             // read-only TILED verbs against the same handler-owned routers
-            // the primary path uses. OPEN/CLOSE/SAVE TILED stay forbidden
-            // below (mutate the registry / the filesystem).
+            // the primary path uses (TILED GET included — a truth readback,
+            // no different from TILED BFS/SELECT). OPEN/CLOSE/SAVE/TICK
+            // stay forbidden below (mutate the registry / the filesystem).
             return handleTiled(cmd, sessionId: sessionId)
 
         // All writes and nested sessions rejected.
@@ -1079,7 +1268,7 @@ public final class DagDBCommandHandler {
              .setRanksBulk, .setLutsBulk, .setNeighborsBulk,
              .openReader, .closeReader, .listReaders, .reader,
              .similarDecisions, .composeLUT,
-             .saveTiled, .tiledOpen, .tiledClose:
+             .saveTiled, .tiledOpen, .tiledClose, .tiledTick:
             return "ERROR forbidden: command not allowed in reader session (read-only)"
 
         case .eval:
@@ -1089,6 +1278,14 @@ public final class DagDBCommandHandler {
             return "ERROR forbidden: EVAL not allowed in reader session (ticks mutate)"
 
         case .twin(let t):
+            // D5 · FOLD RUN's own refusal, because the state it moves is not
+            // a twin registry: it assigns the handler's `lastFold`, which
+            // FOLD KEPT/SOURCE/TIER/INFO read (audit B finding 18). Those
+            // four stay open to a reader; RUN does not.
+            if case .foldRun = t {
+                return "ERROR forbidden: FOLD RUN assigns the daemon-global last-fold result"
+                    + " that FOLD KEPT/SOURCE/TIER/INFO read; not allowed in reader session"
+            }
             // Twin registries are daemon-global (§0.13) — a reader session
             // may only run the read-only twin verbs, dispatched against the
             // same handler-owned twin state as the primary path.
@@ -1104,7 +1301,13 @@ public final class DagDBCommandHandler {
 
     // MARK: - Shared-memory result writer
 
-    func writeResults(_ rows: [(Int, UInt64, UInt8, UInt8)]) {
+    /// D2 · every shared-memory WRITE checks capacity, as the read side
+    /// (`readFloats`/`readDoubles`/`readU32s`) always did. Returns nil when
+    /// the rows fit, else the refusal line — nothing is written in that
+    /// case, so the previous result in shm stays intact and readable.
+    @discardableResult
+    func writeResults(_ rows: [(Int, UInt64, UInt8, UInt8)]) -> String? {
+        if let e = checkShmFits(rows: rows.count, rowSize: resultRowSize) { return e }
         let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
         headerPtr[0] = UInt32(rows.count)
         headerPtr[1] = UInt32(resultRowSize)
@@ -1118,5 +1321,23 @@ public final class DagDBCommandHandler {
             rowPtr.advanced(by: 17).storeBytes(of: row.3, as: UInt8.self)
             // 6 bytes pad at offsets 18..23 — zeroed once at shm init
         }
+        return nil
+    }
+
+    /// The one capacity refusal every shm writer shares (gate D2). The
+    /// arithmetic is overflow-reporting so a row count off the wire cannot
+    /// trap on the way to the guard that exists to catch it (gate D3).
+    func checkShmFits(rows: Int, rowSize: Int) -> String? {
+        let (product, mulOverflow) = rows.multipliedReportingOverflow(by: rowSize)
+        if mulOverflow {
+            return "ERROR out_of_range: result needs \(rows) x \(rowSize) bytes (overflows Int),"
+                + " shm holds \(shmCapacityBytes)"
+        }
+        let (needed, addOverflow) = product.addingReportingOverflow(8)
+        if addOverflow || needed > shmCapacityBytes {
+            return "ERROR out_of_range: result needs \(addOverflow ? product : needed) bytes,"
+                + " shm holds \(shmCapacityBytes)"
+        }
+        return nil
     }
 }

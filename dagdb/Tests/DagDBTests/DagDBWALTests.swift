@@ -18,7 +18,7 @@ final class DagDBWALTests: XCTestCase {
     }
 
     private func makeEngine(side: Int) throws -> DagDBEngine {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         return try DagDBEngine(grid: grid, state: state, maxRank: 8)
     }

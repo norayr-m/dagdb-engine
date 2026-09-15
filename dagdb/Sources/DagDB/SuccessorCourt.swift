@@ -50,11 +50,16 @@ public enum SuccessorCourt {
         pattern: [ValueRow], pocket: Int, layout: BudgetLayout
     ) -> [(cost: Double, value: Int, tier: Int?)] {
         var opts: [(cost: Double, value: Int, tier: Int?)] = [(0.0, 0, nil)]
-        let pi = SealedCourt.pocketIndex(pocket)
+        // Finding 47: an unknown pocket has no column in the layout, so it
+        // offers nothing beyond the baseline. The public front doors
+        // (`allocatorDecide`, `greedyDecide`) refuse such a pocket by name
+        // before ever reaching here.
+        guard let pi = SealedCourt.validPocketIndex(pocket), pi < layout.cost.count else { return opts }
         for r in SealedCourt.tiers {
             let val = pattern.reduce(0) { $0 + SealedCourt.value($1, tier: r) }
             if val > 0 {
                 let ti = SealedCourt.tierIndex(r)
+                guard ti >= 0, ti < layout.cost[pi].count else { continue }
                 opts.append((layout.cost[pi][ti], val, r))
             }
         }
@@ -85,6 +90,28 @@ public enum SuccessorCourt {
     /// regardless of whether every claim at that pocket is satisfied.
     public static func allocatorDecide(
         pocketClaims: [Int: [ValueRow]], budget: Double, layout: BudgetLayout = SealedCourt.makeLayout()
+    ) throws -> (served: Set<Int>, cost: Double) {
+        try validate(pocketClaims: pocketClaims)
+        return allocatorDecideTotal(pocketClaims: pocketClaims, budget: budget, layout: layout)
+    }
+
+    /// Findings 47 and 50: the occupied-pocket count is bounded by
+    /// `BudgetLayout.maxClaimedPockets` (the exact product below is
+    /// exponential in it) and every pocket must be one of the sealed
+    /// `3…6`. Both refuse by name.
+    public static func validate(pocketClaims: [Int: [ValueRow]]) throws {
+        guard pocketClaims.count <= BudgetLayout.maxClaimedPockets else {
+            throw SealedCourt.CourtError.tooManyClaimedPockets(pocketClaims.count)
+        }
+        for p in pocketClaims.keys.sorted() {
+            _ = try SealedCourt.pocketIndexChecked(p)
+        }
+    }
+
+    /// Total variant used by `classStats`, whose enumerated outcomes can
+    /// only occupy the four sealed pockets — never more than four at once.
+    static func allocatorDecideTotal(
+        pocketClaims: [Int: [ValueRow]], budget: Double, layout: BudgetLayout
     ) -> (served: Set<Int>, cost: Double) {
         let occ = pocketClaims.keys.sorted()
         guard !occ.isEmpty else { return ([], 0.0) }
@@ -138,10 +165,20 @@ public enum SuccessorCourt {
     /// need — mirrors `greedy_decide` / `deepest_affordable`).
     public static func greedyDecide(
         pocketClaims: [Int: [ValueRow]], budget: Double
+    ) throws -> (pocket: Int?, tier: Int?, cost: Double) {
+        try validate(pocketClaims: pocketClaims)
+        return greedyDecideTotal(pocketClaims: pocketClaims, budget: budget)
+    }
+
+    /// Total variant — see `allocatorDecideTotal`. An unknown pocket has
+    /// no tariff row, so nothing is affordable there.
+    static func greedyDecideTotal(
+        pocketClaims: [Int: [ValueRow]], budget: Double
     ) -> (pocket: Int?, tier: Int?, cost: Double) {
         guard let pMin = pocketClaims.keys.min() else { return (nil, nil, 0.0) }
+        guard let row = SealedCourt.tariff[pMin] else { return (pMin, nil, 0.0) }
         for r in SealedCourt.tiers.reversed() {
-            let c = SealedCourt.tariff[pMin]![r]!
+            guard let c = row[r] else { continue }
             if c <= budget {
                 return (pMin, r, c)
             }
@@ -177,6 +214,7 @@ public enum SuccessorCourt {
         let outcomes = model.enumerateOutcomes(for: culprit)
         let truth = CorruptionModel.truePocketRow(for: culprit)
         let isQuiet = (culprit == .quiet)
+        let layout = SealedCourt.makeLayout()
 
         var weightSum = 0.0
         var missA = 0.0
@@ -187,8 +225,9 @@ public enum SuccessorCourt {
         for outcome in outcomes {
             let w = outcome.weight
             weightSum += w
-            let (servedA, cA) = allocatorDecide(pocketClaims: outcome.pocketClaims, budget: budget)
-            let (pMinG, tierG, cG) = greedyDecide(pocketClaims: outcome.pocketClaims, budget: budget)
+            let (servedA, cA) = allocatorDecideTotal(
+                pocketClaims: outcome.pocketClaims, budget: budget, layout: layout)
+            let (pMinG, tierG, cG) = greedyDecideTotal(pocketClaims: outcome.pocketClaims, budget: budget)
             costA += w * cA
             costG += w * cG
             if !isQuiet, let truth = truth {
@@ -214,9 +253,16 @@ public enum SuccessorCourt {
         public let costGreedy: Double
         public let maxWeightDev: Double
         public let perClass: [String: ClassStats]
+        /// Finding 51: every label declared in `classSpecs` (plus "quiet")
+        /// that the supplied `counts` did not carry, in declaration order.
+        /// Empty on the sealed counts. A non-empty list means the totals
+        /// above are short by exactly those classes — counted and named,
+        /// never silently folded into zero.
+        public let missingClassCounts: [String]
         public init(
             missesAlloc: Double, missesGreedy: Double, costAlloc: Double, costGreedy: Double,
-            maxWeightDev: Double, perClass: [String: ClassStats]
+            maxWeightDev: Double, perClass: [String: ClassStats],
+            missingClassCounts: [String] = []
         ) {
             self.missesAlloc = missesAlloc
             self.missesGreedy = missesGreedy
@@ -224,6 +270,24 @@ public enum SuccessorCourt {
             self.costGreedy = costGreedy
             self.maxWeightDev = maxWeightDev
             self.perClass = perClass
+            self.missingClassCounts = missingClassCounts
+        }
+    }
+
+    /// The labels `frameTotals` needs a count for: every `classSpecs`
+    /// label plus "quiet".
+    public static var requiredCountLabels: [String] {
+        classSpecs.map(\.label) + ["quiet"]
+    }
+
+    /// Validating front door for a counts table (finding 51). Refuses by
+    /// name the first `classSpecs` label the table does not carry.
+    /// `frameTotals` itself cannot throw — its signature is shared with a
+    /// non-court caller — so it reports the same fact in
+    /// `FrameTotals.missingClassCounts` instead.
+    public static func validate(counts: [String: Int]) throws {
+        for label in requiredCountLabels where counts[label] == nil {
+            throw SealedCourt.CourtError.missingClassCount(label)
         }
     }
 
@@ -241,9 +305,11 @@ public enum SuccessorCourt {
         var costG = 0.0
         var maxDev = 0.0
         var perClass: [String: ClassStats] = [:]
+        var missing: [String] = []
 
         for (culprit, label) in classSpecs {
             let st = classStats(culprit: culprit, model: model, budget: budget)
+            if counts[label] == nil { missing.append(label) }
             let n = Double(counts[label] ?? 0)
             missA += n * (st.missAlloc ?? 0.0)
             missG += n * (st.missGreedy ?? 0.0)
@@ -254,6 +320,7 @@ public enum SuccessorCourt {
         }
 
         let stQ = classStats(culprit: .quiet, model: model, budget: budget)
+        if counts["quiet"] == nil { missing.append("quiet") }
         let nQ = Double(counts["quiet"] ?? 0)
         costA += nQ * stQ.costAlloc
         costG += nQ * stQ.costGreedy
@@ -262,6 +329,6 @@ public enum SuccessorCourt {
 
         return FrameTotals(
             missesAlloc: missA, missesGreedy: missG, costAlloc: costA, costGreedy: costG,
-            maxWeightDev: maxDev, perClass: perClass)
+            maxWeightDev: maxDev, perClass: perClass, missingClassCounts: missing)
     }
 }

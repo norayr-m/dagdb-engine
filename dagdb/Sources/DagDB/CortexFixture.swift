@@ -69,14 +69,28 @@ public struct CortexFixture {
         case badLayout(String)
     }
 
-    public static func load(path: String, expectedSHA256: String?) throws -> CortexFixture {
+    /// Audit C finding 23 (ruling: "the sha pin defaults to the sealed
+    /// constant"): `expectedSHA256` now DEFAULTS to `sealedSHA256`, so a
+    /// caller who says nothing gets the pin the type's own doc promises.
+    /// Passing `nil` is an explicit opt-out and prints
+    /// `WARN unpinned fixture` once per process.
+    private static var warnedUnpinned = false
+
+    public static func load(path: String, expectedSHA256: String? = sealedSHA256) throws -> CortexFixture {
         guard FileManager.default.fileExists(atPath: path) else {
             throw FixtureError.fileNotFound(path)
         }
         let fileData = try Data(contentsOf: URL(fileURLWithPath: path))
         let actualSHA = DagDBSnapshot.sha256Hex(fileData)
-        if let expected = expectedSHA256, expected != actualSHA {
-            throw FixtureError.shaMismatch(expected: expected, actual: actualSHA)
+        if let expected = expectedSHA256 {
+            if expected != actualSHA {
+                throw FixtureError.shaMismatch(expected: expected, actual: actualSHA)
+            }
+        } else if !warnedUnpinned {
+            warnedUnpinned = true
+            FileHandle.standardError.write(Data((
+                "WARN unpinned fixture: CortexFixture.load called with expectedSHA256 = nil; "
+                + "the sha256 pin is the fixture's only integrity check\n").utf8))
         }
 
         let entries: [String: NpzReader.Entry]

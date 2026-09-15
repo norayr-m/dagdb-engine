@@ -26,11 +26,17 @@ public enum DagDBBFS {
 
     public enum BFSError: Error, CustomStringConvertible {
         case seedOutOfRange(Int, nodeCount: Int)
+        /// The caller's `nodeCount` is not the engine's. It is used as the
+        /// `capacity:` for `bindMemory` on the engine's buffers, so a larger
+        /// one is a read past them (audit A, finding 27).
+        case nodeCountMismatch(given: Int, engine: Int)
 
         public var description: String {
             switch self {
             case .seedOutOfRange(let s, let n):
                 return "seed \(s) out of range [0, \(n))"
+            case let .nodeCountMismatch(given, engine):
+                return "nodeCount \(given) does not match the engine's \(engine)"
             }
         }
     }
@@ -40,6 +46,21 @@ public enum DagDBBFS {
         public let reached: Int          // count of nodes with depth ≥ 0
         public let maxDepth: Int32       // largest reached depth, -1 if only seed
         public let elapsedMs: Double
+        /// C6 · the decision, stated in the result rather than assumed.
+        ///
+        /// Both walks read `neighborsBuf` — the COMBINATIONAL edge table.
+        /// BACK_EDGEs are not in it: they are tick-boundary latches, not
+        /// edges the rank order constrains, and the engine evaluates them in
+        /// a separate phase. They are EXCLUDED from the walk, and the result
+        /// says so and says how many were left out, rather than folding a
+        /// latch into a geodesic distance and silently changing every number
+        /// this API has returned since it shipped. A caller that wants the
+        /// latch edges walks `engine.backEdgeSrcs` / `backEdgeDsts` itself.
+        public let backEdgesExcluded: Bool = true
+        /// How many BACK_EDGEs the graph held that this walk did not follow.
+        public let backEdgeCount: Int
+        /// The one-line disclosure, for a reply or a log.
+        public var disclosure: String { "back_edges=excluded" }
     }
 
     // MARK: - Undirected BFS (inputs ∪ fanout)
@@ -50,6 +71,9 @@ public enum DagDBBFS {
     public static func bfsDepthsUndirected(
         engine: DagDBEngine, nodeCount: Int, from seed: Int
     ) throws -> Result {
+        guard nodeCount == engine.nodeCount else {
+            throw BFSError.nodeCountMismatch(given: nodeCount, engine: engine.nodeCount)
+        }
         guard seed >= 0 && seed < nodeCount else {
             throw BFSError.seedOutOfRange(seed, nodeCount: nodeCount)
         }
@@ -93,7 +117,9 @@ public enum DagDBBFS {
                 // Incoming edges (this node's inputs).
                 for slot in 0..<6 {
                     let src = nb[v * 6 + slot]
-                    if src < 0 { continue }
+                    // The same bound the fanout build applies: an
+                    // out-of-range slot is an empty slot (audit A, 25).
+                    if src < 0 || Int(src) >= nodeCount { continue }
                     let s = Int(src)
                     if depths[s] == -1 {
                         depths[s] = d
@@ -120,7 +146,8 @@ public enum DagDBBFS {
         }
 
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
-        return Result(depths: depths, reached: reached, maxDepth: maxDepth, elapsedMs: elapsed)
+        return Result(depths: depths, reached: reached, maxDepth: maxDepth,
+                      elapsedMs: elapsed, backEdgeCount: engine.backEdgeCount)
     }
 
     // MARK: - Backward BFS (follow inputs only)
@@ -132,6 +159,9 @@ public enum DagDBBFS {
     public static func bfsDepthsBackward(
         engine: DagDBEngine, nodeCount: Int, from seed: Int
     ) throws -> Result {
+        guard nodeCount == engine.nodeCount else {
+            throw BFSError.nodeCountMismatch(given: nodeCount, engine: engine.nodeCount)
+        }
         guard seed >= 0 && seed < nodeCount else {
             throw BFSError.seedOutOfRange(seed, nodeCount: nodeCount)
         }
@@ -155,7 +185,9 @@ public enum DagDBBFS {
             for v in current {
                 for slot in 0..<6 {
                     let src = nb[v * 6 + slot]
-                    if src < 0 { continue }
+                    // The same bound the fanout build applies: an
+                    // out-of-range slot is an empty slot (audit A, 25).
+                    if src < 0 || Int(src) >= nodeCount { continue }
                     let s = Int(src)
                     if depths[s] == -1 {
                         depths[s] = d
@@ -170,7 +202,8 @@ public enum DagDBBFS {
         }
 
         let elapsed = Date().timeIntervalSince(t0) * 1000.0
-        return Result(depths: depths, reached: reached, maxDepth: maxDepth, elapsedMs: elapsed)
+        return Result(depths: depths, reached: reached, maxDepth: maxDepth,
+                      elapsedMs: elapsed, backEdgeCount: engine.backEdgeCount)
     }
 
     // MARK: - Note on encodings

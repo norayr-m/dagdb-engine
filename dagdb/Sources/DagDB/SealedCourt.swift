@@ -84,6 +84,49 @@ public enum SealedCourt {
         }
     }
 
+    /// Refusals shared by the two sealed courts and the hook — named,
+    /// typed, and thrown rather than trapped (audit C findings 47, 49,
+    /// 50, 51).
+    public enum CourtError: Error, Equatable, CustomStringConvertible {
+        /// A pocket outside the sealed `3…6` vocabulary.
+        case pocketOutOfRange(Int)
+        /// Two records claiming the same 1-based frame index.
+        case duplicateRecordIndex(Int)
+        /// More occupied pockets than the exact subset search may enumerate.
+        case tooManyClaimedPockets(Int)
+        /// A `classSpecs` label with no entry in the supplied counts.
+        case missingClassCount(String)
+
+        public var description: String {
+            switch self {
+            case .pocketOutOfRange(let p):
+                return "pocket \(p) out of range \(SealedCourt.pockets.first ?? 0)...\(SealedCourt.pockets.last ?? 0)"
+            case .duplicateRecordIndex(let i):
+                return "duplicate record index \(i)"
+            case .tooManyClaimedPockets(let n):
+                return "pocket count \(n) exceeds maxClaimedPockets \(BudgetLayout.maxClaimedPockets)"
+            case .missingClassCount(let label):
+                return "class label '\(label)' is declared in classSpecs but absent from counts"
+            }
+        }
+    }
+
+    /// Zero-based column index of a sealed pocket, or nil when the pocket
+    /// is not one of `pockets` — the trap-free half of `pocketIndex`.
+    public static func validPocketIndex(_ sealedPocket: Int) -> Int? {
+        pockets.firstIndex(of: sealedPocket)
+    }
+
+    /// Validating front door: the same mapping as `pocketIndex`, refusing
+    /// a pocket outside `3…6` by name instead of indexing out of bounds
+    /// (finding 47).
+    public static func pocketIndexChecked(_ sealedPocket: Int) throws -> Int {
+        guard let i = validPocketIndex(sealedPocket) else {
+            throw CourtError.pocketOutOfRange(sealedPocket)
+        }
+        return i
+    }
+
     public static func pocketIndex(_ sealedPocket: Int) -> Int { sealedPocket - 3 }
     public static func tierIndex(_ sealedTier: Int) -> Int { sealedTier - 3 }
     public static func sealedTier(_ tierIndex: Int) -> Int { tierIndex + 3 }

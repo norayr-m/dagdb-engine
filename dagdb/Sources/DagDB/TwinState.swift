@@ -168,6 +168,11 @@ public final class TwinState {
 
     public init() {}
 
+    /// Replay ceiling on the two ops whose WAL count commands unbounded
+    /// work (`.recordSlice` draws, `.clockAdvance` ticks) — the same
+    /// 10 000 the daemon's own tick verbs accept (finding 63).
+    public static let replayCap = 10_000
+
     public enum TwinError: Error, Equatable, CustomStringConvertible {
         case notFound(String)
         case badId(String)
@@ -257,17 +262,25 @@ public final class TwinState {
             do { try records.open(entry, id: id) } catch { throw mapError(error, in: records) }
 
         case .recordSlice(let id, let count):
+            // Finding 63: the count comes straight off the WAL and commands
+            // the work, which `TwinWALCodec.maxPayloadBytes` does not bound.
+            // The replay cap is the same 10 000 the daemon's tick verbs use.
+            guard count <= UInt32(Self.replayCap) else {
+                throw TwinError.badValue("count \(count) not in 0...\(Self.replayCap)")
+            }
             do {
                 try records.update(id) { r in
-                    r.recordSlice(count: Int(count))
+                    try r.recordSlice(count: Int(count))
                 }
+            } catch let e as StreamRecord.RecordError {
+                throw TwinError.badValue("\(e)")
             } catch { throw mapError(error, in: records) }
 
         case .ringsOpen(let id, let gear, let ringCount, let cells):
             if let violation = GearedRings.shapeViolation(gear: gear, rings: Int(ringCount), cellsPerRing: Int(cells)) {
                 throw TwinError.badValue(violation)
             }
-            let entry = GearedRings(gear: gear, rings: Int(ringCount), cellsPerRing: Int(cells))
+            let entry = try GearedRings(gear: gear, rings: Int(ringCount), cellsPerRing: Int(cells))
             do { try rings.open(entry, id: id) } catch { throw mapError(error, in: rings) }
 
         case .ringsWrite(let id, let values):
@@ -282,6 +295,11 @@ public final class TwinState {
             do { try clocks.open(entry, id: id) } catch { throw mapError(error, in: clocks) }
 
         case .clockAdvance(let id, let count, let value):
+            // Finding 63: same declared ceiling, same wording — one 20-byte
+            // record must never command 2^64 ticks on replay.
+            guard count <= UInt64(Self.replayCap) else {
+                throw TwinError.badValue("n \(count) not in 0...\(Self.replayCap)")
+            }
             guard clocks.get(id) != nil else { throw TwinError.notFound(id) }
             for _ in 0..<count {
                 var tick: UInt64 = 0
@@ -383,7 +401,10 @@ public final class TwinState {
             if let clockId = params.clockId {
                 guard clocks.get(clockId) != nil else { throw TwinError.notFound(clockId) }
             }
-            let hook = AttentionHook(params: params, records: alarmSet.fixture.records, layout: hookLayout)
+            let hook: AttentionHook
+            do {
+                hook = try AttentionHook(params: params, records: alarmSet.fixture.records, layout: hookLayout)
+            } catch { throw TwinError.badValue("\(error)") }
             let entry = HookEntry(params: params, hook: hook)
             do { try hooks.open(entry, id: id) } catch { throw mapError(error, in: hooks) }
             if let clockId = params.clockId {
@@ -532,13 +553,25 @@ public final class TwinState {
             case formatVersion, counters, streams, records, rings, clocks, gears, layouts, alarms, banks, views, kernels, hooks
         }
 
+        /// The only `formatVersion` this decoder understands.
+        public static let acceptedFormatVersion = 1
+
         /// Custom decode so a Snapshot JSON written before `banks`/`views`/
         /// `kernels`/`hooks` existed (no such key at all) still decodes
         /// cleanly, with an empty registry — every other field stays a
-        /// plain required decode.
+        /// plain required decode. `formatVersion` itself is compared, not
+        /// merely read (finding 60).
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             formatVersion = try c.decode(Int.self, forKey: .formatVersion)
+            // Finding 60: the field was decoded and never compared, so a
+            // future version that reshapes banks/views/kernels/hooks would
+            // restore those registries EMPTY and report success.
+            guard formatVersion == Self.acceptedFormatVersion else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .formatVersion, in: c,
+                    debugDescription: "twin snapshot formatVersion \(formatVersion) is not the accepted \(Self.acceptedFormatVersion)")
+            }
             counters = try c.decode([String: UInt64].self, forKey: .counters)
             streams = try c.decode([String: NamedStream].self, forKey: .streams)
             records = try c.decode([String: StreamRecord].self, forKey: .records)
@@ -650,8 +683,19 @@ public final class TwinState {
         // (never stored). Trusted like streams/records/etc (no external
         // file of its own) — a bad reference here is real corruption, so
         // it throws rather than warn-and-drop.
-        for (id, ref) in snap.hooks {
+        for (id, ref) in snap.hooks.sorted(by: { $0.key < $1.key }) {
             guard let alarmSet = alarms.get(ref.params.alarmId) else {
+                // Finding 61: the alarm this hook is bound to was the one
+                // documented non-fatal case — dropped with a warning. A
+                // hook standing on a dropped alarm is dropped the same
+                // way, so the declared drop-one policy is what happens
+                // instead of a whole-restore refusal. A hook naming an
+                // alarm that was never IN the snapshot is real corruption
+                // and still throws.
+                if snap.alarms[ref.params.alarmId] != nil {
+                    warn("twin: dropping hook \(id) — its alarm set \(ref.params.alarmId) was dropped")
+                    continue
+                }
                 throw TwinError.notFound(ref.params.alarmId)
             }
             let hookLayout: BudgetLayout
@@ -664,8 +708,18 @@ public final class TwinState {
             if let clockId = ref.params.clockId {
                 guard clocks.get(clockId) != nil else { throw TwinError.notFound(clockId) }
             }
-            var hook = AttentionHook(params: ref.params, records: alarmSet.fixture.records, layout: hookLayout)
+            var hook: AttentionHook
+            do {
+                hook = try AttentionHook(params: ref.params, records: alarmSet.fixture.records, layout: hookLayout)
+            } catch { throw TwinError.badValue("\(error)") }
             hook.step(ref.t)
+            // Finding 62: `step(_:)` is bounded by the hook's own frame
+            // count, so a snapshot whose `t` exceeds it used to restore
+            // silently at a DIFFERENT frame than it recorded.
+            guard hook.t == ref.t else {
+                throw TwinError.badValue(
+                    "hook \(id) recorded frame \(ref.t) but its \(hook.frames)-frame ledger stops at \(hook.t)")
+            }
             let entry = HookEntry(params: ref.params, hook: hook)
             do { try hooks.open(entry, id: id) } catch { throw mapError(error, in: hooks) }
             if let clockId = ref.params.clockId {

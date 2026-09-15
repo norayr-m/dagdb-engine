@@ -48,7 +48,7 @@ final class DagDBSnapshotTwinTests: XCTestCase {
     /// shape from DagDBSnapshotTests — these tests don't care about engine
     /// buffer content, only about the TWIN section riding alongside it.
     private func makeEngine(side: Int) throws -> (DagDBEngine, Int, Int) {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         return (engine, side, side)
@@ -293,11 +293,19 @@ final class DagDBSnapshotTwinTests: XCTestCase {
         let path = tmpDir! + "twin_empty.dags"
         let saved = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
                                            gridW: gw, gridH: gh, tickCount: 0, path: path)
-        // No `twin` passed → length 0. header(32) + body(42N) + back-edge
+        // Audit C test item 74: the guard used to restate, term for term,
+        // the sum `save` builds its own return value from — the writer
+        // grading its own arithmetic. The independent measurement is the
+        // file itself, the pattern `DagDBWALTwinTests` already uses.
+        let onDisk = try FileManager.default.attributesOfItem(atPath: path)[.size] as? Int
+        XCTAssertEqual(onDisk, saved.bytesWritten,
+                       "the writer's tally must equal the bytes actually on disk")
+        // The term-by-term sum is kept BESIDE the stat, as the layout
+        // documentation it always was: header(32) + body(42N) + back-edge
         // count(4, no back-edges) + WGTS header(5, default lanes) + TWIN
         // section(8: 4 B magic + 4 B u32 length, empty payload) + ENVS
         // trailer(5).
-        XCTAssertEqual(saved.bytesWritten, 32 + eng1.nodeCount * 42 + 4 + 5 + 8 + 5)
+        XCTAssertEqual(onDisk, 32 + eng1.nodeCount * 42 + 4 + 5 + 8 + 5)
     }
 
     // MARK: - v6 file resets twin

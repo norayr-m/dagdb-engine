@@ -76,6 +76,14 @@ public enum DSLCommand {
     /// see `TiledGraphRouter`'s header comment on why `save`/`close` on the
     /// router itself stay stubs).
     case tiledClose(id: String)
+    /// TILED TICK <id> [<n>] [SYNC] — ticking gates W5. Advances the
+    /// world `n` ticks (default 1, checked 1...10000 by the handler) in
+    /// rank mode, or sync mode if `SYNC` trails. Mutating (flushes every
+    /// tile to disk) — forbidden in a reader session.
+    case tiledTick(id: String, n: Int, sync: Bool)
+    /// TILED GET <id> <globalId> TRUTH — one node's current truth byte
+    /// through an open router. Read-only.
+    case tiledGetTruth(id: String, globalId: UInt64)
     case backupInit(dir: String)
     case backupAppend(dir: String)
     case backupRestore(dir: String)
@@ -310,6 +318,8 @@ public enum DSLParser {
             // TILED STATUS <id>
             // TILED LIST
             // TILED CLOSE <id>
+            // TILED TICK <id> [<n>] [SYNC]     — ticking gates W5
+            // TILED GET <id> <globalId> TRUTH  — ticking gates W5
             // Gate T5 — NOT a twin verb (routers aren't a twin registry:
             // `TiledGraphRouter`'s own header comment), so this is parsed
             // at the top level, not routed through `parseTwin`.
@@ -347,6 +357,34 @@ public enum DSLParser {
             case "CLOSE":
                 guard rawTokens.count >= 3 else { return .unknown(input) }
                 return .tiledClose(id: rawTokens[2])
+            case "TICK":
+                // TILED TICK <id> [<n>] [SYNC] — n defaults to 1; SYNC, if
+                // present, always trails any explicit n. Anything past
+                // that shape (extra tokens, a non-numeric n) is `.unknown`.
+                guard rawTokens.count >= 3 else { return .unknown(input) }
+                var n = 1
+                var sync = false
+                var idx = 3
+                if idx < rawTokens.count && tokens[idx] != "SYNC" {
+                    guard let nv = Int(rawTokens[idx]) else { return .unknown(input) }
+                    n = nv
+                    idx += 1
+                }
+                if idx < rawTokens.count && tokens[idx] == "SYNC" {
+                    sync = true
+                    idx += 1
+                }
+                guard idx == rawTokens.count else { return .unknown(input) }
+                return .tiledTick(id: rawTokens[2], n: n, sync: sync)
+            case "GET":
+                // TILED GET <id> <globalId> TRUTH — trailing token MUST be
+                // TRUTH (the only readback this verb offers today).
+                guard rawTokens.count == 5,
+                      let globalId = UInt64(rawTokens[3]),
+                      tokens[4] == "TRUTH" else {
+                    return .unknown(input)
+                }
+                return .tiledGetTruth(id: rawTokens[2], globalId: globalId)
             default:
                 return .unknown(input)
             }

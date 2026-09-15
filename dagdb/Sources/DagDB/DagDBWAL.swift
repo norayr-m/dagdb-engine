@@ -9,12 +9,38 @@
 ///     Header (16 B):  "DAGW" (4) + version u32 + nodeCount u32 + reserved u32
 ///     Record: length u32 (payload-only) + opcode u8 + payload bytes
 ///
+/// Versions:
+///     1 — the opcode set up to 0x11 plus the twin range. SET_RANK payloads
+///         of 5 (u8 rank) and 8 (u32 rank) bytes are LEGACY and accepted.
+///     2 — adds the combinational-edge and bulk-install opcodes 0x12…0x16,
+///         so every mutation the daemon performs is in the log, as this
+///         file's header has always claimed. Under version 2 a SET_RANK
+///         payload is 12 bytes or the record is torn: 5 and 8 are no longer
+///         a legacy shape to fall back on, they are counted as skipped.
+///     A version above 2 is refused by name. A version-1 file still replays
+///     in full — its opcode set is a subset of version 2's.
+///
 /// Opcodes and payloads (length = payload byte count, does not include opcode):
 ///     0x01 SET_TRUTH         u32 node + u8 value                → length = 5
-///     0x02 SET_RANK          u32 node + u8 value                → length = 5
+///     0x02 SET_RANK          u32 node + u64 value               → length = 12
+///                            (v1 legacy: u32 node + u32 = 8, + u8 = 5)
 ///     0x03 SET_LUT           u32 node + u64 lut                 → length = 12
 ///     0x10 CONNECT_BACK      u32 src  + u32 dst                 → length = 8
 ///     0x11 CLEAR_BACK_EDGES  u32 dst                            → length = 4
+///
+///     Version 2 — combinational edges and bulk installs:
+///     0x12 CONNECT           u32 dst + u8 slot + i32 src        → length = 9
+///          One neighbour slot, written by the slot the daemon chose, so a
+///          replay reproduces the table regardless of the order records land.
+///     0x13 CLEAR_EDGES       u32 node                           → length = 4
+///          All six combinational slots of `node` reset to -1.
+///     0x14 SET_RANKS_BULK    u32 n + u64 rank[n]                → 4 + 8n
+///     0x15 SET_LUTS_BULK     u32 n + u64 lut[n]                 → 4 + 8n
+///     0x16 SET_NEIGHBORS_BULK u32 n + i32 nb[n*6]               → 4 + 24n
+///          The three bulk installs carry their whole vector: they overwrite
+///          the buffer wholesale, so a per-record diff would be larger, not
+///          smaller. `n` must equal the log's node count or the record is
+///          counted as out-of-range, not applied.
 ///
 ///     Twin registry ops (interface phase, 2026-09) — one opcode per `TwinOp` case, payload
 ///     encoded/decoded by `TwinWALCodec` (strings u16-len + UTF-8; u64/u32
@@ -56,7 +82,12 @@ import Foundation
 public enum DagDBWAL {
 
     public static let magic: [UInt8] = [0x44, 0x41, 0x47, 0x57]  // "DAGW"
-    public static let version: UInt32 = 1
+    /// The opcode set before the combinational-edge and bulk-install ops.
+    public static let versionV1: UInt32 = 1
+    /// Adds 0x12…0x16 and makes the 12-byte SET_RANK payload the only one.
+    public static let versionV2: UInt32 = 2
+    /// The version a freshly created log is stamped with.
+    public static let version: UInt32 = versionV2
     public static let headerSize: Int = 16
 
     public enum Opcode: UInt8 {
@@ -68,6 +99,13 @@ public enum DagDBWAL {
         case setNodeValue    = 0x06  // u32 node + f32 value = 8 B (E1)
         case connectBack     = 0x10
         case clearBackEdges  = 0x11
+        // Version 2 — the combinational-edge writes that used to bypass the
+        // log entirely (audit A, finding 28).
+        case connect          = 0x12  // u32 dst + u8 slot + i32 src = 9 B
+        case clearEdges       = 0x13  // u32 node = 4 B
+        case setRanksBulk     = 0x14  // u32 n + u64[n]
+        case setLutsBulk      = 0x15  // u32 n + u64[n]
+        case setNeighborsBulk = 0x16  // u32 n + i32[n*6]
         // Twin registry ops (interface phase, 2026-09) — payload via TwinWALCodec, one per
         // TwinOp case. Kept contiguous so replay can range-match them.
         case twinStreamOpen   = 0x20  // TwinOp.streamOpen
@@ -95,6 +133,13 @@ public enum DagDBWAL {
         case invalidMagic
         case unsupportedVersion(UInt32)
         case truncated(String)
+        /// An opcode introduced at a later version was offered to an older
+        /// log. The record is NOT written: a file whose header says v1 must
+        /// not carry an op a v1 reader would not understand.
+        case opcodeNeedsVersion(opcode: UInt8, needs: UInt32, fileVersion: UInt32)
+        /// `truncate` was called while an `Appender` still holds the file
+        /// open (audit A, finding 33). See the note on `truncate`.
+        case appenderOpen(path: String)
 
         public var description: String {
             switch self {
@@ -102,8 +147,40 @@ public enum DagDBWAL {
             case .invalidMagic:               return "invalid magic"
             case .unsupportedVersion(let v):  return "version \(v)"
             case .truncated(let s):           return "truncated: \(s)"
+            case let .opcodeNeedsVersion(op, needs, fileVersion):
+                return String(format:
+                    "opcode 0x%02x needs log version %u, this log is version %u",
+                    op, needs, fileVersion)
+            case .appenderOpen(let p):
+                return "truncate refused: an Appender is still open on \(p) — " +
+                       "release the appender first, or its O_APPEND descriptor " +
+                       "would keep writing to the unlinked inode"
             }
         }
+    }
+
+    /// Why records were not applied. Every replay reports these; a replay
+    /// that skipped anything is never silent.
+    ///
+    /// - `badLength`: the payload length does not match the opcode's shape
+    ///   (a torn record, or a legacy width no longer legal at this version).
+    ///   A twin op whose payload does not decode is counted here too.
+    /// - `outOfRangeIndex`: the record is well-formed but names something
+    ///   this engine cannot address — a node index at or past `nodeCount`,
+    ///   a direction outside 0…5, a bulk vector of the wrong length, or a
+    ///   twin op whose id the registry rejects.
+    /// - `unknownOpcode`: an opcode this build does not know. Expected when
+    ///   a newer writer's log is replayed by an older reader.
+    public struct SkipReasons: Equatable, Sendable {
+        public var badLength: Int = 0
+        public var outOfRangeIndex: Int = 0
+        public var unknownOpcode: Int = 0
+        public var total: Int { badLength + outOfRangeIndex + unknownOpcode }
+        /// One-line histogram for logs and replies.
+        public var line: String {
+            "bad_length=\(badLength) out_of_range=\(outOfRangeIndex) unknown_opcode=\(unknownOpcode)"
+        }
+        public init() {}
     }
 
     public struct ReplayResult {
@@ -112,6 +189,43 @@ public enum DagDBWAL {
         public let checkpointEpoch: UInt64
         public let elapsedMs: Double
         public let truncatedAtOffset: Int?
+        /// Records inside the replay window that were walked past instead of
+        /// applied. Equals `skipReasons.total`.
+        public let recordsSkipped: Int
+        public let skipReasons: SkipReasons
+        /// The log header's version. 1 for a legacy log, 2 for a current one.
+        public let fileVersion: UInt32
+    }
+
+    // MARK: - Open-appender registry (C1e)
+
+    private static let openLock = NSLock()
+    private static var openAppenderPaths: [String: Int] = [:]
+
+    private static func canonical(_ path: String) -> String {
+        (path as NSString).standardizingPath
+    }
+
+    private static func registerAppender(_ path: String) {
+        let k = canonical(path)
+        openLock.lock(); defer { openLock.unlock() }
+        openAppenderPaths[k, default: 0] += 1
+    }
+
+    private static func unregisterAppender(_ path: String) {
+        let k = canonical(path)
+        openLock.lock(); defer { openLock.unlock() }
+        if let c = openAppenderPaths[k] {
+            if c <= 1 { openAppenderPaths.removeValue(forKey: k) }
+            else { openAppenderPaths[k] = c - 1 }
+        }
+    }
+
+    /// Whether some `Appender` in this process currently holds the log open.
+    public static func hasOpenAppender(path: String) -> Bool {
+        let k = canonical(path)
+        openLock.lock(); defer { openLock.unlock() }
+        return openAppenderPaths[k] != nil
     }
 
     // MARK: - Appender
@@ -141,7 +255,30 @@ public enum DagDBWAL {
         public let path: String
         public let nodeCount: UInt32
         public let policy: FsyncPolicy
+        /// The version stamped in THIS file's header. A fresh log is
+        /// `DagDBWAL.version`; an existing one keeps whatever it declared,
+        /// and `append` refuses an opcode that version cannot describe.
+        public let fileVersion: UInt32
         private var fd: Int32 = -1
+        /// Set once the path is in the open-appender registry, so a throw
+        /// late in `init` cannot decrement another appender's entry.
+        private var registered: Bool = false
+
+        /// C12 · gate seam. When true, every `append` refuses instead of
+        /// writing, so a test can observe what a caller does when the log
+        /// will not take a record.
+        ///
+        /// The order a mutation is applied in — append first, then write the
+        /// buffer — cannot be gated by killing the process between the two:
+        /// there is no way to stop a test there. It CAN be gated by the
+        /// other end of the same order: a log that refuses must leave the
+        /// engine untouched. That needs an appender whose `append` throws,
+        /// and a real one cannot be produced on this machine (the descriptor
+        /// is opened `O_WRONLY` at init, so a later `chmod` does not reach
+        /// it, and an unwritable path makes `init` itself throw). This flag
+        /// is that appender. It is `internal`, defaults to false, and is
+        /// never set by any code outside a test.
+        internal var refuseAppendsForGate: Bool = false
 
         /// Serial queue owning all fd writes, fsyncs, and the timer.
         private let queue = DispatchQueue(label: "dagdb.wal.appender")
@@ -170,6 +307,7 @@ public enum DagDBWAL {
             let fm = FileManager.default
             let exists = fm.fileExists(atPath: path)
             if !exists {
+                self.fileVersion = DagDBWAL.version
                 fm.createFile(atPath: path, contents: nil)
                 // Write header.
                 self.fd = open(path, O_WRONLY | O_APPEND)
@@ -197,7 +335,13 @@ public enum DagDBWAL {
                 let m = [UInt8](data[0..<4])
                 guard m == magic else { throw WALError.invalidMagic }
                 let ver = readU32(data, 4)
-                guard ver == version else { throw WALError.unsupportedVersion(ver) }
+                // A v1 log is still appendable — its opcodes are a subset.
+                // Anything past the version this build writes is refused by
+                // name rather than appended to blind.
+                guard ver == versionV1 || ver == versionV2 else {
+                    throw WALError.unsupportedVersion(ver)
+                }
+                self.fileVersion = ver
                 let fileNC = readU32(data, 8)
                 guard fileNC == self.nodeCount else {
                     throw WALError.ioFailure("nodeCount mismatch \(fileNC) vs \(self.nodeCount)")
@@ -208,9 +352,12 @@ public enum DagDBWAL {
                     throw WALError.ioFailure("open existing: errno=\(errno)")
                 }
             }
+            DagDBWAL.registerAppender(path)
+            self.registered = true
         }
 
         deinit {
+            if registered { DagDBWAL.unregisterAppender(path) }
             // Flush any deferred tail so a normal appender teardown is durable,
             // then tear the timer down and close the fd. Runs on `queue` to
             // keep the fd/timer invariant.
@@ -235,6 +382,19 @@ public enum DagDBWAL {
         /// be deferred (see `FsyncPolicy`).
         @discardableResult
         public func append(opcode: Opcode, payload: Data) throws -> Int {
+            if refuseAppendsForGate {
+                throw WALError.ioFailure("append refused (gate seam)")
+            }
+            // A log declares the opcode set a reader may expect. Appending a
+            // v2 op to a v1 header would hand that reader a record it counts
+            // as unknown — a silent loss of the very mutation this opcode
+            // was added to stop losing. Refuse by name instead.
+            if fileVersion < DagDBWAL.minimumVersion(for: opcode) {
+                throw WALError.opcodeNeedsVersion(
+                    opcode: opcode.rawValue,
+                    needs: DagDBWAL.minimumVersion(for: opcode),
+                    fileVersion: fileVersion)
+            }
             var rec = Data()
             appendU32(&rec, UInt32(payload.count))
             rec.append(opcode.rawValue)
@@ -363,6 +523,63 @@ public enum DagDBWAL {
             appendU32(&d, dst)
             return try append(opcode: .clearBackEdges, payload: d)
         }
+
+        // ── Version 2: combinational edges and bulk installs ──────────────
+
+        /// One combinational edge, by the slot the writer chose. Logging the
+        /// slot (rather than re-deriving "first free slot" at replay) keeps
+        /// replay independent of the state it starts from.
+        @discardableResult
+        public func connect(dst: UInt32, slot: UInt8, src: Int32) throws -> Int {
+            var d = Data()
+            appendU32(&d, dst)
+            d.append(slot)
+            appendU32(&d, UInt32(bitPattern: src))
+            return try append(opcode: .connect, payload: d)
+        }
+
+        /// All six combinational slots of `node` reset to -1.
+        @discardableResult
+        public func clearEdges(node: UInt32) throws -> Int {
+            var d = Data()
+            appendU32(&d, node)
+            return try append(opcode: .clearEdges, payload: d)
+        }
+
+        @discardableResult
+        public func setRanksBulk(_ ranks: UnsafePointer<UInt64>, count: Int) throws -> Int {
+            var d = Data()
+            appendU32(&d, UInt32(count))
+            d.append(UnsafeBufferPointer(start: ranks, count: count))
+            return try append(opcode: .setRanksBulk, payload: d)
+        }
+
+        @discardableResult
+        public func setLutsBulk(_ luts: UnsafePointer<UInt64>, count: Int) throws -> Int {
+            var d = Data()
+            appendU32(&d, UInt32(count))
+            d.append(UnsafeBufferPointer(start: luts, count: count))
+            return try append(opcode: .setLutsBulk, payload: d)
+        }
+
+        /// `count` is the NODE count; the vector itself is `count * 6` long.
+        @discardableResult
+        public func setNeighborsBulk(_ nb: UnsafePointer<Int32>, count: Int) throws -> Int {
+            var d = Data()
+            appendU32(&d, UInt32(count))
+            d.append(UnsafeBufferPointer(start: nb, count: count * 6))
+            return try append(opcode: .setNeighborsBulk, payload: d)
+        }
+    }
+
+    /// The log version an opcode first appeared at.
+    static func minimumVersion(for opcode: Opcode) -> UInt32 {
+        switch opcode {
+        case .connect, .clearEdges, .setRanksBulk, .setLutsBulk, .setNeighborsBulk:
+            return versionV2
+        default:
+            return versionV1
+        }
     }
 
     // MARK: - Replay
@@ -386,15 +603,21 @@ public enum DagDBWAL {
         let m = [UInt8](data[0..<4])
         guard m == magic else { throw WALError.invalidMagic }
         let ver = readU32(data, 4)
-        guard ver == version else { throw WALError.unsupportedVersion(ver) }
+        guard ver == versionV1 || ver == versionV2 else {
+            throw WALError.unsupportedVersion(ver)
+        }
         let fileNC = Int(readU32(data, 8))
         guard fileNC == nodeCount else {
             throw WALError.ioFailure("nodeCount \(fileNC) vs \(nodeCount)")
         }
 
         // First pass: find the offset of the LAST CHECKPOINT record.
-        // Returns (lastCheckpointOff, checkpointEpoch, truncatedOff?)
+        // A CHECKPOINT payload is exactly 8 bytes. A checkpoint of any other
+        // length is a TORN checkpoint: it is not a boundary (treating it as
+        // one would push the replay window past the start of the following
+        // record and drop it), and the second pass counts it as skipped.
         var lastCheckpointOff: Int? = nil
+        var lastCheckpointRecordTotal = 0
         var lastEpoch: UInt64 = 0
         var truncatedAt: Int? = nil
         var off = headerSize
@@ -408,20 +631,21 @@ public enum DagDBWAL {
                 truncatedAt = off; break
             }
             let opRaw = data[off + 4]
-            if opRaw == Opcode.checkpoint.rawValue {
+            if opRaw == Opcode.checkpoint.rawValue && payloadLen == 8 {
                 lastCheckpointOff = off
-                if payloadLen == 8 {
-                    lastEpoch = readU64(data, off + 5)
-                }
+                lastCheckpointRecordTotal = recordTotal
+                lastEpoch = readU64(data, off + 5)
             }
             off += recordTotal
         }
 
         // Second pass: replay records after the last checkpoint (if any).
-        // If no checkpoint, replay all records from the header.
-        let startOff = lastCheckpointOff.map { $0 + 4 + 1 + 8 } ?? headerSize
+        // The window starts past the checkpoint record's OWN measured
+        // length, never a hardcoded width.
+        let startOff = lastCheckpointOff.map { $0 + lastCheckpointRecordTotal } ?? headerSize
         var applied = 0
         var afterCheckpoint = 0
+        var skips = SkipReasons()
         off = headerSize
         while off < (truncatedAt ?? data.count) {
             let payloadLen = Int(readU32(data, off))
@@ -431,36 +655,39 @@ public enum DagDBWAL {
             if off >= startOff {
                 switch opRaw {
                 case Opcode.setTruth.rawValue:
-                    guard payloadLen == 5 else { off += recordTotal; continue }
+                    guard payloadLen == 5 else { skips.badLength += 1; off += recordTotal; continue }
                     let node = Int(readU32(data, off + 5))
                     let value = data[off + 9]
                     if node >= 0 && node < nodeCount {
                         let p = engine.truthStateBuf.contents().bindMemory(to: UInt8.self, capacity: nodeCount)
                         p[node] = value
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.setRank.rawValue:
-                    // v3 payload (2026-04-21): u32 node + u64 rank = 12 bytes.
-                    // v2 payload (post-T1):     u32 node + u32 rank =  8 bytes.
-                    // v1 payload (pre-T1):      u32 node + u8  rank =  5 bytes. Accept all.
+                    // v2 log: the payload is u32 node + u64 rank = 12 bytes,
+                    // full stop. A record torn down to 8 or 5 bytes used to be
+                    // indistinguishable from a legacy record and was applied as
+                    // a real rank write (audit A, finding 30).
+                    // v1 log: the legacy widths are genuine — u32 rank = 8,
+                    // u8 rank = 5 — and still replay.
                     let node = Int(readU32(data, off + 5))
                     let value: UInt64
                     if payloadLen == 12 {
                         value = readU64(data, off + 9)
-                    } else if payloadLen == 8 {
+                    } else if ver == versionV1 && payloadLen == 8 {
                         value = UInt64(readU32(data, off + 9))
-                    } else if payloadLen == 5 {
+                    } else if ver == versionV1 && payloadLen == 5 {
                         value = UInt64(data[off + 9])
                     } else {
-                        off += recordTotal; continue
+                        skips.badLength += 1; off += recordTotal; continue
                     }
                     if node >= 0 && node < nodeCount {
                         let p = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: nodeCount)
                         p[node] = value
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.setLUT.rawValue:
-                    guard payloadLen == 12 else { off += recordTotal; continue }
+                    guard payloadLen == 12 else { skips.badLength += 1; off += recordTotal; continue }
                     let node = Int(readU32(data, off + 5))
                     let lut  = readU64(data, off + 9)
                     if node >= 0 && node < nodeCount {
@@ -469,10 +696,10 @@ public enum DagDBWAL {
                         low[node]  = UInt32(lut & 0xFFFFFFFF)
                         high[node] = UInt32((lut >> 32) & 0xFFFFFFFF)
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.setEdgeWeight.rawValue:
                     // u32 node + u8 dir + f32 value = 9 bytes.
-                    guard payloadLen == 9 else { off += recordTotal; continue }
+                    guard payloadLen == 9 else { skips.badLength += 1; off += recordTotal; continue }
                     let node = Int(readU32(data, off + 5))
                     let dir = Int(data[off + 9])
                     let bits = readU32(data, off + 10)
@@ -481,10 +708,10 @@ public enum DagDBWAL {
                             .bindMemory(to: Float.self, capacity: nodeCount * 6)
                         p[node * 6 + dir] = Float(bitPattern: bits)
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.setActivation.rawValue:
                     // u32 node + i16 value (LE) = 6 bytes.
-                    guard payloadLen == 6 else { off += recordTotal; continue }
+                    guard payloadLen == 6 else { skips.badLength += 1; off += recordTotal; continue }
                     let node = Int(readU32(data, off + 5))
                     let raw = UInt16(data[off + 9]) | (UInt16(data[off + 10]) << 8)
                     if node >= 0 && node < nodeCount {
@@ -492,10 +719,10 @@ public enum DagDBWAL {
                             .bindMemory(to: Int16.self, capacity: nodeCount)
                         p[node] = Int16(bitPattern: raw)
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.setNodeValue.rawValue:
                     // u32 node + f32 value = 8 bytes.
-                    guard payloadLen == 8 else { off += recordTotal; continue }
+                    guard payloadLen == 8 else { skips.badLength += 1; off += recordTotal; continue }
                     let node = Int(readU32(data, off + 5))
                     let bits = readU32(data, off + 9)
                     if node >= 0 && node < nodeCount {
@@ -503,9 +730,9 @@ public enum DagDBWAL {
                             .bindMemory(to: Float.self, capacity: nodeCount)
                         p[node] = Float(bitPattern: bits)
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.connectBack.rawValue:
-                    guard payloadLen == 8 else { off += recordTotal; continue }
+                    guard payloadLen == 8 else { skips.badLength += 1; off += recordTotal; continue }
                     let src = readU32(data, off + 5)
                     let dst = readU32(data, off + 9)
                     if Int(src) < nodeCount && Int(dst) < nodeCount {
@@ -515,24 +742,99 @@ public enum DagDBWAL {
                         // ordering during replay (combinational edge replayed
                         // before the back-edge that validated it away) does
                         // not abort recovery.
-                        engine.addBackEdgeUnchecked(src: src, dst: dst)
+                        try engine.addBackEdgeUnchecked(src: src, dst: dst)
                         applied += 1; afterCheckpoint += 1
-                    }
+                    } else { skips.outOfRangeIndex += 1 }
                 case Opcode.clearBackEdges.rawValue:
-                    guard payloadLen == 4 else { off += recordTotal; continue }
+                    guard payloadLen == 4 else { skips.badLength += 1; off += recordTotal; continue }
                     let dst = readU32(data, off + 5)
                     if Int(dst) < nodeCount {
-                        engine.clearBackEdges(toNode: dst)
+                        try engine.clearBackEdges(toNode: dst)
                         applied += 1; afterCheckpoint += 1
+                    } else { skips.outOfRangeIndex += 1 }
+                case Opcode.connect.rawValue:
+                    // u32 dst + u8 slot + i32 src = 9 bytes.
+                    guard payloadLen == 9 else { skips.badLength += 1; off += recordTotal; continue }
+                    let dst = Int(readU32(data, off + 5))
+                    let slot = Int(data[off + 9])
+                    let src = Int32(bitPattern: readU32(data, off + 10))
+                    if dst >= 0 && dst < nodeCount && slot >= 0 && slot < 6
+                        && src >= -1 && Int(src) < nodeCount {
+                        let p = engine.neighborsBuf.contents()
+                            .bindMemory(to: Int32.self, capacity: nodeCount * 6)
+                        p[dst * 6 + slot] = src
+                        applied += 1; afterCheckpoint += 1
+                    } else { skips.outOfRangeIndex += 1 }
+                case Opcode.clearEdges.rawValue:
+                    guard payloadLen == 4 else { skips.badLength += 1; off += recordTotal; continue }
+                    let node = Int(readU32(data, off + 5))
+                    if node >= 0 && node < nodeCount {
+                        let p = engine.neighborsBuf.contents()
+                            .bindMemory(to: Int32.self, capacity: nodeCount * 6)
+                        for d in 0..<6 { p[node * 6 + d] = -1 }
+                        applied += 1; afterCheckpoint += 1
+                    } else { skips.outOfRangeIndex += 1 }
+                case Opcode.setRanksBulk.rawValue:
+                    guard payloadLen >= 4 else { skips.badLength += 1; off += recordTotal; continue }
+                    let n = Int(readU32(data, off + 5))
+                    guard payloadLen == 4 + n * 8 else {
+                        skips.badLength += 1; off += recordTotal; continue
                     }
+                    guard n == nodeCount else {
+                        skips.outOfRangeIndex += 1; off += recordTotal; continue
+                    }
+                    let dstPtr = engine.rankBuf.contents()
+                        .bindMemory(to: UInt64.self, capacity: nodeCount)
+                    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                        memcpy(dstPtr, raw.baseAddress!.advanced(by: off + 9), n * 8)
+                    }
+                    applied += 1; afterCheckpoint += 1
+                case Opcode.setLutsBulk.rawValue:
+                    guard payloadLen >= 4 else { skips.badLength += 1; off += recordTotal; continue }
+                    let n = Int(readU32(data, off + 5))
+                    guard payloadLen == 4 + n * 8 else {
+                        skips.badLength += 1; off += recordTotal; continue
+                    }
+                    guard n == nodeCount else {
+                        skips.outOfRangeIndex += 1; off += recordTotal; continue
+                    }
+                    let low  = engine.lut6LowBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
+                    let high = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: nodeCount)
+                    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                        let src = raw.baseAddress!.advanced(by: off + 9)
+                        for i in 0..<n {
+                            let v = src.advanced(by: i * 8)
+                                .loadUnaligned(as: UInt64.self)
+                            low[i]  = UInt32(v & 0xFFFF_FFFF)
+                            high[i] = UInt32((v >> 32) & 0xFFFF_FFFF)
+                        }
+                    }
+                    applied += 1; afterCheckpoint += 1
+                case Opcode.setNeighborsBulk.rawValue:
+                    guard payloadLen >= 4 else { skips.badLength += 1; off += recordTotal; continue }
+                    let n = Int(readU32(data, off + 5))
+                    guard payloadLen == 4 + n * 24 else {
+                        skips.badLength += 1; off += recordTotal; continue
+                    }
+                    guard n == nodeCount else {
+                        skips.outOfRangeIndex += 1; off += recordTotal; continue
+                    }
+                    let dstPtr = engine.neighborsBuf.contents()
+                        .bindMemory(to: Int32.self, capacity: nodeCount * 6)
+                    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                        memcpy(dstPtr, raw.baseAddress!.advanced(by: off + 9), n * 24)
+                    }
+                    applied += 1; afterCheckpoint += 1
                 case Opcode.twinStreamOpen.rawValue...Opcode.twinHookStep.rawValue:
                     // Twin registry ops (interface phase, 2026-09). `twin == nil` means the
                     // caller isn't restoring twin state at all — walk past
-                    // the record without applying or counting it. A
-                    // malformed payload (bad length/UTF-8) decodes to nil
-                    // and is skipped the same way. An `apply` error (e.g.
-                    // a bad id or already-open id) is likewise skipped,
-                    // never fatal — the rest of the log must still replay.
+                    // the record without applying or counting it (not a
+                    // skip either: nothing was lost, the caller asked for
+                    // no twin state). A malformed payload decodes to nil
+                    // and counts as a bad length; an `apply` error (a bad
+                    // id, an already-open id) counts as out-of-range — the
+                    // record names something the registry cannot address.
+                    // Neither is fatal: the rest of the log must replay.
                     if let twin = twin {
                         let payloadStart = off + 5
                         let payload = data.subdata(in: payloadStart..<(payloadStart + payloadLen))
@@ -541,14 +843,18 @@ public enum DagDBWAL {
                                 try twin.apply(decoded)
                                 applied += 1; afterCheckpoint += 1
                             } catch {
-                                // apply error — skip, not fatal.
+                                skips.outOfRangeIndex += 1
                             }
+                        } else {
+                            skips.badLength += 1
                         }
                     }
                 case Opcode.checkpoint.rawValue:
-                    break  // no-op at replay
+                    // A checkpoint of any width but 8 is torn — named here,
+                    // and already refused as a boundary in the first pass.
+                    if payloadLen != 8 { skips.badLength += 1 }
                 default:
-                    break  // unknown opcode — skip
+                    skips.unknownOpcode += 1
                 }
             }
             off += recordTotal
@@ -560,13 +866,35 @@ public enum DagDBWAL {
             recordsAfterCheckpoint: afterCheckpoint,
             checkpointEpoch: lastEpoch,
             elapsedMs: elapsed,
-            truncatedAtOffset: truncatedAt
+            truncatedAtOffset: truncatedAt,
+            recordsSkipped: skips.total,
+            skipReasons: skips,
+            fileVersion: ver
         )
     }
 
     /// Reset the log to just the header (e.g. after a successful snapshot).
     /// Atomic: writes a fresh header to a tmp file, then renames.
+    ///
+    /// C1e · the decision. `Data.write(options: [.atomic])` renames a fresh
+    /// inode over the path, and a live `Appender` holds an `O_APPEND`
+    /// descriptor on the OLD inode — it would keep writing to an unlinked
+    /// file and every record between the truncate and the appender's
+    /// recreation would be lost with no trace (audit A, finding 33).
+    ///
+    /// Of the two repairs the contract allows — refuse while an appender is
+    /// open, or reopen the appender's descriptor atomically — this is the
+    /// REFUSAL. `truncate` is a static function with no handle on any
+    /// appender: reopening "the appender's descriptor" would mean changing
+    /// the signature at every call site to carry one, and it would still
+    /// race with an append issued on another thread between the rename and
+    /// the reopen. A refusal has no window at all, and the daemon's own
+    /// sequence never needs it: a durable snapshot writes a CHECKPOINT into
+    /// the live log rather than truncating it.
     public static func truncate(path: String, nodeCount: Int) throws {
+        guard !hasOpenAppender(path: path) else {
+            throw WALError.appenderOpen(path: path)
+        }
         var header = Data()
         header.append(contentsOf: magic)
         appendU32(&header, version)

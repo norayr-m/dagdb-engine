@@ -102,7 +102,9 @@ A `launchd` agent (`com.dagdb.mcpo`) keeps the bridge running across reboots. Th
 ### Experiment 5 — Test coverage
 
 ```
-192 tests pass (DagDBTests + DagDBDaemonKitTests)
+1052 tests pass (DagDBTests + DagDBDaemonKitTests); 46 of them skip
+unless the sealed out-of-repo fixtures are present — see "Sealed
+fixtures" below
   core: LUT6 presets, state, engine, graph, evaluation, delta codec
   SerDe/WAL: snapshot round-trips, validators, crash-tail truncation
   daemon: full DSL dispatch, guardPath, WAL-failure aborts, COMPOSE
@@ -142,9 +144,12 @@ DagDB/
 │   │   └── Shaders/dagdb.metal   (LUT6 + weighted tick kernels)
 │   │
 │   ├── DagDBDaemon/              (GPU daemon server)
-│   │   ├── main.swift            (socket listener + shared memory)
-│   │   ├── SocketServer.swift    (Unix domain socket)
-│   │   └── DSLParser.swift       (graph query DSL)
+│   │   └── main.swift            (engine + shm setup, wires the two below)
+│   │
+│   ├── DagDBDaemonKit/           (testable daemon internals)
+│   │   ├── SocketServer.swift    (Unix domain socket + framing)
+│   │   ├── DSLParser.swift       (graph query DSL)
+│   │   └── DagDBCommandHandler*  (verb dispatch)
 │   │
 │   └── DagDBCLI/main.swift       (test harness)
 │
@@ -152,7 +157,8 @@ DagDB/
 │   ├── Cargo.toml
 │   └── src/lib.rs                (dagdb_exec SQL function)
 │
-└── Tests/DagDBTests/             (192 tests, all pass)
+└── Tests/DagDBTests/             (1052 tests; 46 skip without the
+                                   sealed fixtures)
 ```
 
 ## Quick Start
@@ -375,9 +381,26 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ## Test Results
 
 ```
-192/192 tests pass (DagDBTests + DagDBDaemonKitTests)
+1052 tests, 0 failures (DagDBTests + DagDBDaemonKitTests);
+46 skipped without the sealed fixtures
+
+## Sealed fixtures
+
+Forty-six of the tests are gated on fixtures that are **not in this
+repository and are not distributed**: recordings and a reference world
+from a private lab tree, pinned by SHA-256 so a substitute cannot pass
+for them. Without those files the suite reports 1052 tests, 0 failures,
+46 skipped — each skip printing the environment variable it wanted.
+That is the result a reader who clones this repository will get, and it
+is the honest one: the gates those tests carry are receipts we can show,
+not results you can reproduce. The variables are `DAGDB_W2_FIXTURE`,
+`DAGDB_W1_RECORDS`, `DAGDB_E3_RUNS` and `DAGDB_CORTEX_V4_FIXTURE`; a
+fixture present with the wrong hash FAILS rather than skips, which is
+what makes the pin worth having.
 1K nodes:   0.45 ms/tick
-1M nodes:   0.71 GCUPS
+1M nodes:   0.81-1.69 GCUPS (compacted rank tick, shallow spread;
+            0.15-0.65 on a 16-rank spread, TICK_SYNC ~3.5 stable;
+            single runs vary up to ~2x with thermal state)
 10M nodes:  18.6 ms/tick
             save raw        28.5 ms (358 MB)
             save compressed 1.3 s   (14.4 MB, 4% of raw)

@@ -122,7 +122,7 @@ final class CorruptionModelTests: XCTestCase {
 
     // MARK: - Staircase mechanism (direct SuccessorCourt.allocatorDecide check)
 
-    func testStaircaseAtPoint0() {
+    func testStaircaseAtPoint0() throws {
         let B0 = SealedCourt.budgetGrid[0].budget
         let homeByEar: [Ear: Int] = [.A: 3, .B: 5, .C: 6]
         let expectedDisplacedBy: [Ear: Set<Int>] = [.A: [4, 5, 6], .B: [6], .C: []]
@@ -131,7 +131,7 @@ final class CorruptionModelTests: XCTestCase {
             var displacedBy: Set<Int> = []
             for q in SealedCourt.pockets where q != home {
                 let pocketClaims: [Int: [ValueRow]] = [home: [.L], q: [.L]]
-                let (served, _) = SuccessorCourt.allocatorDecide(pocketClaims: pocketClaims, budget: B0)
+                let (served, _) = try SuccessorCourt.allocatorDecide(pocketClaims: pocketClaims, budget: B0)
                 if !served.contains(home) {
                     displacedBy.insert(q)
                 }

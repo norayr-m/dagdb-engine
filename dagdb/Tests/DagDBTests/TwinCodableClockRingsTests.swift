@@ -61,8 +61,8 @@ final class TwinCodableClockRingsTests: XCTestCase {
     // MARK: - GearedRings
 
     /// Verbatim fixture shape from GearedRingsTests.testSignedRecallAcrossOrders.
-    private func ringsSpikeFixture() -> (rings: GearedRings, spikes: [UInt64: Float], total: UInt64) {
-        var r = GearedRings(gear: 6, rings: 4, cellsPerRing: 8)
+    private func ringsSpikeFixture() throws -> (rings: GearedRings, spikes: [UInt64: Float], total: UInt64) {
+        var r = try GearedRings(gear: 6, rings: 4, cellsPerRing: 8)
         let spikes: [UInt64: Float] = [3: -5.0, 250: 7.5, 500: -9.25, 1200: 4.0]
         let total: UInt64 = 1500
         for t in 0..<total {
@@ -72,7 +72,7 @@ final class TwinCodableClockRingsTests: XCTestCase {
     }
 
     func testGearedRingsCodableRoundTripRecalls() throws {
-        let (r, spikes, total) = ringsSpikeFixture()
+        let (r, spikes, total) = try ringsSpikeFixture()
         let data = try JSONEncoder().encode(r)
         var decoded = try JSONDecoder().decode(GearedRings.self, from: data)
         XCTAssertEqual(decoded, r)
@@ -118,7 +118,7 @@ final class TwinCodableClockRingsTests: XCTestCase {
 
     func testPhaseGearCodableRoundTripKeepsExactFires() throws {
         // Verbatim gear from MasterClockTests.testNoDriftExactFireCount (3/7).
-        var g = PhaseGear(name: "g", ratio: GearRatio(3, over: 7))
+        var g = PhaseGear(name: "g", ratio: try GearRatio(3, over: 7))
         var clock = MasterClock()
         let n: UInt64 = 5_000
         for _ in 0..<n {
@@ -139,7 +139,7 @@ final class TwinCodableClockRingsTests: XCTestCase {
 
     func testLatchRoundTrip() throws {
         // Verbatim gear/loop from MasterClockTests.testLatchCapturesExactTickAndValue.
-        var g = PhaseGear(name: "latch", ratio: GearRatio(1, over: 5))
+        var g = PhaseGear(name: "latch", ratio: try GearRatio(1, over: 5))
         var clock = MasterClock()
         for i in 1...12 {
             clock.advance()
@@ -154,10 +154,10 @@ final class TwinCodableClockRingsTests: XCTestCase {
         XCTAssertEqual(decoded.phase.num, 2)
     }
 
-    func testGearRatioReducedReturnsNilOnZero() {
+    func testGearRatioReducedReturnsNilOnZero() throws {
         XCTAssertNil(GearRatio.reduced(0, over: 5))
         XCTAssertNil(GearRatio.reduced(5, over: 0))
         XCTAssertNil(GearRatio.reduced(0, over: 0))
-        XCTAssertEqual(GearRatio.reduced(4, over: 6), GearRatio(2, over: 3))
+        XCTAssertEqual(GearRatio.reduced(4, over: 6), try GearRatio(2, over: 3))
     }
 }

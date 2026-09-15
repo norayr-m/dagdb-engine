@@ -395,7 +395,7 @@ final class TwinHookCommandTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("HOOK STEP h00000001 5").contains("t=5"))
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 10, height: 10)
+        let grid = try HexGrid(width: 10, height: 10)
         let state = DagDBState(width: 10, height: 10)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)
@@ -467,4 +467,21 @@ final class TwinHookCommandTests: XCTestCase {
         let stepReply = f.handler.handle("HOOK STEP h00000001 203")
         XCTAssertTrue(stepReply.contains("served=50 misses=100 cost=94400.0"), stepReply)
     }
+
+    // MARK: - D3 · wire arithmetic cannot trap
+
+    /// Audit finding 23 — `HOOK LEDGER`'s `end = from + count` is an
+    /// unchecked `Int` addition on two wire values; `Int.max` plus anything
+    /// TRAPS before the range guard behind it can fire.
+    func testHookLedgerRangeOverflowIsRefusedNotTrapped() throws {
+        let f = try HandlerFixture(side: 64, dataRoot: tmpDir)
+        _ = try loadSynthetic(f)
+        _ = f.handler.handle("HOOK OPEN a00000001 SEALED 100000")
+        _ = f.handler.handle("HOOK STEP h00000001 100")
+        let reply = f.handler.handle("HOOK LEDGER h00000001 \(Int.max) 5")
+        XCTAssertTrue(reply.hasPrefix("ERROR out_of_range"), reply)
+        XCTAssertTrue(f.handler.handle("STATUS").hasPrefix("OK STATUS"),
+                      "the handler did not survive the refusal")
+    }
+
 }

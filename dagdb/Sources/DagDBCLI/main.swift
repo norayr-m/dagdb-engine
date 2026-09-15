@@ -19,7 +19,7 @@ print("════════════════════════�
 let width = 16, height = 16
 print("  Grid: \(width)×\(height) = \(width * height) nodes")
 
-let grid = HexGrid(width: width, height: height)
+let grid = try HexGrid(width: width, height: height)
 print("  7-coloring: \(grid.colorGroups.map { $0.count })")
 
 // Initialize state

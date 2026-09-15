@@ -65,6 +65,20 @@ public struct BudgetLayout: Equatable, Codable {
 
     public enum LayoutError: Error { case tooManyClaimedPockets(Int) }
 
+    /// Finding 52: a claim whose pocket or class index is outside this
+    /// layout's shape. `allocate` now refuses it by name instead of
+    /// indexing `minTier`/`cost` out of bounds. A separate type from
+    /// `LayoutError` so existing exhaustive switches over that enum stay
+    /// exhaustive.
+    public enum ClaimError: Error, Equatable, CustomStringConvertible {
+        case badClaim(String)
+        public var description: String {
+            switch self {
+            case .badClaim(let why): return "badClaim(\(why))"
+            }
+        }
+    }
+
     /// Validating front door for a `(cost, minTier)` pair, for callers (the
     /// daemon's BUDGET OPEN) that must never precondition-trap on bad input.
     /// nil iff: `cost` is rectangular, every entry is finite, `cost.count`
@@ -107,6 +121,12 @@ public struct BudgetLayout: Equatable, Codable {
 
     /// Lay out one frame's budget over the frame's (lag-paired) claims.
     public func allocate(claims: [Claim], budget: Double) throws -> Layout {
+        // Finding 52: `claimError` is the validator written for exactly the
+        // two bounds this method indexes on — call it before touching
+        // either, so a bad claim is a named throw, never a trap.
+        for c in claims {
+            if let why = claimError(c) { throw ClaimError.badClaim(why) }
+        }
         // Merge claims per pocket: value adds, tier = deepest requirement.
         var perPocket: [Int: (value: Int, tier: Int)] = [:]
         for c in claims {

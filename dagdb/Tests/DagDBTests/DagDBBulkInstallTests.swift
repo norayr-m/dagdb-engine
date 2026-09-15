@@ -11,7 +11,7 @@ import XCTest
 final class DagDBBulkInstallTests: XCTestCase {
 
     private func makeEngine(side: Int) throws -> DagDBEngine {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         let nb = engine.neighborsBuf.contents()

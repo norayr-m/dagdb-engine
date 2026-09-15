@@ -17,7 +17,7 @@ final class TwinFoldCommandTests: XCTestCase {
     /// 6*12+6), schedule maxRank=6 keepRank=3 — exactly the control fixture
     /// F1/F4 use.
     private func expectedControlResult(checkpoints: [Int] = []) throws -> LadderFold.Result {
-        let grid = HexGrid(width: 12, height: 12)
+        let grid = try HexGrid(width: 12, height: 12)
         let state = DagDBState(width: 12, height: 12)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
         let object = LadderFold.Objects.control(engine: engine, grid: grid)
@@ -264,14 +264,42 @@ final class TwinFoldCommandTests: XCTestCase {
         return String(openReply[ridRange.upperBound..<spaceRange.lowerBound])
     }
 
-    func testReaderSessionMayRunFoldRunAndFoldKept() throws {
+    /// D5/D9 · this check could not fail. It asserted only that the
+    /// reader's OWN replies began `OK` — never that the primary's
+    /// `lastFold` survived. `FOLD RUN` assigns daemon-global `lastFold`
+    /// (audit B finding 18), which `FOLD KEPT/SOURCE/TIER/INFO` read, so a
+    /// reader session — or a browser through the web bridge — overwrote
+    /// what the primary saw. `FOLD RUN` is now forbidden to readers; the
+    /// four look-only FOLD verbs stay allowed.
+    func testReaderSessionIsRefusedFoldRunAndThePrimaryResultSurvives() throws {
         let f = try makeControlFixture()
         let rid = try openReaderId(f)
 
-        let runReply = f.handler.handle("READER \(rid) FOLD RUN 6 3 78 78")
-        XCTAssertTrue(runReply.hasPrefix("OK FOLD RUN session=\(rid)"), runReply)
+        let primary = f.handler.handle("FOLD RUN 6 3 78 78")
+        XCTAssertTrue(primary.hasPrefix("OK FOLD RUN"), primary)
+        let before = f.handler.handle("FOLD INFO")
+        XCTAssertTrue(before.hasPrefix("OK FOLD INFO"), before)
 
-        let keptReply = f.handler.handle("READER \(rid) FOLD KEPT")
-        XCTAssertTrue(keptReply.hasPrefix("OK FOLD KEPT session=\(rid)"), keptReply)
+        // A DIFFERENT fold from inside a reader envelope must be refused …
+        let runReply = f.handler.handle("READER \(rid) FOLD RUN 5 2 78 78")
+        XCTAssertTrue(runReply.hasPrefix("ERROR forbidden"), runReply)
+
+        // … and the primary's result must be byte-for-byte what it was.
+        XCTAssertEqual(f.handler.handle("FOLD INFO"), before)
+
+        // The look-only FOLD verbs stay open to a reader.
+        XCTAssertTrue(f.handler.handle("READER \(rid) FOLD KEPT")
+                        .hasPrefix("OK FOLD KEPT session=\(rid)"))
+        XCTAssertTrue(f.handler.handle("READER \(rid) FOLD INFO")
+                        .hasPrefix("OK FOLD INFO session=\(rid)"))
+    }
+
+    /// The classification itself, so a future edit to `isReadOnly` trips here.
+    func testFoldRunIsNotClassifiedReadOnly() {
+        XCTAssertFalse(
+            TwinCommand.foldRun(maxRank: 6, keepRank: 3, f1: 0, f2: 1, f3: -1, checkpoints: []).isReadOnly,
+            "FOLD RUN assigns daemon-global lastFold; it is not a read")
+        XCTAssertTrue(TwinCommand.foldInfo.isReadOnly)
+        XCTAssertTrue(TwinCommand.foldKept.isReadOnly)
     }
 }

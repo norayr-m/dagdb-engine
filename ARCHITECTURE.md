@@ -305,10 +305,15 @@ Exposed as DSL `SELECT truth <k> rank <lo>-<hi>` and MCP
 ## 6. Concurrency and isolation
 
 The daemon accepts connections in a **single-threaded serial loop**
-(`dagdb/Sources/DagDBDaemon/SocketServer.swift`). Every client
+(`dagdb/Sources/DagDBDaemonKit/SocketServer.swift`). Every client
 request is handled to completion before the next `accept()`.
 Requests cannot interleave at the buffer level and no mutexes are
-needed, but throughput is capped at one request at a time.
+needed, but throughput is capped at one request at a time. The
+listener lives in the kit rather than the daemon executable so its
+framing contract can be driven over a real socket in the test suite:
+a command is at most 4,095 bytes plus a newline, a short read is
+completed by reading again, and a line that reaches the cap without a
+newline is refused rather than parsed.
 
 **Snapshot-on-read MVCC** (T7) gives readers a point-in-time view
 without full multi-version machinery:

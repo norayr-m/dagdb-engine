@@ -47,7 +47,9 @@ reload its last snapshot at startup (`DAGDB_STARTUP_LOAD`); and since
 with a load/evict router answering cross-tile BFS/ancestry/select
 exactly like the single engine (`SAVE TILED`, `TILED
 OPEN/BFS/SELECT/STATUS/LIST/CLOSE` — deliberately not a twin verb
-family).
+family), and step two ticks that tiled graph durably across world
+ticks with crash recovery and partial-round completion at open
+(`TILED TICK`/`TILED GET`).
 
 **Ship-storm 2026-04-21.** Six items landed on the engine in a single
 day, all tests green:
@@ -298,7 +300,7 @@ legacy substring matchers still hit.
 ├── ARCHITECTURE.md                 module map, data model, invariants
 ├── CHANGES.md                      session-by-session log
 ├── CONTRIBUTING.md                 short contributor note
-├── LICENSE                         GPL-3.0
+├── LICENSE                         Apache-2.0
 ├── Package.swift                   runtime build (4-cycle engine)
 ├── Sources/DagDBEngine/            4-cycle runtime engine + shader
 ├── Sources/DagDBCLI/               engine CLI
@@ -319,7 +321,8 @@ legacy substring matchers still hit.
     │                                distance, BFS, MVCC, index
     ├── Sources/DagDBCLI/           dagdb CLI
     ├── Sources/DagDBDaemon/        dagdb-daemon + socket + DSL
-    ├── Tests/DagDBTests/           446 tests, ~50 s
+    ├── Tests/DagDBTests/           1052 tests (46 skip without the
+    │                                sealed fixtures; see below)
     ├── mcp_server.py               Python MCP server (37 tools)
     ├── mcpo_config.json            local MCP bridge config (gitignored)
     ├── pg_dagdb/                   PostgreSQL extension
@@ -421,7 +424,9 @@ not in repo). The daemon itself is supervised by
 
 ```
 cd dagdb
-swift test                                      # 446 tests, ~50 s
+swift test                                      # 1052 tests, 0 failures;
+                                                # 46 skip unless the sealed
+                                                # fixtures are present (below)
 python3 plugins/biology/rank_policies.py        # self-test
 python3 -m pytest plugins/loom/test_adapter.py -q   # 16 tests
 ```
@@ -443,7 +448,7 @@ swift test --filter DagDBSecondaryIndexTests
 
 ## License
 
-GPL-3.0. See `LICENSE`.
+Apache-2.0. See `LICENSE`.
 
 ## Humble disclaimer
 

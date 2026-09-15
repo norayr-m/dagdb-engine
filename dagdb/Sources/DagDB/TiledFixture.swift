@@ -3,8 +3,12 @@
 ///
 /// Three DAGs, one generator, seeded from the engine's reference `NamedStream`
 /// PCG. Ranks by Chebyshev distance from the centre (as `LadderFold.Objects`
-/// writes ranks); truth random ternary; LUTs left at their constructed
-/// default (zero — `DagDBState.init` zero-fills `lut6Low`/`lut6High`); edges
+/// writes ranks); truth random ternary; LUT6 tables parity (or complemented
+/// parity) over each node's present slots, plus one period-2 register
+/// oscillator per usable rank-level pair (AMENDMENT 6, letter 1 — the
+/// repaired object: the pre-amendment fixture left every table at the
+/// constructed zero, which made the world a fixed point after one tick and
+/// every equality gate vacuous); edges
 /// drawn per node, per slot: each node's slots hold HIGHER-rank sources
 /// (the engine's own inputs convention, `rank(src) > rank(dst)` — AMENDMENT
 /// 1, item 1) so every tiling by rank range has real cross-tile crossings.
@@ -16,6 +20,21 @@
 import Foundation
 
 public enum TiledFixture {
+
+    /// Audit C findings 18 and 19.
+    public enum FixtureError: Error, Equatable, CustomStringConvertible {
+        /// `populate` was handed a grid and an engine of different sizes —
+        /// it binds `engine.neighborsBuf` at `grid.nodeCount * 6` and would
+        /// have written past the end of the smaller one.
+        case sizeMismatch(gridNodes: Int, engineNodes: Int, side: Int)
+        public var description: String {
+            switch self {
+            case .sizeMismatch(let g, let e, let side):
+                return "TiledFixture.populate: grid holds \(g) nodes (side \(side)) but the engine "
+                    + "holds \(e) — the two must match or the write runs past the engine's buffers"
+            }
+        }
+    }
 
     public struct Object {
         public let side: Int
@@ -58,7 +77,8 @@ public enum TiledFixture {
     /// 3. **Truth** — `NamedStream(name: "tiling-truth-<side>", referenceSeed)`,
     ///    one `next64()` per node, Morton index `0..<N` ascending order,
     ///    `truth[m] = UInt8(draw % 3)`.
-    /// 4. **LUTs** — left untouched (constructed default: zero).
+    /// 4. **LUTs** — see steps 6/7 below: written AFTER the edge draws,
+    ///    from their own stream, so steps 2/3/5's streams are unchanged.
     /// 5. **Edges** — `NamedStream(name: "tiling-edges-<side>", referenceSeed)`.
     ///    For `u` in row-major order `0..<N`, for each of 6 slots in order:
     ///    draw `d = next64()`. `d % 8 == 0` → candidate list = nodes within
@@ -77,10 +97,19 @@ public enum TiledFixture {
     ///    earlier slot of `u`, the slot stays −1 (no retry draw). Otherwise
     ///    the target's Morton index is written into
     ///    `neighborsBuf[uMorton * 6 + slot]`.
+    /// 6. **LUT6 tables** (AMENDMENT 6, letter 1) —
+    ///    `NamedStream("tiling-luts-<side>")`, one `next64() & 1` per node
+    ///    in Morton order choosing parity (0) or complemented parity (1);
+    ///    `bit(idx) = (popcount(idx & presentMask) + choice) & 1`.
+    /// 7. **Registers** — one `R ← S`, `S = ¬R` oscillator per rank level
+    ///    `r >= 1` that is not a tile boundary of any frozen tiling
+    ///    (2/4/8), so no back edge ever crosses a tile boundary. Every
+    ///    other slot pointing at `R` is cleared, keeping register fan-out
+    ///    intra-tile (see the inline comment for why W1 needs that).
     ///
     /// This is the frozen generator — the draw order above must not change.
     public static func generate(side: Int) throws -> Object {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 64)
         try populate(engine: engine, grid: grid, side: side)
@@ -97,6 +126,13 @@ public enum TiledFixture {
     /// `generate`'s own grid/engine pairing).
     public static func populate(engine: DagDBEngine, grid: HexGrid, side: Int) throws {
         let n = grid.nodeCount
+        // Audit C finding 18: the doc made the engine/grid pairing "the
+        // caller's responsibility" and nothing checked it, on a PUBLIC
+        // function that binds every Metal buffer at the GRID's size. A
+        // grid larger than the engine wrote out of bounds, silently.
+        guard n == engine.nodeCount else {
+            throw FixtureError.sizeMismatch(gridNodes: n, engineNodes: engine.nodeCount, side: side)
+        }
 
         // 1. Wipe neighbours to -1.
         let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: n * 6)
@@ -121,7 +157,8 @@ public enum TiledFixture {
             truthPtr[m] = UInt8(truthStream.next64() % 3)
         }
 
-        // 4. LUTs — left as constructed (DagDBState default: zero). Nothing to do.
+        // 4. LUTs — written in step 6 below (after the edge draws, from
+        // their own stream, so the truth/rank/edge streams are unchanged).
 
         // 5. Edges. Precompute, once per node: direct hex neighbours
         // (row-major, ascending) and the hex-distance-<=3 ring (row-major,
@@ -186,6 +223,149 @@ public enum TiledFixture {
                 usedMorton.insert(targetMorton)
             }
         }
+
+        // ── 6/7. The repaired object (TICKING_GATES_FROZEN.md AMENDMENT 6,
+        // letter 1). Appended AFTER the frozen truth/rank/edge draws, so
+        // those three streams are bit-identical to the pre-amendment
+        // generator.
+
+        // 6. LUT6 tables — one draw per node, Morton order, `next64() & 1`
+        //    selecting parity (0) or complemented parity (1). The word
+        //    itself is `bit(idx) = (popcount(idx & presentMask) + choice)
+        //    & 1`, `presentMask` = the node's non-empty slots. Every node
+        //    is therefore fully sensitive on every present input, which is
+        //    what makes the perturbation gates (W7a) non-vacuous.
+        var lutStream = NamedStream(
+            name: "tiling-luts-\(side)",
+            stateHi: referenceSeed.stateHi, stateLo: referenceSeed.stateLo,
+            incHi: referenceSeed.incHi, incLo: referenceSeed.incLo
+        )
+        var choice = [Int](repeating: 0, count: n)
+        for m in 0..<n { choice[m] = Int(lutStream.next64() & 1) }
+
+        let lowPtr = engine.lut6LowBuf.contents().bindMemory(to: UInt32.self, capacity: n)
+        let highPtr = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: n)
+
+        func presentMask(_ m: Int) -> Int {
+            var mask = 0
+            for d in 0..<6 where nbPtr[m * 6 + d] >= 0 { mask |= 1 << d }
+            return mask
+        }
+        func writeParityLUT(_ m: Int) {
+            let mask = presentMask(m)
+            let c = choice[m]
+            var low: UInt32 = 0, high: UInt32 = 0
+            for idx in 0..<64 {
+                guard ((idx & mask).nonzeroBitCount + c) & 1 == 1 else { continue }
+                if idx < 32 { low |= UInt32(1) << UInt32(idx) }
+                else { high |= UInt32(1) << UInt32(idx - 32) }
+            }
+            lowPtr[m] = low
+            highPtr[m] = high
+        }
+        for m in 0..<n { writeParityLUT(m) }
+
+        // 7. Registers — one period-2 oscillator per usable rank-level pair.
+        //
+        //    `R` (rank r, all slots cleared, `isRegister`) ← back edge ←
+        //    `S` (rank r − 1, single present slot pointing at `R`,
+        //    complemented single-input parity) ⇒ `R_{k+1} = ¬R_k`.
+        //
+        //    `r` is skipped when it is a tile boundary of ANY frozen
+        //    tiling (2/4/8), because a pair straddling a boundary would be
+        //    a cross-tile back edge, which `TiledGraphFiles.write` refuses.
+        //
+        //    `r` starts at 2, not 1. Rank 0 holds exactly ONE node — the
+        //    grid centre — and that node is the first of the tiling
+        //    contract's frozen T2/T3 query seeds. Using it as an `S` would
+        //    clear its slots down to a single edge into its own register
+        //    and cut the seed's reachable set to two nodes, making the
+        //    cross-tile BFS/ancestry/residency gates trivially true. The
+        //    cost is that a tile whose whole span is {0, 1} carries no
+        //    register (side 44's 8-tiling, tile 0); W7d asserts that
+        //    exception rather than passing over it.
+        //
+        //    A register KEEPS its cross-tile readers. An earlier build
+        //    cleared every slot that pointed at an `R`, because the tiled
+        //    ticker latches at the end of each tile's own tick and flushes,
+        //    so a reader in a LOWER tile read the POST-latch value from the
+        //    strip while the untiled engine (one latch after the whole
+        //    graph) shows it the PRE-latch value — and W1 broke on a
+        //    correct engine. AMENDMENT 7, finding A rejected that: removing
+        //    the readers makes the gate pass on an object that cannot
+        //    exhibit the defect. The defect is fixed where it lives — the
+        //    rank-mode flush writes a register's PRE-latch byte into the
+        //    lower strip (`TiledGraphRouter.tickAndFlushOneTile`) — and the
+        //    object keeps the readers that prove it.
+        let frozenTilings = [2, 4, 8].map { boundaries(side: side, tiles: $0) }
+        let boundarySet = Set(frozenTilings.flatMap { $0 })
+        var byRank: [UInt64: [Int]] = [:]
+        for m in 0..<n { byRank[rankPtr[m], default: []].append(m) }
+
+        //    WHICH node at level `r` becomes the register is this
+        //    generator's choice, not the frozen draw's, and the choice
+        //    decides whether the object can exhibit the latch-timing defect
+        //    at all. Almost every drawn edge spans exactly one rank (the
+        //    direct-hex-neighbour branch, 7 draws in 8), and `r` is never a
+        //    tile boundary, so a register picked blindly is read only from
+        //    rank `r − 1`, always inside its own tile: zero cross-tile
+        //    readers on all three sides — the defect hides again, for a
+        //    different reason. So `R` is chosen as the node at rank `r`
+        //    whose ALREADY-DRAWN incoming edges cross the most of the three
+        //    frozen tilings' boundaries (ties by lowest Morton index). No
+        //    edge is invented; the selection only prefers a node the draw
+        //    already wired across a boundary.
+        var readersOf = [[Int]](repeating: [], count: n)
+        for u in 0..<n {
+            for d in 0..<6 {
+                let target = nbPtr[u * 6 + d]
+                if target >= 0 { readersOf[Int(target)].append(u) }
+            }
+        }
+        func tileOfRank(_ rank: UInt64, _ bs: [UInt64]) -> Int {
+            for (i, b) in bs.enumerated() where rank < b { return i }
+            return bs.count
+        }
+        func crossingScore(_ candidate: Int) -> Int {
+            var score = 0
+            for bs in frozenTilings {
+                let tileOfCandidate = tileOfRank(rankPtr[candidate], bs)
+                if readersOf[candidate].contains(where: {
+                    tileOfRank(rankPtr[$0], bs) != tileOfCandidate
+                }) { score += 1 }
+            }
+            return score
+        }
+
+        var usedForRegisters = Set<Int>()
+        let topRank = maxRankForSide(side)
+        if topRank >= 2 {
+            for r in 2...topRank where !boundarySet.contains(r) {
+                guard let rNodes = byRank[r], let sNodes = byRank[r - 1] else { continue }
+                let candidates = rNodes.filter { !usedForRegisters.contains($0) }
+                guard let reg = candidates.max(by: { a, b in
+                    let sa = crossingScore(a), sb = crossingScore(b)
+                    return sa != sb ? sa < sb : a > b
+                }) else { continue }
+                guard let src = sNodes.first(where: { !usedForRegisters.contains($0) && $0 != reg })
+                else { continue }
+                usedForRegisters.insert(reg)
+                usedForRegisters.insert(src)
+
+                var touched = Set<Int>()
+                for d in 0..<6 { nbPtr[reg * 6 + d] = -1 }
+                for d in 0..<6 { nbPtr[src * 6 + d] = -1 }
+                nbPtr[src * 6 + 0] = Int32(reg)
+                // `S = ¬R` is the letter; the drawn choice is overridden
+                // to 1 (complemented parity) for these nodes only.
+                choice[src] = 1
+                touched.insert(reg)
+                touched.insert(src)
+                for m in touched { writeParityLUT(m) }
+
+                try engine.addBackEdge(src: UInt32(src), dst: UInt32(reg))
+            }
+        }
     }
 
     /// Rank boundaries splitting `[0, maxRank]` into `tiles` equal spans:
@@ -206,8 +386,20 @@ public enum TiledFixture {
     /// this codebase — see `DagDBState`'s header comment).
     public static func seeds(for object: Object) -> [Int] {
         let side = object.side
-        let c0 = side / 2
-        let centreRowMajor = c0 * side + c0
+        // Audit C finding 19: `% 0` on a zero-node object TRAPPED, and the
+        // centre lookup below would have indexed an empty Morton table
+        // first. Refused by name (a named ERROR line carrying the value and
+        // the true extent, per the contract's general letter) and reported
+        // as an empty seed list — `seeds` is called without `try` from
+        // outside this file set, so the refusal cannot be a throw here.
+        let centreRowMajor = (side / 2) * side + (side / 2)
+        guard object.nodeCount > 0, centreRowMajor < object.grid.mortonRank.count else {
+            FileHandle.standardError.write(Data((
+                "ERROR tiled_fixture seeds: object of side \(side) holds \(object.nodeCount) nodes "
+                + "and \(object.grid.mortonRank.count) Morton entries; the centre seed and the four "
+                + "modulo draws need at least 1 of each\n").utf8))
+            return []
+        }
         let centreEngineIndex = Int(object.grid.mortonRank[centreRowMajor])
 
         var stream = NamedStream(

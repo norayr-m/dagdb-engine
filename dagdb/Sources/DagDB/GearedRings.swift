@@ -31,8 +31,19 @@ public struct GearedRings: Equatable, Codable {
     private var cells: [[Cell]]
 
     /// The sealed shape is gear 6, 6 rings, 32 cells (192 numbers).
-    public init(gear: UInt64 = 6, rings: Int = 6, cellsPerRing: Int = 32) {
-        precondition(gear >= 2 && rings >= 1 && cellsPerRing >= 2)
+    /// Finding 65: the ordinary init routes through `shapeViolation` — the
+    /// same front door the daemon's RINGS OPEN uses — so it can no longer
+    /// accept a shape the validator refuses. Callers that must not trap
+    /// (the daemon, WAL replay, snapshot restore) ask `shapeViolation`
+    /// first or use the throwing state-bearing init below.
+    /// S5 (ii): the `precondition` here was the last trap on this public
+    /// path — an abort no caller could catch. It throws `badShape` now,
+    /// with the validator's own wording, so the memberwise door and the
+    /// state-bearing door below refuse the same shapes the same way.
+    public init(gear: UInt64 = 6, rings: Int = 6, cellsPerRing: Int = 32) throws {
+        if let violation = Self.shapeViolation(gear: gear, rings: rings, cellsPerRing: cellsPerRing) {
+            throw RingsError.badShape(violation)
+        }
         self.gear = gear
         self.rings = rings
         self.cellsPerRing = cellsPerRing
@@ -46,12 +57,25 @@ public struct GearedRings: Equatable, Codable {
 
     /// Validating front door for a shape triple, for callers (the daemon's
     /// RINGS OPEN) that must never precondition-trap on bad input.
-    /// nil iff gear ≥ 2, 1 ≤ rings ≤ 16, 2 ≤ cellsPerRing ≤ 4096.
+    /// nil iff gear ≥ 2, 1 ≤ rings ≤ 16, 2 ≤ cellsPerRing ≤ 4096, AND the
+    /// coarsest span `gear^(rings−1)` fits UInt64.
     public static func shapeViolation(gear: UInt64, rings: Int, cellsPerRing: Int) -> String? {
         guard gear >= 2 else { return "gear \(gear) must be >= 2" }
         guard rings >= 1 && rings <= 16 else { return "rings \(rings) must be in [1, 16]" }
         guard cellsPerRing >= 2 && cellsPerRing <= 4096 else {
             return "cellsPerRing \(cellsPerRing) must be in [2, 4096]"
+        }
+        // Finding 64: `spanLength` accumulates a WRAPPING multiply; a gear
+        // whose gear^(rings-1) overflows wraps the coarsest span to 0 and
+        // `now / span` then divides by zero. Bound the gear here, where
+        // every trap-free caller already looks.
+        var span: UInt64 = 1
+        for _ in 0..<(rings - 1) {
+            let (product, overflow) = span.multipliedReportingOverflow(by: gear)
+            if overflow {
+                return "gear \(gear) raised to rings-1 (\(rings - 1)) overflows UInt64"
+            }
+            span = product
         }
         return nil
     }

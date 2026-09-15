@@ -107,11 +107,25 @@ extension DagDBCommandHandler {
             } catch {
                 return corruptionErrorLine(error)
             }
+            // F3 (beta 51) · the counts table is validated at the door, so a
+            // fixture short of a declared `classSpecs` label is refused by
+            // name instead of having the absent class folded into zero.
+            do {
+                try SuccessorCourt.validate(counts: set.fixture.classCounts)
+            } catch let e as SealedCourt.CourtError {
+                if case .missingClassCount(let label) = e {
+                    return "ERROR out_of_range: missing class count \(label)"
+                }
+                return "ERROR out_of_range: \(e)"
+            } catch {
+                return "ERROR out_of_range: \(error)"
+            }
             let totals = SuccessorCourt.frameTotals(counts: set.fixture.classCounts, model: model, budget: budget)
             return twinResponse(
                 "ALARM SUCCESSOR", sessionId: sessionId,
                 "id=\(id) B=\(budget) misses_alloc=\(totals.missesAlloc) misses_greedy=\(totals.missesGreedy) " +
-                "cost_alloc=\(totals.costAlloc) cost_greedy=\(totals.costGreedy) weight_dev=\(totals.maxWeightDev)"
+                "cost_alloc=\(totals.costAlloc) cost_greedy=\(totals.costGreedy) weight_dev=\(totals.maxWeightDev) " +
+                "missing_class_counts=\(totals.missingClassCounts.count)"
             )
 
         case .alarmCorrupt(let id, let idx, let epsM, let epsS, let epsN):
@@ -128,11 +142,21 @@ extension DagDBCommandHandler {
             }
             let record = records[idx - 1]
             let outcomes = model.enumerateOutcomes(for: record.culprit)
-            writeCorruptionOutcomes(outcomes)
+            // D2 · the outcome count comes from the loaded fixture, not from
+            // `nodeCount`, so `8 + n*40` must be compared to capacity BEFORE
+            // a byte is written (audit B finding 10).
+            let (refusal, truncated) = writeCorruptionOutcomes(outcomes)
+            if let refusal { return refusal }
             let weightSum = outcomes.reduce(0.0) { $0 + $1.weight }
+            // D7 · the row holds 5 claim slots; `nClaims` carries the true
+            // count, so truncation is detectable — but the reply never said
+            // the row was lossy (finding 11). The row keeps its width (the
+            // sealed model's widest outcome is exactly 5 claims: 4 phantom
+            // pockets plus the branch claim); the REPLY gained the flag.
             return twinResponse(
                 "ALARM CORRUPT", sessionId: sessionId,
                 "id=\(id) idx=\(idx) outcomes=\(outcomes.count) weight_sum=\(weightSum) shm_bytes=\(40 * outcomes.count)"
+                    + " claims_truncated=\(truncated)"
             )
 
         default:
@@ -147,7 +171,12 @@ extension DagDBCommandHandler {
     //   row = f64 weight | u32 nClaims | u32 0 |
     //         5×(u8 pocket, u8 row(0=L,1=D), u8 phantom, u8 0) | 4 pad
 
-    private func writeCorruptionOutcomes(_ outcomes: [CorruptionModel.Outcome]) {
+    /// Returns `(refusal, truncatedRowCount)`. Nothing is written when the
+    /// refusal is non-nil.
+    func writeCorruptionOutcomes(_ outcomes: [CorruptionModel.Outcome]) -> (String?, Int) {
+        if let e = checkShmFits(rows: outcomes.count, rowSize: 40) { return (e, 0) }
+        var truncated = 0
+        for o in outcomes where o.claims.count > 5 { truncated += 1 }
         let headerPtr = shmBase.bindMemory(to: UInt32.self, capacity: 2)
         headerPtr[0] = UInt32(outcomes.count)
         headerPtr[1] = 40
@@ -170,6 +199,7 @@ extension DagDBCommandHandler {
             }
             rowBase.advanced(by: 36).storeBytes(of: UInt32(0), as: UInt32.self)
         }
+        return (nil, truncated)
     }
 
     // MARK: - Error formatting

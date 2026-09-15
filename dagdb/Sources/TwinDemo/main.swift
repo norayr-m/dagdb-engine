@@ -71,9 +71,9 @@ print("refusal 3 — record outlives echo (echo moved to 0.5 s): \(v3.map(\.desc
 section(3, "StreamRecord: record and bit-exact replay from boundary state")
 
 var record = try! StreamRecord(header: w1Like(), generator: referenceStream(name: "court-demo"))
-record.recordSlice(count: 5)
-let middle = record.recordSlice(count: 7)
-record.recordSlice(count: 3)
+try! record.recordSlice(count: 5)
+let middle = try! record.recordSlice(count: 7)
+try! record.recordSlice(count: 3)
 
 let replayed = try! record.replaySlice(1)
 let bitExact = replayed == middle.payload
@@ -88,7 +88,7 @@ print("full-record verify() failing indices: \(record.verify())  (empty == every
 
 section(4, "GearedRings: signed extremum recall across lag")
 
-var rings = GearedRings(gear: 6, rings: 4, cellsPerRing: 8)
+var rings = try GearedRings(gear: 6, rings: 4, cellsPerRing: 8)
 let plantedTick: UInt64 = 250
 let plantedValue: Float = 7.5
 let totalTicks: UInt64 = 1500
@@ -109,10 +109,10 @@ if let recall = rings.recall(lag: lag) {
 
 section(5, "MasterClock + PhaseGear: 6:1 ladder, exact fire counts")
 
-var bands = (0..<4).map { j -> PhaseGear in
+var bands = try (0..<4).map { j -> PhaseGear in
     var den: UInt64 = 1
     for _ in 0..<j { den *= 6 }
-    return PhaseGear(name: "band\(j)", ratio: GearRatio(1, over: den))
+    return PhaseGear(name: "band\(j)", ratio: try GearRatio(1, over: den))
 }
 var clock = MasterClock()
 let n: UInt64 = 6 * 6 * 6 * 10

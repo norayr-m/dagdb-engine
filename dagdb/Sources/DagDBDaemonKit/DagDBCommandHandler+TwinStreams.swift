@@ -25,8 +25,14 @@ extension DagDBCommandHandler {
             return twinResponse("STREAM OPEN", sessionId: sessionId, "id=\(id) name=\(name) draws=0")
 
         case .streamNext(let id, let n):
-            guard n >= 1 && n <= nodeCount * 3 else {
-                return "ERROR out_of_range: n must be in [1, \(nodeCount * 3)]"
+            // D2 · the bound is the shm mapping's real capacity, not the
+            // hardcoded `nodeCount * 3` restatement of it. For a default
+            // handler the two are the same number (8 + n·24 bytes holds
+            // 3n u64s); for a `shmBytes:`-built one they are not, and the
+            // old bound stayed wide while the buffer shrank (finding 20).
+            guard n >= 1 && n <= maxU64VectorCount else {
+                return "ERROR out_of_range: n \(n) not in 1...\(maxU64VectorCount)"
+                    + " — shm holds \(shmCapacityBytes) bytes"
             }
             guard var stream = twin.streams.get(id) else { return "ERROR not_found: \(id)" }
             var values: [UInt64] = []
@@ -36,7 +42,7 @@ extension DagDBCommandHandler {
             let op = TwinOp.streamState(id: id, stateHi: post.hi, stateLo: post.lo, draws: stream.draws)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinErrorLine(error) }
-            writeU64Vector(values)
+            if let e = writeU64Vector(values) { return e }
             return twinResponse(
                 "STREAM NEXT", sessionId: sessionId,
                 "id=\(id) n=\(n) draws=\(stream.draws) state=\(hexWord(post.hi)):\(hexWord(post.lo)) shm_bytes=\(8 * n)"
@@ -72,11 +78,16 @@ extension DagDBCommandHandler {
                 signalBandHz: band, tauWindowSec: tau, combRateHz: comb,
                 firstEchoSec: echo, recordWindowSec: record, stepSec: step, clockSyncFloorSec: floor
             )
-            let violations = header.violations()
-            guard violations.isEmpty else {
+            // F4 (beta 71) · the seventh quantity is judged here too, so this
+            // verb and `RECORD OPEN` answer the same header the same way:
+            // `StreamRecord`'s birth refuses a declared clock-sync floor
+            // coarser than the step or reaching the record window, and this
+            // check used to answer `admissible=1` for exactly those headers.
+            let tags = header.violations().map(violationTag)
+                + header.clockSyncViolations().map(clockSyncTag)
+            guard tags.isEmpty else {
                 let sidStr = sessionId.map { " session=\($0)" } ?? ""
-                let desc = violations.map(violationTag).joined(separator: ";")
-                return "FAIL HEADER CHECK\(sidStr) violations=\(violations.count) \(desc)"
+                return "FAIL HEADER CHECK\(sidStr) violations=\(tags.count) \(tags.joined(separator: ";"))"
             }
             return twinResponse("HEADER CHECK", sessionId: sessionId, "admissible=1")
 
@@ -100,8 +111,9 @@ extension DagDBCommandHandler {
             return twinResponse("RECORD OPEN", sessionId: sessionId, "id=\(id) name=\(name) slices=0")
 
         case .recordSlice(let id, let count):
-            guard count >= 1 && count <= nodeCount * 3 else {
-                return "ERROR out_of_range: count must be in [1, \(nodeCount * 3)]"
+            guard count >= 1 && count <= maxU64VectorCount else {
+                return "ERROR out_of_range: count \(count) not in 1...\(maxU64VectorCount)"
+                    + " — shm holds \(shmCapacityBytes) bytes"
             }
             guard twin.records.get(id) != nil else { return "ERROR not_found: \(id)" }
             let op = TwinOp.recordSlice(id: id, count: UInt32(count))
@@ -120,7 +132,7 @@ extension DagDBCommandHandler {
             }
             do {
                 let payload = try rec.replaySlice(index)
-                writeU64Vector(payload)
+                if let e = writeU64Vector(payload) { return e }
                 let match = payload == rec.slices[index].payload ? 1 : 0
                 return twinResponse(
                     "RECORD REPLAY", sessionId: sessionId,
@@ -186,6 +198,16 @@ extension DagDBCommandHandler {
 
     private func idsSuffix(_ ids: [String]) -> String {
         ids.isEmpty ? "" : " " + ids.joined(separator: " ")
+    }
+
+    /// F4 · the clock-sync half of the header's judgement, tagged in the
+    /// same style as `violationTag` so one `FAIL HEADER CHECK` line carries
+    /// both kinds.
+    private func clockSyncTag(_ v: StreamHeader.ClockSyncViolation) -> String {
+        switch v {
+        case let .floorAboveStep(floor, step): return "floorAboveStep(\(floor),\(step))"
+        case let .floorOutlivesRecord(floor, window): return "floorOutlivesRecord(\(floor),\(window))"
+        }
     }
 
     private func violationTag(_ v: StreamHeader.Violation) -> String {

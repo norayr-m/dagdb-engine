@@ -20,7 +20,9 @@ public struct StreamHeader: Equatable, Codable {
     /// 6 · integrator step, seconds (dispersion honesty).
     public var stepSec: Double
     /// 7 · clock sync floor, seconds (0 for a single-clock stream — the only
-    ///     sealed regime so far; multi-clock floors must be declared).
+    ///     sealed regime so far; multi-clock floors must be declared, and a
+    ///     declared floor is compared against `stepSec` and
+    ///     `recordWindowSec` by `violations()`).
     public var clockSyncFloorSec: Double
 
     public init(signalBandHz: Double, tauWindowSec: Double, combRateHz: Double,
@@ -71,5 +73,43 @@ public struct StreamHeader: Equatable, Codable {
         return v
     }
 
-    public var isAdmissible: Bool { violations().isEmpty }
+    /// Finding 71: quantity 7 is COMPARED, not merely declared. A
+    /// single-clock stream declares 0 and both rules pass trivially — the
+    /// sealed regime is untouched. A declared multi-clock floor must be no
+    /// coarser than the integrator step (otherwise the step's precision is
+    /// a fiction) and must sit strictly inside the record window.
+    ///
+    /// Kept as its own type, outside `Violation`, so existing exhaustive
+    /// switches over that enum stay exhaustive; `isAdmissible` and
+    /// `StreamRecord`'s three doors consult both lists.
+    public enum ClockSyncViolation: Equatable, CustomStringConvertible {
+        case floorAboveStep(floor: Double, step: Double)
+        case floorOutlivesRecord(floor: Double, window: Double)
+
+        public var description: String {
+            switch self {
+            case .floorAboveStep(let f, let s):
+                return "clock sync floor \(f) s is coarser than the integrator step \(s) s"
+            case .floorOutlivesRecord(let f, let w):
+                return "clock sync floor \(f) s reaches the record window \(w) s"
+            }
+        }
+    }
+
+    /// The quantity-7 arithmetic. Empty for every single-clock stream
+    /// (floor 0) and for any declared floor finer than the step and
+    /// shorter than the window.
+    public func clockSyncViolations() -> [ClockSyncViolation] {
+        guard clockSyncFloorSec > 0 else { return [] }
+        var v: [ClockSyncViolation] = []
+        if clockSyncFloorSec > stepSec {
+            v.append(.floorAboveStep(floor: clockSyncFloorSec, step: stepSec))
+        }
+        if clockSyncFloorSec >= recordWindowSec {
+            v.append(.floorOutlivesRecord(floor: clockSyncFloorSec, window: recordWindowSec))
+        }
+        return v
+    }
+
+    public var isAdmissible: Bool { violations().isEmpty && clockSyncViolations().isEmpty }
 }

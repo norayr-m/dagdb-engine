@@ -102,13 +102,39 @@ public enum RankBoundFixture {
         return Tables(rank: rank, neighbors: nb, lut: lut)
     }
 
+    public enum FixtureError: Error, Equatable, CustomStringConvertible {
+        /// Finding 73: the size check was a `precondition` in library (not
+        /// test-target) code — a process abort on a caller's mistake.
+        case sizeMismatch(expected: Int, actual: Int)
+        /// Finding 72: this object is documented as a purely combinational
+        /// DAG; installing it over an engine that still holds registers
+        /// would silently keep them.
+        case engineHasBackEdges(Int)
+
+        public var description: String {
+            switch self {
+            case .sizeMismatch(let e, let a):
+                return "RankBoundFixture needs a \(RankBoundFixture.side)x\(RankBoundFixture.side) grid (\(e) nodes), got \(a)"
+            case .engineHasBackEdges(let n):
+                return "engine still holds \(n) back edge(s); RankBoundFixture is a purely combinational DAG"
+            }
+        }
+    }
+
     /// Write the tables into a live engine's buffers and mark the rank
-    /// topology dirty. The engine's grid must be `side × side`.
+    /// topology dirty. The engine's grid must be `side × side` and its
+    /// back-edge registry must be empty — both refused by name rather
+    /// than trapped or silently inherited (findings 72, 73).
     @discardableResult
-    public static func install(into engine: DagDBEngine) -> Tables {
+    public static func install(into engine: DagDBEngine) throws -> Tables {
         let t = tables()
         let n = engine.nodeCount
-        precondition(n == nodeCount, "RankBoundFixture needs a \(side)x\(side) grid")
+        guard n == nodeCount else {
+            throw FixtureError.sizeMismatch(expected: nodeCount, actual: n)
+        }
+        guard engine.backEdgeCount == 0 else {
+            throw FixtureError.engineHasBackEdges(engine.backEdgeCount)
+        }
 
         let rankPtr = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: n)
         let nbPtr = engine.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: n * 6)
@@ -116,13 +142,29 @@ public enum RankBoundFixture {
         let highPtr = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: n)
         let truthPtr = engine.truthStateBuf.contents().bindMemory(to: UInt8.self, capacity: n)
 
+        // Finding 72: the object is purely combinational, so the buffers
+        // that would otherwise carry a reused engine's registers, node
+        // types and analogue state are written too, not left behind.
+        let typePtr = engine.nodeTypeBuf.contents().bindMemory(to: UInt8.self, capacity: n)
+        let regPtr = engine.isRegisterBuf.contents().bindMemory(to: UInt8.self, capacity: n)
+        let actPtr = engine.activationBuf.contents().bindMemory(to: Int16.self, capacity: n)
+        let valPtr = engine.nodeValueBuf.contents().bindMemory(to: Float.self, capacity: n)
+        let wPtr = engine.edgeWeightsBuf.contents().bindMemory(to: Float.self, capacity: n * 6)
+
         for i in 0..<n {
             rankPtr[i] = t.rank[i]
             lowPtr[i] = UInt32(t.lut[i] & 0xFFFF_FFFF)
             highPtr[i] = UInt32((t.lut[i] >> 32) & 0xFFFF_FFFF)
             truthPtr[i] = 0
+            typePtr[i] = 0
+            regPtr[i] = 0
+            actPtr[i] = 0
+            valPtr[i] = 0
         }
-        for i in 0..<(n * 6) { nbPtr[i] = t.neighbors[i] }
+        for i in 0..<(n * 6) {
+            nbPtr[i] = t.neighbors[i]
+            wPtr[i] = 0
+        }
 
         engine.markRankTopologyDirty()
         return t

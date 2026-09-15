@@ -4,7 +4,7 @@ import XCTest
 final class DagDBReaderSessionTests: XCTestCase {
 
     private func makePrimary(side: Int) throws -> (DagDBEngine, HexGrid, DagDBState, Int) {
-        let grid = HexGrid(width: side, height: side)
+        let grid = try HexGrid(width: side, height: side)
         let state = DagDBState(width: side, height: side)
         let engine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         // zero neighbors like the daemon does

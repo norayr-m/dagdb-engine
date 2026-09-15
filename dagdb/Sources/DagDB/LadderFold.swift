@@ -13,6 +13,24 @@ import Accelerate
 /// `f1Node` -> `sources.f1`, etc).
 public enum LadderFold {
 
+    /// Audit C findings 36-39. `run` and `Object.init(engine:grid:)` are
+    /// NON-throwing public entry points called from outside this file set,
+    /// so the refusal travels two ways: as an appended `refusal` field on
+    /// `Object`/`Result` together with a named `ERROR ladder_fold:` line on
+    /// stderr (the contract's general letter allows exactly that in place
+    /// of a throw), and as this thrown, typed error from `runChecked`, the
+    /// door a library caller who wants a throw uses.
+    public enum FoldError: Error, Equatable, CustomStringConvertible {
+        case refused(String)
+        public var description: String {
+            switch self { case .refused(let m): return "LadderFold: \(m)" }
+        }
+    }
+
+    private static func reportRefusal(_ message: String) {
+        FileHandle.standardError.write(Data("ERROR ladder_fold: \(message)\n".utf8))
+    }
+
     // MARK: - LCG (moved verbatim from E3Ladder/main.swift)
 
     static let LCG_A: UInt64 = 1103515245, LCG_C: UInt64 = 12345, LCG_M: UInt64 = 2147483648
@@ -30,15 +48,19 @@ public enum LadderFold {
     /// `precondition` on INFO is unchanged from the sealed runner, which
     /// relied on the same guarantee (a well-posed symmetric system built
     /// from the frozen court objects).
-    static func solveSym(_ a: [Double], n: Int, rhs: [Double], nrhs: Int) -> [Double] {
+    /// Audit C finding 38: the `precondition(INFO == 0)` here ABORTED the
+    /// process, and `run(object:schedule:sources:)` is public — a
+    /// caller-built `Object` with a singular operator could reach it, not
+    /// only the frozen court objects the header assumed. `nil` on a LAPACK
+    /// failure; the caller turns it into a named refusal.
+    static func solveSym(_ a: [Double], n: Int, rhs: [Double], nrhs: Int) -> (values: [Double], info: Int32) {
         var A = a  // column-major == row-major for symmetric
         var B = rhs
         var N = __CLPK_integer(n), NRHS = __CLPK_integer(nrhs)
         var LDA = N, LDB = N, INFO: __CLPK_integer = 0
         var ipiv = [__CLPK_integer](repeating: 0, count: n)
         dgesv_(&N, &NRHS, &A, &LDA, &ipiv, &B, &LDB, &INFO)
-        precondition(INFO == 0, "dgesv INFO=\(INFO)")
-        return B
+        return (B, Int32(INFO))
     }
 
     // MARK: - Object
@@ -48,12 +70,19 @@ public enum LadderFold {
         public let adjacency: [[(j: Int, w: Double)]]
         public let rank: [Int]
         public let leak: Double
+        /// Appended field, audit C finding 39: non-nil iff reading the
+        /// engine's lanes produced a value this type cannot hold (a rank
+        /// above `Int.max` in the UInt64 rank lane). `run` refuses such an
+        /// object instead of folding a silently-wrong rank vector.
+        public let refusal: String?
 
-        public init(nodeCount: Int, adjacency: [[(j: Int, w: Double)]], rank: [Int], leak: Double) {
+        public init(nodeCount: Int, adjacency: [[(j: Int, w: Double)]], rank: [Int], leak: Double,
+                    refusal: String? = nil) {
             self.nodeCount = nodeCount
             self.adjacency = adjacency
             self.rank = rank
             self.leak = leak
+            self.refusal = refusal
         }
 
         /// Reads neighborsBuf / edgeWeightsBuf / rankBuf / nodeValueBuf back
@@ -79,15 +108,32 @@ public enum LadderFold {
                 }
                 return row
             }
+            // Audit C finding 39: `Int(rkBack[...])` TRAPPED for any rank
+            // above `Int.max` — in a PUBLIC initializer reading a lane the
+            // caller controls. The conversion is exact-or-refuse now; the
+            // refusal names the node and the raw value and travels with the
+            // object into `run`.
             let rkBack = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: n)
-            let rankOut = (0..<n).map { Int(rkBack[mo[$0]]) }
+            var rankOut = [Int](repeating: 0, count: n)
+            var rankRefusal: String? = nil
+            for i in 0..<n {
+                let raw = rkBack[mo[i]]
+                if let exact = Int(exactly: raw) {
+                    rankOut[i] = exact
+                } else if rankRefusal == nil {
+                    rankRefusal = "node \(i) carries rank \(raw) in the engine's UInt64 rank lane, "
+                        + "above the Int.max (\(Int.max)) this fold can represent"
+                }
+            }
             let nv = engine.nodeValueBuf.contents().bindMemory(to: Float.self, capacity: n)
-            let leakOut = Double(nv[mo[0]])
+            let leakOut = n > 0 ? Double(nv[mo[0]]) : 0
 
+            if let rankRefusal = rankRefusal { LadderFold.reportRefusal(rankRefusal) }
             self.nodeCount = n
             self.adjacency = adj
             self.rank = rankOut
             self.leak = leakOut
+            self.refusal = rankRefusal
         }
     }
 
@@ -155,9 +201,14 @@ public enum LadderFold {
         public let foldedF3: [Float]
         public let tiers: [String: Tier]         // keys "19","15","11","7","final" exactly as the runner names them
         public let log: [Step]
+        /// Appended field, audit C findings 36-39: non-nil iff `run`
+        /// REFUSED — an object above its schedule, an out-of-range source
+        /// index, a rank the fold cannot represent, or a singular operator.
+        /// Every other field is then empty; `runChecked` throws instead.
+        public let refusal: String?
 
         public init(keptNodes: [Int], finalOperator: [Float], foldedF1: [Float], foldedF2: [Float],
-                    foldedF3: [Float], tiers: [String: Tier], log: [Step]) {
+                    foldedF3: [Float], tiers: [String: Tier], log: [Step], refusal: String? = nil) {
             self.keptNodes = keptNodes
             self.finalOperator = finalOperator
             self.foldedF1 = foldedF1
@@ -165,10 +216,48 @@ public enum LadderFold {
             self.foldedF3 = foldedF3
             self.tiers = tiers
             self.log = log
+            self.refusal = refusal
         }
 
         public var keptCount: Int { keptNodes.count }
         public var finalBytes: Int { keptNodes.count * keptNodes.count * 4 }
+
+        /// Audit C finding 40: `finalBytes` and `Tier.bytes` are FORMULAS
+        /// (k²·4, k²·4 + k·3·4) and nothing ever measured them against
+        /// bytes actually written — so any test restating the formula is a
+        /// check that cannot fail. These two hand back the real payloads
+        /// the price table prices, so the gate can stat a file instead.
+        ///
+        /// The final operator, row-major Float32 — exactly what the fabric
+        /// stores and what `finalBytes` claims to cost.
+        public func serializedFinalOperator() -> Data {
+            var out = Data(capacity: finalOperator.count * 4)
+            for v in finalOperator {
+                var bits = v.bitPattern.littleEndian
+                withUnsafeBytes(of: &bits) { out.append(contentsOf: $0) }
+            }
+            return out
+        }
+
+        /// A tier's three folded source vectors as Float32 — the `k·3·4`
+        /// half of `Tier.bytes`. `nil` for an unknown tier name. A tier
+        /// without an f3 still prices three vectors (the runner's own
+        /// formula), so the absent one is serialized as zeros.
+        public func serializedTierSources(_ name: String) -> Data? {
+            guard let tier = tiers[name] else { return nil }
+            let k = tier.kept.count
+            var out = Data(capacity: k * 3 * 4)
+            func append(_ values: [Double]) {
+                for i in 0..<k {
+                    var bits = Float(i < values.count ? values[i] : 0).bitPattern.littleEndian
+                    withUnsafeBytes(of: &bits) { out.append(contentsOf: $0) }
+                }
+            }
+            append(tier.f1)
+            append(tier.f2)
+            append(tier.f3 ?? [])
+            return out
+        }
         public var totalWallMs: Double { log.reduce(0) { $0 + $1.wallMs } }
         /// The price list, printed (contract F5): one line per fold
         /// (ring, eliminated, kept, wall ms) and one per tier (kept k,
@@ -220,7 +309,80 @@ public enum LadderFold {
 
     // MARK: - run (moved verbatim from Ladder.run)
 
+    /// Audit C findings 36, 37, 39 — the front door. nil iff `run` can fold
+    /// this object under this schedule from these sources; otherwise a
+    /// message naming the value and the true extent.
+    ///
+    /// Finding 36 is the "bound below the graph" shape in the fold: the
+    /// loop is bounded by `schedule.maxRank`, but a node whose rank EXCEEDS
+    /// it is in neither `ring` (rank == current) nor `keep` (rank <
+    /// current), so `active = keep` DROPPED it at the first fold together
+    /// with its row and column of the operator — silently. Both frozen
+    /// schedules sit exactly AT the bound, with zero headroom: the control
+    /// object (side 12) reaches rank 6 against `controlSchedule.maxRank`
+    /// 6, and the court object (side 44) reaches rank 22 against
+    /// `courtSchedule.maxRank` 22. That is a fact, printed by
+    /// `scheduleHeadroom`, not a margin.
+    public static func violation(object: Object, schedule: Schedule, sources: Sources) -> String? {
+        if let refusal = object.refusal { return refusal }
+        let n = object.nodeCount
+        if n <= 0 { return "object holds \(n) nodes; the fold needs at least 1" }
+        if object.adjacency.count != n {
+            return "object holds \(n) nodes but \(object.adjacency.count) adjacency rows"
+        }
+        if object.rank.count != n {
+            return "object holds \(n) nodes but \(object.rank.count) ranks"
+        }
+        if schedule.keepRank < 0 { return "keepRank \(schedule.keepRank) must be >= 0" }
+        if schedule.maxRank <= schedule.keepRank {
+            return "maxRank \(schedule.maxRank) must be > keepRank \(schedule.keepRank)"
+        }
+        // Finding 36.
+        let objectMax = object.rank.max() ?? 0
+        if objectMax > schedule.maxRank {
+            let above = object.rank.filter { $0 > schedule.maxRank }.count
+            return "schedule.maxRank \(schedule.maxRank) is below the object's own highest rank "
+                + "\(objectMax): \(above) node(s) sit above the schedule and would be dropped at "
+                + "the first fold, with their rows and columns of the operator"
+        }
+        // Finding 37: only `f3` was guarded, and only against negatives.
+        for (label, idx) in [("f1", sources.f1), ("f2", sources.f2)] {
+            if idx < 0 || idx >= n {
+                return "source \(label) index \(idx) not in [0, \(n))"
+            }
+        }
+        if sources.f3 != -1 && (sources.f3 < 0 || sources.f3 >= n) {
+            return "source f3 index \(sources.f3) not in [0, \(n)) or -1"
+        }
+        return nil
+    }
+
+    /// `(object's own highest rank, schedule.maxRank)` — the fact finding
+    /// 36 asks be printed rather than assumed: both frozen pairings sit
+    /// exactly at the bound (headroom 0).
+    public static func scheduleHeadroom(object: Object, schedule: Schedule) -> (objectMaxRank: Int, scheduleMaxRank: Int, headroom: Int) {
+        let objectMax = object.rank.max() ?? 0
+        return (objectMax, schedule.maxRank, schedule.maxRank - objectMax)
+    }
+
+    /// Findings 36-39's throwing door: the fold or a typed refusal, never a
+    /// dropped ring, a trap, or a process abort.
+    public static func runChecked(object: Object, schedule: Schedule, sources: Sources) throws -> Result {
+        let result = run(object: object, schedule: schedule, sources: sources)
+        if let refusal = result.refusal { throw FoldError.refused(refusal) }
+        return result
+    }
+
+    private static func refusedResult(_ message: String) -> Result {
+        reportRefusal(message)
+        return Result(keptNodes: [], finalOperator: [], foldedF1: [], foldedF2: [], foldedF3: [],
+                      tiers: [:], log: [], refusal: message)
+    }
+
     public static func run(object: Object, schedule: Schedule, sources: Sources) -> Result {
+        if let violation = violation(object: object, schedule: schedule, sources: sources) {
+            return refusedResult(violation)
+        }
         let n = object.nodeCount
         let adj = object.adjacency
         let rank = object.rank
@@ -249,17 +411,31 @@ public enum LadderFold {
 
         func checkpointName(_ level: Int) -> String { level == keepRank ? "final" : String(level) }
 
+        var tierRefusal: String? = nil
         func recordTier(_ level: Int, activeSet: [Int], opF: [Float],
                         f1F: [Float], f2F: [Float], f3F: [Float]) {
             let k = activeSet.count
             let A = opF.map { Double($0) }
-            let x1 = solveSym(A, n: k, rhs: f1F.map { Double($0) }, nrhs: 1)
-            let x2 = solveSym(A, n: k, rhs: f2F.map { Double($0) }, nrhs: 1)
+            // Finding 38: a singular tier operator used to abort the
+            // process here; it is a named refusal now.
+            let r1 = solveSym(A, n: k, rhs: f1F.map { Double($0) }, nrhs: 1)
+            let r2 = solveSym(A, n: k, rhs: f2F.map { Double($0) }, nrhs: 1)
             var x3: [Double]? = nil
+            var info3: Int32 = 0
             if f3Node >= 0 {
-                x3 = solveSym(A, n: k, rhs: f3F.map { Double($0) }, nrhs: 1)
+                let r3 = solveSym(A, n: k, rhs: f3F.map { Double($0) }, nrhs: 1)
+                x3 = r3.values
+                info3 = r3.info
             }
-            tiers[checkpointName(level)] = Tier(kept: activeSet, f1: x1, f2: x2, f3: x3,
+            if r1.info != 0 || r2.info != 0 || info3 != 0 {
+                if tierRefusal == nil {
+                    let info = r1.info != 0 ? r1.info : (r2.info != 0 ? r2.info : info3)
+                    tierRefusal = "tier '\(checkpointName(level))' operator is singular: dgesv "
+                        + "returned info=\(info) over a \(k)x\(k) system"
+                }
+                return
+            }
+            tiers[checkpointName(level)] = Tier(kept: activeSet, f1: r1.values, f2: r2.values, f3: x3,
                                                  bytes: k * k * 4 + k * 3 * 4)
         }
 
@@ -317,7 +493,12 @@ public enum LadderFold {
             var LDA32 = N32, LDB32 = N32, INFO: __CLPK_integer = 0
             var ipiv = [__CLPK_integer](repeating: 0, count: kb)
             dgesv_(&N32, &NRHS32, &Acm, &LDA32, &ipiv, &Bcm, &LDB32, &INFO)
-            precondition(INFO == 0, "fold dgesv INFO=\(INFO)")
+            // Finding 38: a singular ring block aborted the process here.
+            guard INFO == 0 else {
+                return refusedResult(
+                    "fold at ring \(current) is singular: dgesv returned info=\(INFO) over a "
+                    + "\(kb)x\(kb) system (\(ka) node(s) kept)")
+            }
             // Schur: AAA -= ABA^T * X ; folded f similarly.
             var newOp = [Double](repeating: 0, count: ka * ka)
             for ai in 0..<ka {
@@ -357,6 +538,7 @@ public enum LadderFold {
             }
         }
 
+        if let tierRefusal = tierRefusal { return refusedResult(tierRefusal) }
         return Result(keptNodes: active, finalOperator: op,
                       foldedF1: f1, foldedF2: f2, foldedF3: f3,
                       tiers: tiers, log: foldLog)

@@ -43,8 +43,10 @@ public struct CorruptionModel: Equatable, Codable {
         }
     }
 
-    /// One of the 16 phantom masks (pocket q ∈ {3,4,5,6} independently
-    /// spawns a phantom liar-of-q claim with probability εn/4).
+    /// One of the `2^|pockets|` phantom masks (each pocket q in
+    /// `SealedCourt.pockets` independently spawns a phantom liar-of-q
+    /// claim with probability εn/|pockets| — 16 masks and εn/4 on the
+    /// sealed four).
     public struct PhantomSubset: Equatable {
         public let weight: Double
         public let pockets: [Int]
@@ -110,19 +112,24 @@ public struct CorruptionModel: Equatable, Codable {
         }
     }
 
-    /// The 16 phantom masks, mask 0..15, mirroring `phantom_subsets`:
+    /// The phantom masks (16 on the sealed four pockets), mirroring
+    /// `phantom_subsets`:
     /// bit i of the mask selects `SealedCourt.pockets[i]`; weight is the
     /// product over the four bits of (q if set else 1-q), q = εn/4.
     public func phantomSubsets() -> [PhantomSubset] {
-        let q = epsN / 4.0
+        // Finding 53: the mask width is the sealed pocket list's own
+        // length, not the literal 4/16 — a fifth pocket gets its phantom,
+        // a shorter list cannot index out of bounds.
+        let pockets = SealedCourt.pockets
+        let q = epsN / Double(max(pockets.count, 1))
         var out: [PhantomSubset] = []
-        out.reserveCapacity(16)
-        for mask in 0..<16 {
+        out.reserveCapacity(1 << pockets.count)
+        for mask in 0..<(1 << pockets.count) {
             var subset: [Int] = []
             var w = 1.0
-            for i in 0..<4 {
+            for i in 0..<pockets.count {
                 let bitSet = (mask & (1 << i)) != 0
-                if bitSet { subset.append(SealedCourt.pockets[i]) }
+                if bitSet { subset.append(pockets[i]) }
                 w *= bitSet ? q : (1.0 - q)
             }
             out.append(PhantomSubset(weight: w, pockets: subset))

@@ -245,7 +245,7 @@ final class TwinAlarmCommandTests: XCTestCase {
         XCTAssertTrue(reply.hasPrefix("OK ALARM LOAD id=a00000001"), reply)
 
         let fresh = TwinState()
-        let grid = HexGrid(width: 10, height: 10)
+        let grid = try HexGrid(width: 10, height: 10)
         let state = DagDBState(width: 10, height: 10)
         let freshEngine = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         _ = try DagDBWAL.replay(engine: freshEngine, nodeCount: freshEngine.nodeCount, path: walPath, twin: fresh)
@@ -301,4 +301,51 @@ final class TwinAlarmCommandTests: XCTestCase {
         XCTAssertTrue(reply.contains("misses_greedy=25.25"), reply)
         XCTAssertTrue(reply.contains("cost_alloc=561907.5"), reply)
     }
+
+    // MARK: - D2/D7 · ALARM CORRUPT's shm write
+
+    /// Audit finding 10 — `writeCorruptionOutcomes` compared `8 + n*40` to
+    /// nothing at all. The outcome count comes from the loaded fixture, not
+    /// from `nodeCount`, and the reply printed `shm_bytes=` without ever
+    /// comparing it to capacity. The structurally identical `HOOK LEDGER`
+    /// writer WAS guarded.
+    func testAlarmCorruptRefusesWhenTheOutcomeRowsDoNotFit() throws {
+        let path = try writeSyntheticFixture(in: tmpDir)
+        let f = try HandlerFixture(side: 4, dataRoot: tmpDir, shmBytes: 64)
+        XCTAssertTrue(f.handler.handle("ALARM LOAD \(path)").hasPrefix("OK ALARM LOAD"))
+        let reply = f.handler.handle("ALARM CORRUPT a00000001 3 0.5 0 1")
+        XCTAssertTrue(reply.hasPrefix("ERROR out_of_range"), reply)
+        XCTAssertTrue(reply.contains("64"), "the refusal must name the capacity: \(reply)")
+        XCTAssertEqual(f.shm.bindMemory(to: UInt32.self, capacity: 2)[0], 0,
+                       "rows were written despite the refusal")
+    }
+
+    /// Audit finding 11 — the 40-byte row holds 5 claim slots while
+    /// `outcome.claims.count` is whatever the model enumerates. The count is
+    /// carried in `nClaims`, so truncation is detectable, but the reply line
+    /// never said the row was lossy. It says so now.
+    func testAlarmCorruptReplyCarriesTheLossyFlag() throws {
+        let path = try writeSyntheticFixture(in: tmpDir)
+        let f = try HandlerFixture(side: 64, dataRoot: tmpDir)
+        XCTAssertTrue(f.handler.handle("ALARM LOAD \(path)").hasPrefix("OK ALARM LOAD"))
+        let reply = f.handler.handle("ALARM CORRUPT a00000001 3 0.5 0 1")
+        XCTAssertTrue(reply.hasPrefix("OK ALARM CORRUPT"), reply)
+        // The sealed model's widest outcome is 4 phantom pockets + 1 branch
+        // claim = exactly the row's 5 slots, so nothing is lossy today — but
+        // the reply must SAY so rather than leave the reader to assume it.
+        XCTAssertTrue(reply.contains("claims_truncated=0"), reply)
+    }
+
+    /// … and the counter is real: hand the writer a six-claim outcome and it
+    /// reports one truncated row rather than dropping the sixth in silence.
+    func testCorruptionRowWriterCountsTruncatedClaims() throws {
+        let f = try HandlerFixture(side: 64)
+        let wide = CorruptionModel.Outcome(
+            weight: 1.0,
+            claims: (0..<6).map { SealedClaim(pocket: $0, row: .L, isPhantom: $0 < 5) })
+        let (refusal, truncated) = f.handler.writeCorruptionOutcomes([wide])
+        XCTAssertNil(refusal)
+        XCTAssertEqual(truncated, 1)
+    }
+
 }

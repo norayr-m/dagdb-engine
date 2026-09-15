@@ -43,11 +43,17 @@ extension DagDBCommandHandler {
                 return "ERROR io: bank \(id) missing immediately after apply"
             }
             let K = spec.atomCount
-            let decl = entry.bank.declaration()
+            let decl: WaveBank.Declaration
+            let deficient: Bool
+            switch checkedDeclaration(entry.bank) {
+            case .refused(let why): return "ERROR bad_value: BANK OPEN refused: \(why)"
+            case .declared(let d, let rankDeficient): decl = d; deficient = rankDeficient
+            }
             return twinResponse(
                 "BANK OPEN", sessionId: sessionId,
                 "id=\(id) name=\(name) T=\(spec.samples) K=\(K) atoms_bytes=\(spec.samples * K * 4) "
-                    + "rank=\(decl.rank) cond=\(String(format: "%.6g", decl.conditionNumber))"
+                    + "rank=\(decl.rank) cond=\(String(format: "%.6g", decl.conditionNumber)) "
+                    + "rank_deficient=\(deficient ? 1 : 0)"
             )
 
         case .bankGenerate(let id, let m):
@@ -66,10 +72,20 @@ extension DagDBCommandHandler {
                 return "ERROR out_of_range: BANK GENERATE input \(inputBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
             let start = DispatchTime.now()
-            let w = bank.generate(coefficients: coefficients, columns: m)
+            // F5 · alpha's throwing door: a column count above the bank's own
+            // ceiling used to come back as an empty vector under an `OK`.
+            let w: [Float]
+            do {
+                w = try bank.generateChecked(coefficients: coefficients, columns: m)
+            } catch let e as WaveBank.BankError {
+                guard case .badSpec(let why) = e else { return "ERROR bad_value: BANK GENERATE refused: \(e)" }
+                return "ERROR bad_value: BANK GENERATE refused: \(why)"
+            } catch {
+                return "ERROR bad_value: BANK GENERATE refused: \(error)"
+            }
             let end = DispatchTime.now()
             let elapsedMs = Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
-            writeFloatVector(w)
+            if let e = writeFloatVector(w) { return e }
             return twinResponse(
                 "BANK GENERATE", sessionId: sessionId,
                 "id=\(id) T=\(bank.T) M=\(m) samples=\(bank.T * m) elapsed_ms=\(elapsedMs)"
@@ -88,14 +104,16 @@ extension DagDBCommandHandler {
             guard let fit = bank.fit(x) else {
                 return "ERROR io: BANK FIT did not converge"
             }
-            writeFloatVector(fit.coefficients)
+            if let e = writeFloatVector(fit.coefficients) { return e }
             return twinResponse(
                 "BANK FIT", sessionId: sessionId,
                 "id=\(id) residual=\(fit.residual) norm=\(fit.targetNorm) coefficients=\(fit.coefficients.count)"
             )
 
         case .bankNoise(let id, let seed, let n):
-            guard seed >= 0 else { return "ERROR out_of_range: seed must be >= 0" }
+            // D1 · `seed` is consumed by `for _ in 0..<seed { stream.next64() }`
+            // — every sibling knob here is bounded; this one was not (finding 21).
+            if let e = checkCap("seed", seed, 0, DagDBCommandHandler.bankNoiseSeedCap) { return e }
             guard n >= 1 && n <= 200 else { return "ERROR out_of_range: n must be in [1, 200]" }
             guard let entry = twin.banks.get(id) else { return "ERROR not_found: \(id)" }
             var stream = NamedStream(
@@ -123,13 +141,19 @@ extension DagDBCommandHandler {
         case .bankInfo(let id):
             guard let entry = twin.banks.get(id) else { return "ERROR not_found: \(id)" }
             let spec = entry.bank.spec
-            let decl = entry.bank.declaration()
+            let decl: WaveBank.Declaration
+            let deficient: Bool
+            switch checkedDeclaration(entry.bank) {
+            case .refused(let why): return "ERROR bad_value: BANK INFO refused: \(why)"
+            case .declared(let d, let rankDeficient): decl = d; deficient = rankDeficient
+            }
             return twinResponse(
                 "BANK INFO", sessionId: sessionId,
                 "id=\(id) name=\(entry.name) T=\(spec.samples) fs=\(spec.sampleRate) f0=\(spec.f0) "
                     + "H=\(spec.harmonics) centers=\(spec.gaborCenters) freqs=\(spec.gaborFreqs) "
                     + "sigma_frac=\(spec.gaborSigmaFrac) K=\(entry.bank.K) "
-                    + "rank=\(decl.rank) cond=\(String(format: "%.6g", decl.conditionNumber))"
+                    + "rank=\(decl.rank) cond=\(String(format: "%.6g", decl.conditionNumber)) "
+                    + "rank_deficient=\(deficient ? 1 : 0)"
             )
 
         case .bankList:
@@ -149,6 +173,39 @@ extension DagDBCommandHandler {
             // in DagDBCommandHandler+Twin.swift) is covered above; this
             // branch exists only for switch exhaustiveness.
             return "ERROR unknown_command: twin verb not wired yet"
+        }
+    }
+
+    /// F5 · the declaration through alpha's throwing door, with one
+    /// deliberate split.
+    ///
+    /// `declarationChecked()` refuses two different things: a LAPACK failure
+    /// or a literally zero / non-finite smallest singular value (which
+    /// `declaration()` itself already reports in its `refusal` field — the
+    /// printed numbers mean nothing, and that refusal belongs on the wire),
+    /// and, more strictly, ANY bank whose smallest singular value sits at or
+    /// below the rank threshold. The second is not an error here: the sealed
+    /// 160-atom control bank is deliberately rank deficient (146 of 160) and
+    /// its printed `rank=146` is a frozen gate. So the first is refused and
+    /// the second is DISCLOSED as `rank_deficient=1`.
+    enum CheckedDeclaration {
+        case declared(WaveBank.Declaration, rankDeficient: Bool)
+        case refused(String)
+    }
+
+    /// The door is tried FIRST and its own return value is used, so the
+    /// ordinary path pays for exactly one SVD — `declaration()` recomputes
+    /// rank and condition number on every call (about 10 ms at 4096x160),
+    /// and calling both unconditionally would have doubled that on two
+    /// verbs. Only a bank the door refuses is read a second time, to tell
+    /// the two kinds of refusal apart.
+    func checkedDeclaration(_ bank: WaveBank) -> CheckedDeclaration {
+        do {
+            return .declared(try bank.declarationChecked(), rankDeficient: false)
+        } catch {
+            let decl = bank.declaration()
+            if let refusal = decl.refusal { return .refused(refusal) }
+            return .declared(decl, rankDeficient: true)
         }
     }
 

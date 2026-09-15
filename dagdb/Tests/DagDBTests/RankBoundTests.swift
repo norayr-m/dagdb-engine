@@ -114,10 +114,10 @@ final class RankBoundTests: XCTestCase {
         let n = RankBoundFixture.nodeCount
 
         // ── Under the large bound: build, tick both modes, record truth ──
-        let gridA = HexGrid(width: side, height: side)
+        let gridA = try HexGrid(width: side, height: side)
         let stateA = DagDBState(width: side, height: side)
         let engA = try DagDBEngine(grid: gridA, state: stateA, maxRank: 32)
-        let t = RankBoundFixture.install(into: engA)
+        let t = try RankBoundFixture.install(into: engA)
         let expected = expectedFixedPoint(t)
 
         RankBoundFixture.resetTruth(engA)
@@ -147,7 +147,7 @@ final class RankBoundTests: XCTestCase {
                                    tickCount: 0, path: path)
 
         // ── Restore under the small bound ──
-        let gridB = HexGrid(width: side, height: side)
+        let gridB = try HexGrid(width: side, height: side)
         let stateB = DagDBState(width: side, height: side)
         let engB = try DagDBEngine(grid: gridB, state: stateB, maxRank: 8)
 
@@ -165,7 +165,8 @@ final class RankBoundTests: XCTestCase {
         XCTAssertEqual(
             violation,
             "rank bound: 42 node(s) at or above maxRank 8 " +
-            "(first node 24 rank 8, highest rank 21)")
+            "(first node 24 rank 8, highest rank 21)" +
+            "; rank dispatch covers 81 of 81 node(s) over 22 rank level(s)")
 
         // 3a. Rank-mode TICK from the all-false start reaches the recorded
         //     truth, node for node, exact — including every node at rank ≥ 8.
@@ -209,7 +210,7 @@ final class RankBoundTests: XCTestCase {
     /// An object whose ranks are all below the bound must dispatch exactly
     /// the bound's levels and compute exactly as before.
     func testR5_shallowObjectKeepsTheConfiguredBound() throws {
-        let grid = HexGrid(width: 8, height: 8)
+        let grid = try HexGrid(width: 8, height: 8)
         let state = DagDBState(width: 8, height: 8)
         let eng = try DagDBEngine(grid: grid, state: state, maxRank: 8)
         let n = eng.nodeCount
