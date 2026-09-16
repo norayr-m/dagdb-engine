@@ -1,7 +1,6 @@
 # DagDB — capabilities
 
-> **Humble disclaimer.** Amateur engineering project. We are not HPC
-> professionals and make no competitive claims. All numbers come from
+> **Humble disclaimer.** Amateur engineering project. All numbers come from
 > one M5 Max laptop, no controlled benchmark, no peer review. Errors
 > likely. Numbers speak.
 

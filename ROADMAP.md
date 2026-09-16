@@ -3,8 +3,7 @@
 *Last refreshed: 2026-09-10. Owner: the engine keeper. Supersedes
 `dagdb/ROADMAP_DRAFT.md` (v0, 2026-08-30).*
 
-> **Humble disclaimer.** Amateur engineering project. We are not HPC
-> professionals and make no competitive claims. All numbers come from
+> **Humble disclaimer.** Amateur engineering project. All numbers come from
 > one M5 Max laptop, no controlled benchmark, no peer review. Errors
 > likely. Numbers speak.
 

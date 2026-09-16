@@ -2,8 +2,7 @@
 
 **6-bounded ranked DAG database on Apple Silicon, with a 4-cycle runtime on top.**
 
-> **Humble disclaimer.** Amateur engineering project. We are not HPC
-> professionals and make no competitive claims. The numbers here come
+> **Humble disclaimer.** Amateur engineering project. The numbers here come
 > from a single M5 Max laptop, no controlled benchmark, no peer
 > review. Errors likely. Numbers speak.
 

@@ -4,8 +4,7 @@ One-page snapshot of what is live right now. Read this before
 trusting any older doc's claim about version, test count, or
 ownership.
 
-> **Humble disclaimer.** Amateur engineering project. We are not
-> HPC professionals and make no competitive claims. The numbers
+> **Humble disclaimer.** Amateur engineering project. The numbers
 > here come from a single M5 Max laptop, no controlled benchmark,
 > no peer review. Errors likely. Numbers speak.
 

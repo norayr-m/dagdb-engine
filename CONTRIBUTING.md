@@ -1,7 +1,6 @@
 # Contributing
 
-> **Humble disclaimer.** Amateur engineering project. We are not HPC
-> professionals and make no competitive claims. Errors likely.
+> **Humble disclaimer.** Amateur engineering project. Errors likely.
 
 This is a private research prototype that happens to be readable in
 public. There is no sponsorship, no roadmap commitment, and no SLA.
