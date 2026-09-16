@@ -45,5 +45,4 @@ running machine, so it validates the recovery *path* and the bound's *ceiling*,
 not the physical loss itself. `0 ≤ N` holds; do not read the 0 as proof that
 grouped commit is free — under power loss it can lose up to N.
 
-This is an amateur engineering project. We are not HPC professionals and make
-no competitive claims.
+This is an amateur engineering project. The numbers here come from a single machine and a single family of runs, with no controlled benchmark: reproduce them with the script in this repository rather than taking them on trust.

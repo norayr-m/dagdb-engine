@@ -1,7 +1,9 @@
 # Welcome to DagDB
 
-> Amateur engineering project. We are not HPC professionals and make
-> no competitive claims. Numbers speak. Errors likely.
+> Amateur engineering project. The numbers here come from a single machine
+> and a single family of runs, with no controlled benchmark: reproduce them
+> with the script in this repository rather than taking them on trust.
+> Errors likely.
 
 Hi. If you've never heard of DagDB before, this is the right page.
 Five-minute read.
