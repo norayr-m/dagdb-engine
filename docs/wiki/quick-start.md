@@ -116,7 +116,7 @@ curl -s -X POST http://localhost:8787/dagdb/dagdb_status \
      -H "Content-Type: application/json" -d '{}'
 ```
 
-37 endpoints under `/dagdb/`. See [`mcp.md`](mcp.md).
+104 endpoints under `/dagdb/`. See [`mcp.md`](mcp.md).
 
 ## Run the tests
 

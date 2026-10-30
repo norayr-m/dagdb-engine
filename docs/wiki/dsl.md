@@ -1,7 +1,7 @@
 # DSL reference
 
 Every verb the daemon's DSL parser recognizes. Source of truth:
-[`dagdb/Sources/DagDBDaemon/DSLParser.swift`](../../dagdb/Sources/DagDBDaemon/DSLParser.swift).
+[`dagdb/Sources/DagDBDaemonKit/DSLParser.swift`](../../dagdb/Sources/DagDBDaemonKit/DSLParser.swift).
 
 Commands are newline-delimited text on `/tmp/dagdb.sock`. Every
 response is either `OK …` or `ERROR <category>: <detail>` (see

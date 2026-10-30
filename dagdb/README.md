@@ -383,6 +383,7 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ```
 1052 tests, 0 failures (DagDBTests + DagDBDaemonKitTests);
 46 skipped without the sealed fixtures
+```
 
 ## Sealed fixtures
 
@@ -397,6 +398,10 @@ not results you can reproduce. The variables are `DAGDB_W2_FIXTURE`,
 `DAGDB_W1_RECORDS`, `DAGDB_E3_RUNS` and `DAGDB_CORTEX_V4_FIXTURE`; a
 fixture present with the wrong hash FAILS rather than skips, which is
 what makes the pin worth having.
+
+## Benchmarks
+
+```
 1K nodes:   0.45 ms/tick
 1M nodes:   0.81-1.69 GCUPS (compacted rank tick, shallow spread;
             0.15-0.65 on a 16-rank spread, TICK_SYNC ~3.5 stable;

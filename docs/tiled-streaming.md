@@ -830,5 +830,3 @@ what the spec claimed. Numbers speak. Ego doesn't.
 
 If anything here turns out to be wrong when built, the spec
 itself is stale; the build is the source of truth.
-
-— `dag-2026-04-21-01`

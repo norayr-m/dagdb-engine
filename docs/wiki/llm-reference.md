@@ -11,7 +11,7 @@ is the canonical disambiguator.
 > likely. Verify against source before relying on anything
 > safety-relevant.
 
-Last refreshed: 2026-05-18 (Fable review pass).
+Last refreshed: 2026-05-18; counts and known issues re-checked against this tree 2026-10-30.
 
 ---
 
@@ -73,7 +73,7 @@ to ~4 KB; keep commands under that.
 ## 3. The complete DSL surface
 
 Authoritative grammar lives in
-`dagdb/Sources/DagDBDaemon/DSLParser.swift`. Verbs grouped by
+`dagdb/Sources/DagDBDaemonKit/DSLParser.swift`. Verbs grouped by
 function:
 
 **Lifecycle / inspection**
@@ -208,12 +208,6 @@ of single `SET`/`CONNECT` round-trips. The pipeline:
 Full recipe with rank-depth budgeting and LUT input packing:
 [`microcircuit-compilation.md`](microcircuit-compilation.md).
 
-**Known doc bug (2026-05-18):** the `dagdb_set_ranks_bulk` MCP
-docstring currently says "u32 vector" — that is wrong, the daemon
-reads u64. Write `numpy.uint64`. Tracked in
-[`../REVIEW_FABLE_2026-05-18.md`](../REVIEW_FABLE_2026-05-18.md)
-finding P1.
-
 ---
 
 ## 7. Persistence formats
@@ -250,24 +244,18 @@ Operating cautions an LLM should respect:
   `SET_RANKS_BULK`, run `VALIDATE` if you don't fully trust the
   data — they can create rank-invariant violations the engine
   won't catch until you check.
-- **Reader sessions and ranks (live bug, 2026-05-18):** the
-  shipped reader-session snapshot copies only half each node's
-  rank. Until the one-line fix lands, **do not trust rank values
-  from `READER <id> NODES …` for nodes in the upper half of the
-  graph.** Tracked as finding C1 in the Fable review. Reads of
-  truth, type, and LUT through a reader session are fine; only
-  rank is affected.
 - **Don't experiment on the prod store.** Spin a dev daemon:
   `DAGDB_ENV=dev DAGDB_DATA_ROOT=~/dag_databases/dev dagdb-daemon
   --grid 64`. Socket auto-derives to `/tmp/dagdb-dev.sock`.
-- **The browser bridge is unauthenticated full-write.** Never
-  expose `web/bridge.py` beyond localhost; any page's JavaScript
-  could mutate the graph. Tracked as finding S1.
+- **The browser bridge is unauthenticated.** `web/bridge.py` binds
+  localhost, admits only localhost origins and is read-only by
+  default. `DAGDB_WS_ALLOW_WRITE=1` opens the full write surface to
+  every admitted origin; set it only for a trusted local UI.
 - **MCP "alive" ≠ daemon alive.** Verify with a socket `STATUS`,
   not just an MCP ping.
-- **A truncated `.dags` file currently crashes the daemon on
-  load** rather than throwing (finding H2). Don't `LOAD` a file
-  you suspect was half-written; restore from WAL or a known-good
+- **A truncated `.dags` file is refused on load** with
+  `ERROR io: load: io: file truncated: expected <n> body bytes, …`;
+  the daemon keeps running. Restore from WAL or a known-good
   snapshot.
 
 ---
@@ -303,8 +291,6 @@ verbs (§6) to a million nodes.
 - [`data-and-persistence.md`](data-and-persistence.md) — every
   byte's home on disk
 - [`invariants.md`](invariants.md) — what the engine enforces
-- [`../REVIEW_FABLE_2026-05-18.md`](../REVIEW_FABLE_2026-05-18.md)
-  — current known bugs and fix order
 - [`../../CURRENT_STATE.md`](../../CURRENT_STATE.md) — canonical
   live-state pointer
 
