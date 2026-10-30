@@ -122,7 +122,7 @@ curl -s -X POST http://localhost:8787/dagdb/dagdb_status \
 
 ```
 cd dagdb
-swift test                                        # 446 Swift tests (9 fixture-gated skips), ~50 s
+swift test                                        # 1,052 Swift tests (46 fixture-gated skips), about 13 minutes on an M5 Max
 python3 plugins/biology/rank_policies.py          # self-test
 python3 -m pytest plugins/loom                    # 16 adapter tests
 ```

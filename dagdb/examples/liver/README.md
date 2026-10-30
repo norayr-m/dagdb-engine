@@ -172,7 +172,11 @@ What it does:
 - Big "LIVER HEALTH: ALIVE / FAILED" indicator
 - Buttons: inject APAP, trigger hypoxia, inflammation, NAC recovery, TICK 1, TICK 5, VALIDATE
 - MCP response panel shows every call and its return
-- Works with `file://` — no local server required, thanks to mcpo's permissive CORS
+- Calls mcpo from the browser. mcpo's defaults are permissive: it listens on every
+  interface (`0.0.0.0`), accepts every origin (`*`) and asks for no key, so while it
+  runs any machine on the network and any web page can call the tools. Bind it with
+  `--host 127.0.0.1`, serve this page with `python3 -m http.server --bind 127.0.0.1 8000`,
+  and pass `--cors-allow-origins http://127.0.0.1:8000`.
 
 ## Amateur disclaimer
 

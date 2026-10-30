@@ -20,8 +20,8 @@ Contributions are welcome in the same spirit.
 ## Style
 
 - **Swift.** `swift build` + `swift test` under `dagdb/` must stay
-  green. 446 Swift tests today (9 skip without the out-of-repo sealed
-  fixture), full suite ~50 s. Python plugin
+  green. 1,052 Swift tests (46 skip without the out-of-repo sealed
+  fixtures), full suite about 13 minutes on an M5 Max. Python plugin
   tests: `python3 -m pytest plugins/loom` from `dagdb/` (16 adapter
   tests, green as of 2026-09-10) must also stay green.
 - **Comments.** None unless the reason is non-obvious. Don't explain

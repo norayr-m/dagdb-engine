@@ -27,7 +27,11 @@ WS_PORT = int(os.environ.get("DAGDB_WS_PORT", "9100"))
 #   2. Origin allowlist. Connections from arbitrary web origins are rejected.
 #      Set DAGDB_WS_ALLOW_ORIGINS to a comma-separated list to override; the
 #      default permits only localhost origins and origin-less clients
-#      (native tools, file://).
+#      (native tools: no Origin header at all). It does NOT permit the
+#      literal origin "null": browsers send `Origin: null` from file://
+#      pages and from sandboxed iframes, including ones embedded in remote
+#      sites, so allowing it let any such page reach the allowlisted verbs.
+#      A trusted file:// UI can opt back in with DAGDB_WS_ALLOW_ORIGINS=...,null.
 # OPEN_READER and CLOSE_READER are deliberately NOT here (gate D5, audit B
 # finding 24): OPEN_READER allocates a whole snapshot engine per call and
 # registers it daemon-globally — an unauthenticated page could grow the
@@ -89,7 +93,7 @@ READ_ONLY_TWIN = {
     ("TILED", "GET"),
 }
 ALLOW_WRITE = os.environ.get("DAGDB_WS_ALLOW_WRITE", "0") == "1"
-_default_origins = "http://localhost,http://127.0.0.1,https://localhost,null"
+_default_origins = "http://localhost,http://127.0.0.1,https://localhost"
 ALLOW_ORIGINS = {
     o.strip()
     for o in os.environ.get("DAGDB_WS_ALLOW_ORIGINS", _default_origins).split(",")

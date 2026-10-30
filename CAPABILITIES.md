@@ -5,8 +5,9 @@
 > likely. Numbers speak.
 
 Last refreshed: 2026-09-10, against main (interface phase merged
-2026-09-06, startup recovery merged 2026-09-09): 446 tests, 9 skipped
-(fixture-gated), 0 failures.
+2026-09-06, startup recovery merged 2026-09-09). Test suite as of
+2026-09-14: 1,052 tests, 0 failures, 46 skipped without the sealed
+fixtures.
 
 ## What it can do today
 
@@ -23,7 +24,7 @@ Last refreshed: 2026-09-10, against main (interface phase merged
   rename), MVCC snapshot-on-read, secondary index (truth, rank-range).
 - Snapshot format v7 (adds the twin `TWIN` section on top of v6's
   weight/value lane section); loads v1..v7.
-- 446 Swift XCTest cases on main, full suite green, 9 skips
+- 1,052 Swift XCTest cases as of 2026-09-14, 0 failures, 46 skips
   (fixture-gated, see the twin interface phase section above).
 
 ### Performance (tick recovery, 2026-07)

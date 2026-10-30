@@ -48,7 +48,7 @@ Specification, architecture, and resolved design questions. Press Space to narra
 
 ## Status
 
-Engine landing: [`../README.md`](../README.md) — u64 rank, snapshot v5 (env-origin trailer), back-edge, MVCC snapshot-on-read, bfsDepths, rankPolicy, SET_RANKS_BULK (u64), Loom adapter. 165 Swift tests green as of 2026-05-11. See [`../CURRENT_STATE.md`](../CURRENT_STATE.md) for the live picture.
+Engine landing: [`../README.md`](../README.md), which carries the current test counts and measurements. See [`../CURRENT_STATE.md`](../CURRENT_STATE.md) for the live picture. The decks and podcasts here are earlier snapshots: their figures are as of when each was made, and the README is current.
 
 This subdirectory is curation + narration; the engine lives in [`../dagdb/`](../dagdb/).
 

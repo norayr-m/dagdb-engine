@@ -130,7 +130,7 @@ Interfaces on top:
 DagDBCLI        — command-line driver over the library
 DagDBDaemon     — Unix-socket server, DSL parser + dispatch,
                    WAL-aware, session-aware, error-taxonomy prefixes
-mcp_server.py   — Python MCP wrapping the daemon (37 tools)
+mcp_server.py   — Python MCP wrapping the daemon (104 tools)
 pg_dagdb/       — PostgreSQL C extension
 web/bridge.py   — browser bridge (HTTP → daemon socket)
 E2Runner        — standalone executable, frozen async-Jacobi smoother
@@ -361,7 +361,7 @@ Shared-memory outputs at `/tmp/dagdb_shm_file`, layout
 
 | Command | Record bytes | Fields |
 |---|---|---|
-| `NODES`, `EVAL`, `TRAVERSE` | 12 | u64 node, u64 rank, u8 truth, u8 type, 6 pad |
+| `NODES`, `EVAL`, `TRAVERSE` | 24 | u64 node, u64 rank, u8 truth, u8 type, 6 pad |
 | `BFS_DEPTHS` | 4 | i32 depth (indexed by node) |
 | `SELECT` | 4 | i32 node |
 | `ANCESTRY` | 8 | i32 node, i32 depth |
@@ -390,7 +390,7 @@ Environment variables:
 ### 8.3 MCP server
 
 `dagdb/mcp_server.py` exposes the daemon as a Model Context Protocol
-server. 37 tools, one per DSL command. `mcpo` bridges to HTTP on
+server. 104 tools wrap the DSL commands. `mcpo` bridges to HTTP on
 `localhost:8787/dagdb/<tool_name>`. Config at
 `dagdb/mcpo_config.json` (gitignored).
 

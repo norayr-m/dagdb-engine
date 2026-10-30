@@ -71,10 +71,22 @@ day, all tests green:
   events/sec. Adapter conforms to the Protocol. Dual-write through
   `capture_latest` is live.
 
-**Tests.** 446 Swift test cases green as of 2026-09-09 (9 skip without
-the out-of-repo sealed fixture), full suite about 50 s. The 16 Python adapter tests pass
+**Tests.** 1,052 Swift tests, 0 failures, as of 2026-09-14 (46 skip without
+the out-of-repo sealed fixtures; see Development below), full suite about 13 minutes on an M5 Max. The 16 Python adapter tests pass
 (`python3 -m pytest plugins/loom` from `dagdb/`, 2026-09-10). See
 [`CURRENT_STATE.md`](CURRENT_STATE.md) for the live picture.
+
+**Known limitations.** Not every numeric argument on the daemon socket
+is range-checked: a negative rank in `NODES AT RANK`, for one,
+aborts the daemon instead of returning `out_of_range`. The PostgreSQL
+extension in `dagdb/pg_dagdb/` predates the 24-byte result row and
+misreads rank, truth and type from it, and its `dagdb_exec(text)`
+forwards any command, writes included, to the daemon; PostgreSQL grants
+EXECUTE on it to PUBLIC unless you revoke it. Replies echo arguments
+without escaping carriage returns or the Unicode line separators (NEL,
+U+2028), so a client that splits replies on them can be misled by its
+own input, and some error replies include memory addresses. A snapshot
+whose `.sha256` sidecar is missing or unreadable loads unverified.
 
 **Persistence policy (standing rule).** All persistent DagDB state on
 this machine lives under `~/dag_databases/`. The daemon enforces this
@@ -256,7 +268,7 @@ Authoritative ledger: `dashboard/features.yaml`. At a glance:
 
 ### Interfaces
 - **CLI** — `dagdb`, `dagdb-cli`, `dagdb-daemon`.
-- **Python MCP server** (`dagdb/mcp_server.py`) — 37 tools on
+- **Python MCP server** (`dagdb/mcp_server.py`) — 104 tools on
   `http://localhost:8787/dagdb/…` via `mcpo`.
 - **PostgreSQL extension** (`dagdb/pg_dagdb/`).
 - **Browser bridge** (`dagdb/web/bridge.py`).
@@ -320,9 +332,9 @@ legacy substring matchers still hit.
     │                                distance, BFS, MVCC, index
     ├── Sources/DagDBCLI/           dagdb CLI
     ├── Sources/DagDBDaemon/        dagdb-daemon + socket + DSL
-    ├── Tests/DagDBTests/           1052 tests (46 skip without the
-    │                                sealed fixtures; see below)
-    ├── mcp_server.py               Python MCP server (37 tools)
+    ├── Tests/                      1052 tests in two targets (46 skip
+    │                                without the sealed fixtures; see below)
+    ├── mcp_server.py               Python MCP server (104 tools)
     ├── mcpo_config.json            local MCP bridge config (gitignored)
     ├── pg_dagdb/                   PostgreSQL extension
     ├── web/bridge.py               browser bridge
@@ -404,7 +416,7 @@ Metrics: `jaccardNodes`, `jaccardEdges`, `rankL1`, `rankL2`, `typeL1`,
 ## MCP server
 
 `dagdb/mcp_server.py` exposes the daemon as a Model Context Protocol
-server. 37 tools wrap every DSL command above. `mcpo` bridges them to
+server. 104 tools wrap the DSL commands above. `mcpo` bridges them to
 HTTP on port 8787:
 
 ```

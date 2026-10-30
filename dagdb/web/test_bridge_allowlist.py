@@ -81,3 +81,35 @@ def test_bridge_frame_check_counts_bytes_not_characters():
     # One multi-byte character past the cap is still past the cap.
     over = at_cap + "é"
     assert bridge.query_daemon(over) == "ERROR too_long: command exceeds 4095 bytes"
+
+
+# ------------------------------------------------- Origin: null (2026-10-30)
+
+def test_origin_null_is_refused_by_default():
+    """Browsers send `Origin: null` from file:// pages and from sandboxed
+    iframes, including ones embedded in remote sites, so the default
+    allowlist must not admit it. Native clients (no Origin header at all)
+    and localhost pages still pass."""
+    assert "null" not in bridge.ALLOW_ORIGINS
+    assert not bridge._origin_allowed("null")
+    assert bridge._origin_allowed(None)
+    assert bridge._origin_allowed("http://localhost")
+    assert bridge._origin_allowed("http://localhost:5173")
+    assert bridge._origin_allowed("http://127.0.0.1:8080")
+    assert not bridge._origin_allowed("http://localhost.evil.example")
+    assert not bridge._origin_allowed("https://evil.example")
+
+
+def test_origin_null_control_old_default_admits_it(monkeypatch):
+    """Control: with the previous default (null included) the same check
+    admits `Origin: null`, so the test above can fail."""
+    old = {"http://localhost", "http://127.0.0.1", "https://localhost", "null"}
+    monkeypatch.setattr(bridge, "ALLOW_ORIGINS", old)
+    assert bridge._origin_allowed("null")
+
+
+def test_bridge_binds_localhost_only():
+    """The bridge binds `localhost` (127.0.0.1 / ::1), never a wildcard."""
+    src = open(bridge.__file__).read()
+    assert 'websockets.serve(handler, "localhost", WS_PORT)' in src
+    assert "0.0.0.0" not in src

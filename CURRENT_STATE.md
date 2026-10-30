@@ -343,6 +343,9 @@ thread), gate contract `docs/contracts/TICKING_GATES_FROZEN.md`
 
 ## Test suite
 
+- **1,052 Swift XCTest cases as of 2026-09-14**, 0 failures, 46 skipped
+  without the sealed fixtures. The entries below record the suite's
+  growth before that.
 - **446 Swift XCTest cases on main** (2026-09-09, `swift test`), full
   suite ~56 s, zero failures, **9 skipped**. On branch
   `dag/spec8-mouth` (2026-09-10, merged 2026-09-10) the spec-8 waveform

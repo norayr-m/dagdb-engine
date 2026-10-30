@@ -157,8 +157,8 @@ DagDB/
 │   ├── Cargo.toml
 │   └── src/lib.rs                (dagdb_exec SQL function)
 │
-└── Tests/DagDBTests/             (1052 tests; 46 skip without the
-                                   sealed fixtures)
+└── Tests/                        (1052 tests in two targets; 46 skip
+                                   without the sealed fixtures)
 ```
 
 ## Quick Start

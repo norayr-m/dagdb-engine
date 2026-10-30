@@ -46,7 +46,7 @@ If you have twenty minutes, read those four plus:
   layout, paths, git safety, backup, WAL, autosnapshot,
   `DAGDB_DATA_ROOT` policy.
 - **[dsl.md](dsl.md)** — the daemon's command language.
-- **[mcp.md](mcp.md)** — Python MCP surface (37 tools on port 8787).
+- **[mcp.md](mcp.md)** — Python MCP surface (104 tools on port 8787).
 - **[plugins.md](plugins.md)** — biology rank policies + Loom event
   adapter.
 - **[queries.md](queries.md)** — BFS, subgraph distances,
@@ -86,7 +86,7 @@ For the 4-cycle runtime (paper 4), see
   1 M nodes.
 - **Loom Pass 1**: 694 events ingested end-to-end on the u32
   daemon; dual-write live through `capture_latest`.
-- **MCP bridge**: `http://localhost:8787/dagdb/`, 37 tools.
+- **MCP bridge**: `http://localhost:8787/dagdb/`, 104 tools.
 - **Persistence root**: `~/dag_databases/`. Daemon enforces via
   `DAGDB_DATA_ROOT`. One allow-listed sample
   (`dagdb/sample_db/demo_graph.dagdb`) is tracked in git;

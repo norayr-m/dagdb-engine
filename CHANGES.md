@@ -5,6 +5,39 @@ engineering project, no competitive claims.
 
 ---
 
+## 2026-10-30 — web bridge: `Origin: null` is no longer admitted by default
+
+`dagdb/web/bridge.py`'s default Origin allowlist included the literal
+origin `null`. Browsers send `Origin: null` from `file://` pages and from
+sandboxed iframes, including iframes embedded in remote sites, so while
+the bridge ran such a page could reach its allowlisted read-only verbs:
+read graph state, and through an out-of-range argument abort the daemon.
+`null` is out of the default; a trusted `file://` UI can opt back in with
+`DAGDB_WS_ALLOW_ORIGINS=...,null`. The bridge is not started by default
+and binds localhost only. Three tests: `null` refused while localhost
+pages and origin-less native clients pass and look-alike hosts are
+refused; a control showing the previous default admits `null`; the
+localhost-only bind. The first fails on the previous code; all ten
+bridge tests pass on this one.
+
+Corrected in the same change: test and MCP-tool counts across the
+README, CAPABILITIES, CONTRIBUTING and the wiki pages now match this
+tree (1,052 tests; 104 tools); ARCHITECTURE's result-row size reads 24.
+
+**Known limitations.** Not every numeric argument on the daemon socket
+is range-checked: a negative rank in `NODES AT RANK`, for one,
+aborts the daemon instead of returning `out_of_range`. The PostgreSQL
+extension in `dagdb/pg_dagdb/` predates the 24-byte result row and
+misreads rank, truth and type from it, and its `dagdb_exec(text)`
+forwards any command, writes included, to the daemon; PostgreSQL grants
+EXECUTE on it to PUBLIC unless you revoke it. Replies echo arguments
+without escaping carriage returns or the Unicode line separators (NEL,
+U+2028), so a client that splits replies on them can be misled by its
+own input, and some error replies include memory addresses. A snapshot
+whose `.sha256` sidecar is missing or unreadable loads unverified.
+
+---
+
 ## 2026-09-12 — post-merge follow-up: the nine edits five branches could not make inside their own scope
 
 Branch `main`, after the five repair branches merged (backup, daemon
@@ -905,7 +938,7 @@ shipped tree. Kind of run: INTERFACE throughout.
   everywhere: **refuse or count, never silently, and name the true
   extent in the refusal.**
 
-- **D1 · every wire integer bounded on BOTH sides (findings 2, 3, 4, 5,
+- **D1 · node ids, depths, counts and offsets bounded on BOTH sides (findings 2, 3, 4, 5,
   21, 22).** `TRAVERSE FROM -1` reached `ranks[node]` and trapped; the
   five `SET` verbs, `CLEAR … EDGES` and `GET … TRUTH` reached raw
   pointer subscripts with no `>= 0` check at all — with the WAL off

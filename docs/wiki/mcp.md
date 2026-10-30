@@ -1,6 +1,6 @@
 # MCP server
 
-`dagdb/mcp_server.py` exposes 37 tools over the Model Context
+`dagdb/mcp_server.py` exposes 104 tools over the Model Context
 Protocol. `mcpo` bridges them to HTTP on port 8787.
 
 ---
