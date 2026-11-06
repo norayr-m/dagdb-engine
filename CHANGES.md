@@ -32,8 +32,8 @@ misreads rank, truth and type from it, and its `dagdb_exec(text)`
 forwards any command, writes included, to the daemon; PostgreSQL grants
 EXECUTE on it to PUBLIC unless you revoke it. Replies echo arguments
 without escaping carriage returns or the Unicode line separators (NEL,
-U+2028), so a client that splits replies on them can be misled by its
-own input, and some error replies include memory addresses. A snapshot
+U+2028), so a client that splits replies on them can be misled by the
+input it forwards, and some error replies include memory addresses. A snapshot
 whose `.sha256` sidecar is missing or unreadable loads unverified. The
 daemon writes its result rows to the fixed file `/tmp/dagdb_shm_file`
 whatever `--socket` says (`--shm <name>` is printed at startup but not
