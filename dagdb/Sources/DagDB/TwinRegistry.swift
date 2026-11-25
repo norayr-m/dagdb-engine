@@ -44,9 +44,9 @@ public final class TwinRegistry<Entry> {
 
         public var description: String {
             switch self {
-            case .notFound(let id): return "not found: \(id)"
-            case .duplicateId(let id): return "duplicate id: \(id)"
-            case .badId(let id): return "bad id: \(id)"
+            case .notFound(let id): return "not found: \(Reply.quoted(id))"
+            case .duplicateId(let id): return "duplicate id: \(Reply.quoted(id))"
+            case .badId(let id): return "bad id: \(Reply.quoted(id))"
             }
         }
     }
@@ -54,7 +54,7 @@ public final class TwinRegistry<Entry> {
     /// Open a fresh entry under a freshly minted id (`"<prefix>%08x"` of
     /// the counter, post-increment).
     ///
-    /// Finding 59: the id formats only the low 32 bits of the counter, so
+    /// The id formats only the low 32 bits of the counter, so
     /// past 2^32 opens a minted id can land on a live entry. That case now
     /// refuses by name — `duplicateId`, exactly as the explicit-id path
     /// does — instead of silently overwriting the entry that holds it.
@@ -117,6 +117,14 @@ public final class TwinRegistry<Entry> {
     /// to its just-initialized state (empty, counter at 0) — not part of
     /// the public daemon-facing surface.
     func resetCounter(to n: UInt64 = 0) { counter = n }
+
+    /// Take `other`'s entries and counter whole —
+    /// LOAD restores the twin state into a staged `TwinState` before the
+    /// commit and swaps it in at the commit.
+    func adopt(_ other: TwinRegistry<Entry>) {
+        storage = other.storage
+        counter = other.counter
+    }
 }
 
 /// One logged/replayed mutation against a `TwinState`. Every case carries
@@ -141,4 +149,21 @@ public enum TwinOp: Equatable {
     case hookOpen(id: String, params: AttentionHook.Params)
     case hookStep(id: String, count: Int)
     case close(id: String)
+    /// TWIN_HOOK_SWEEP (0x31, log version 6): remove each listed
+    /// hook id from its clock's `hookIds`. Every pair must name an open clock
+    /// that holds the id, and the hook must be closed (a dangling id), or the
+    /// op refuses whole, before any change. Logged beside a bound hook's
+    /// TWIN_CLOSE by HOOK CLOSE, and once after recovery for the dangling ids
+    /// an older log or snapshot left.
+    case hookSweep(bindings: [TwinHookBinding])
+}
+
+/// One hook id on one clock's `hookIds` list.
+public struct TwinHookBinding: Equatable, Hashable, Sendable {
+    public let clockId: String
+    public let hookId: String
+    public init(clockId: String, hookId: String) {
+        self.clockId = clockId
+        self.hookId = hookId
+    }
 }

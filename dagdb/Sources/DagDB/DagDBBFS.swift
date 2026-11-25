@@ -28,7 +28,7 @@ public enum DagDBBFS {
         case seedOutOfRange(Int, nodeCount: Int)
         /// The caller's `nodeCount` is not the engine's. It is used as the
         /// `capacity:` for `bindMemory` on the engine's buffers, so a larger
-        /// one is a read past them (audit A, finding 27).
+        /// one is a read past them.
         case nodeCountMismatch(given: Int, engine: Int)
 
         public var description: String {
@@ -46,7 +46,7 @@ public enum DagDBBFS {
         public let reached: Int          // count of nodes with depth ≥ 0
         public let maxDepth: Int32       // largest reached depth, -1 if only seed
         public let elapsedMs: Double
-        /// C6 · the decision, stated in the result rather than assumed.
+        /// The decision, stated in the result rather than assumed.
         ///
         /// Both walks read `neighborsBuf` — the COMBINATIONAL edge table.
         /// BACK_EDGEs are not in it: they are tick-boundary latches, not
@@ -118,7 +118,7 @@ public enum DagDBBFS {
                 for slot in 0..<6 {
                     let src = nb[v * 6 + slot]
                     // The same bound the fanout build applies: an
-                    // out-of-range slot is an empty slot (audit A, 25).
+                    // out-of-range slot is an empty slot.
                     if src < 0 || Int(src) >= nodeCount { continue }
                     let s = Int(src)
                     if depths[s] == -1 {
@@ -186,7 +186,7 @@ public enum DagDBBFS {
                 for slot in 0..<6 {
                     let src = nb[v * 6 + slot]
                     // The same bound the fanout build applies: an
-                    // out-of-range slot is an empty slot (audit A, 25).
+                    // out-of-range slot is an empty slot.
                     if src < 0 || Int(src) >= nodeCount { continue }
                     let s = Int(src)
                     if depths[s] == -1 {
@@ -211,7 +211,7 @@ public enum DagDBBFS {
     // A dual-node-per-residue encoding (B at rank 1, A at rank 0, with
     // contact edges B→A in both residue-orderings) was initially proposed
     // for undirected contact graphs but does NOT preserve contact-graph
-    // geodesics under undirected BFS — see the 2026-04-20 amendment drop.
+    // geodesics under undirected BFS.
     //
     // The correct encoding for an undirected contact graph on ≤ 255
     // residues is single-node-per-residue with `rank = maxRank -

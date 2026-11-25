@@ -1,8 +1,9 @@
 import XCTest
 @testable import DagDB
 
-/// Audit C, scope β — one edge gate per finding (45–73) plus test items
-/// 77 and 84. Criterion: `docs/contracts/SUBSYSTEMS_BOUNDS_GATES_FROZEN.md`.
+/// Bounds of the newer subsystems, second half (the courts, the twin WAL,
+/// clocks, streams and fixtures): one edge test per finding of an internal
+/// audit of the newer subsystems.
 /// Every failing input here is BUILT BY HAND — a corrupted snapshot field,
 /// a hand-written WAL payload, an out-of-range argument — never something
 /// the writer under test produced.
@@ -59,9 +60,9 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         AllocatorCourt.Arm(rawValue: policy.rawValue)!
     }
 
-    // MARK: - 45 · the judged frame count is the fixture's, not the literal 200
+    // MARK: - The judged frame count is the fixture's, not the literal 200
 
-    /// The contract's control gate: hook and court agree bit for bit over a
+    /// The control: hook and court agree bit for bit over a
     /// 150-record synthetic fixture, at every point of the sealed grid.
     func test45HookAndCourtAgreeOn150Records() throws {
         let records = Self.shape150()
@@ -106,10 +107,10 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(one[.allocator]!.served, 1)
     }
 
-    /// S3 receipt. The sealed 200-record gate-1 table, recomputed from a
-    /// synthetic fixture of the sealed shape. Every literal below was
-    /// captured from a run BEFORE finding 45's repair; if the repair moved
-    /// any of them, that is a finding and it stops the merge.
+    /// The sealed literals are unchanged by the repair: the sealed 200-record
+    /// gate-1 table, recomputed from a synthetic fixture of the sealed shape.
+    /// Every literal below was captured from a run BEFORE the court was made
+    /// to judge every record; if the repair moved any of them, the test fails.
     func test45SealedShape200TableUnmoved() throws {
         struct Row { let served: Int, misses: Int, cost: Double, burstTotal: Int }
         // point -> arm -> (served, misses, cost, burst.total)
@@ -167,12 +168,12 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    // MARK: - 46 · warmup/tail frame counts come from delta
+    // MARK: - Warmup/tail frame counts come from delta
 
     func test46WarmupAndTailFramesFollowDelta() throws {
         let records = Self.shape150()
         for delta in [0, 1, 3, 5, 12] {
-            // S5 (iii): these two fields used to be compared to the `delta`
+            // These two fields used to be compared to the `delta`
             // the same call was handed — true the moment the field is
             // derived from the parameter, whatever the frame loop does.
             // The hook writes one ledger row per frame, so both quantities
@@ -214,7 +215,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(sealedArms[.allocator]!.tailFramesAppended, 3)
     }
 
-    // MARK: - 47 · a pocket outside 3…6 is refused by name
+    // MARK: - A pocket outside 3…6 is refused by name
 
     func test47CheapestTierRefusesPocketOutsideSealedRange() {
         for bad in [-1, 0, 2, 7, 9, Int.max] {
@@ -250,7 +251,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertNoThrow(try SuccessorCourt.allocatorDecide(pocketClaims: [3: [.L], 6: [.D]], budget: 1e9))
     }
 
-    // MARK: - 48 · per-class tallies sum to served + misses
+    // MARK: - Per-class tallies sum to served + misses
 
     func test48PerClassAndPerEarTalliesAreConserved() throws {
         for records in [Self.sealedShape200(), Self.shape250()] {
@@ -277,7 +278,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    // MARK: - 49 · a duplicate record index
+    // MARK: - A duplicate record index
 
     func test49HookRefusesDuplicateRecordIndex() {
         let dup = [
@@ -300,7 +301,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertNil(AllocatorCourt.duplicateRecordIndex(in: Self.sealedShape200()))
     }
 
-    /// The ruling's own site for 49: the fixture loader refuses a
+    /// At the fixture loader: it refuses a
     /// duplicate reconstructed (class, suffix) position, so a loaded
     /// fixture can never carry a duplicate index in the first place.
     func test49FixtureLoadRefusesDuplicatePosition() throws {
@@ -308,8 +309,8 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         // liar block and collide with `liar_1`; it is now refused one step
         // earlier, on the class/prefix disagreement, which is what this
         // drives. The loader's OWN uniqueness refusal is driven by
-        // `test49FixtureLoadRefusesTwoKeysAtTheSamePosition` below (post-
-        // merge follow-up F8) — it was ungated until then, and the claim
+        // `test49FixtureLoadRefusesTwoKeysAtTheSamePosition` below — it was
+        // untested until then, and the claim
         // that stood here, that a genuine position collision is something
         // JSON cannot express, was wrong: `quiet_1` and `quiet_01` are two
         // distinct JSON keys at one reconstructed position.
@@ -327,12 +328,12 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    /// F8 · finding 24's own refusal at the loader, which no test reached:
+    /// The loader's own uniqueness refusal, which no test reached before:
     /// two distinct JSON keys that reconstruct to ONE position. The suffix
     /// is parsed with `Int(...)`, so `quiet_1` and `quiet_01` both land on
     /// `quiet_1` while each passes the class/prefix check — exactly the
     /// silent non-determinism in `index` (the courts' frame key) that the
-    /// finding names.
+    /// refusal closes.
     func test49FixtureLoadRefusesTwoKeysAtTheSamePosition() throws {
         let path = try writeFixture([
             "quiet_1": ["class": "quiet"],
@@ -349,7 +350,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    /// Finding 25's edge, which the ruling bundles with 49: a key whose
+    /// The class/prefix agreement edge, grouped with the uniqueness test: a key whose
     /// `class` disagrees with its own prefix.
     func test49FixtureLoadRefusesClassPrefixMismatch() throws {
         let path = try writeFixture([
@@ -373,7 +374,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(f.records.map(\.index), [1, 2])
     }
 
-    /// Finding 23's half in this file: the pin DEFAULTS to the sealed
+    /// In this file: the pin DEFAULTS to the sealed
     /// constant, so a fixture that is not the sealed one is refused by a
     /// caller that says nothing about hashes.
     func test49FixtureLoadDefaultsToTheSealedPin() throws {
@@ -396,7 +397,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         return path
     }
 
-    // MARK: - 50 / 77 · claimed-pocket ceilings
+    // MARK: - Claimed-pocket ceilings
 
     func test50SuccessorRefusesTooManyClaimedPockets() {
         var claims: [Int: [ValueRow]] = [:]
@@ -438,7 +439,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertTrue(why!.contains("maxClaimedPockets"), why!)
     }
 
-    // MARK: - 51 · a classSpecs label absent from counts
+    // MARK: - A classSpecs label absent from counts
 
     func test51MissingClassCountIsNamedNotSilentlyZero() throws {
         let model = try CorruptionModel(epsM: 0.0, epsS: 0.5, epsN: 0.0)
@@ -463,7 +464,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertTrue(SuccessorCourt.requiredCountLabels.contains("quiet"))
     }
 
-    // MARK: - 52 · allocate calls claimError first
+    // MARK: - allocate calls claimError first
 
     func test52AllocateRefusesOutOfRangeClaims() {
         let layout = SealedCourt.makeLayout()
@@ -488,12 +489,12 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
             claims: [BudgetLayout.Claim(pocket: 0, classIndex: 1)], budget: 1e9))
     }
 
-    // MARK: - 53 · the phantom mask count derives from the pocket list
+    // MARK: - The phantom mask count derives from the pocket list
 
     func test53PhantomMaskCountDerivesFromSealedPockets() throws {
         let model = try CorruptionModel(epsM: 0, epsS: 0, epsN: 0.5)
         let subsets = model.phantomSubsets()
-        // S5 (iii): `subsets.count == 1 << SealedCourt.pockets.count` was a
+        // `subsets.count == 1 << SealedCourt.pockets.count` was a
         // restatement of the enumeration the code performs. The power set
         // is now built here, from the sealed pocket list, and compared to
         // the masks the model returned — every subset present, exactly
@@ -521,7 +522,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(subsets.reduce(0.0) { $0 + $1.weight }, 1.0, accuracy: 1e-12)
     }
 
-    // MARK: - 54 · a count prefix bounded by the payload that carries it
+    // MARK: - A count prefix bounded by the payload that carries it
 
     func test54CountPrefixIsBoundedBeforeAnyAllocation() {
         // The bound itself, driven directly: 4 bytes left cannot carry
@@ -552,7 +553,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(values, [1.5, -2.5])
     }
 
-    // MARK: - 55 · a string too long for the u16 length field
+    // MARK: - A string too long for the u16 length field
 
     func test55OverlongStringRefusesToEncode() {
         let long = String(repeating: "x", count: Int(UInt16.max) + 1)
@@ -575,7 +576,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(id.count, Int(UInt16.max))
     }
 
-    // MARK: - 56 · delta / count outside 0..<2^32
+    // MARK: - delta / count outside 0..<2^32
 
     func test56DeltaAndCountOutsideThirtyTwoBitsRefuseToEncode() {
         for bad in [-1, -5, Int(UInt32.max) + 1] {
@@ -608,14 +609,14 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    // MARK: - S5 (iv) · 56's decode end, over a record no encoder wrote
+    // MARK: - The decode end of the delta/count window, over a record no encoder wrote
 
-    /// The letter's TwinWAL ruling says `delta`/`count` outside `0..<2^32`
+    /// The TwinWAL rule says `delta`/`count` outside `0..<2^32`
     /// "refuse at both ends". The encode end refuses by name (test 56). The
     /// decode end reads a fixed four-byte slot, so no byte string can ever
-    /// present a value outside that window — which is exactly why the
-    /// verifier found no gate here: there is nothing for the decoder to
-    /// refuse. What the letter DOES bind at this end is that the window is
+    /// present a value outside that window — which is exactly why there
+    /// was no test here: there is nothing for the decoder to
+    /// refuse. What the rule DOES bind at this end is that the window is
     /// the same window: a hand-written record with the slot's top bit set
     /// must come back as the positive value those bytes spell, not as a
     /// negative one, not truncated, and it must re-encode to the very bytes
@@ -693,7 +694,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         print("S5(iv) hand-written count=\(count) stepped=\(stepped) frames=\(h.frames)")
     }
 
-    // MARK: - 57 · a bankOpen payload whose samples exceed Int.max
+    // MARK: - A bankOpen payload whose samples exceed Int.max
 
     func test57BankOpenHugeSamplesDecodesToNil() {
         func f64(_ v: Double) -> [UInt8] { withUnsafeBytes(of: v.bitPattern.littleEndian) { Array($0) } }
@@ -717,7 +718,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
                                           payload: payload(samplesLE: [UInt8](repeating: 0xFF, count: 8))))
     }
 
-    // MARK: - 58 · encode validates the spec before converting widths
+    // MARK: - encode validates the spec before converting widths
 
     func test58BankOpenEncodeRefusesAnInvalidSpec() {
         let negative = WaveBank.Spec(samples: -1, sampleRate: 48000, f0: 100, harmonics: 1,
@@ -731,7 +732,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
             .bankOpen(id: "w00000001", name: "n", spec: negativeHarmonics)))
     }
 
-    // MARK: - 59 · a minted id that would collide
+    // MARK: - A minted id that would collide
 
     func test59MintedIdCollisionRefusesInsteadOfOverwriting() throws {
         let reg = TwinRegistry<Int>(prefix: "t")
@@ -749,7 +750,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(try reg.open(3), "t00000002")
     }
 
-    // MARK: - 60 / 84 · a snapshot stamped with another formatVersion
+    // MARK: - A snapshot stamped with another formatVersion
 
     func test60And84SnapshotFormatVersionIsRefusedByName() throws {
         func snapshotData(_ version: Int) throws -> Data {
@@ -774,7 +775,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(TwinState.Snapshot.self, from: hacked))
     }
 
-    // MARK: - 61 · the declared drop-one policy
+    // MARK: - The declared drop-one policy
 
     func test61HookBoundToADroppedAlarmIsDroppedToo() throws {
         let twin = TwinState()
@@ -811,7 +812,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    // MARK: - 62 · restore lands on the recorded frame or refuses
+    // MARK: - restore lands on the recorded frame or refuses
 
     func test62RestoreRefusesAFrameTheLedgerCannotReach() throws {
         let records = Self.shape150()
@@ -841,7 +842,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    // MARK: - 63 · replay caps equal the daemon's
+    // MARK: - Replay caps equal the daemon's
 
     func test63RecordSliceReplayCapIsTenThousand() throws {
         let header = Self.admissibleHeader()
@@ -887,7 +888,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(at.clocks.get("c00000001")!.clock.tick, 10_000)
     }
 
-    /// Finding 70's own door: the record primitive refuses the same
+    /// The record primitive refuses the same
     /// counts, plus a negative one.
     func test70SliceCountOutOfRangeRefusesByName() throws {
         var r = try StreamRecord(header: Self.admissibleHeader(),
@@ -909,7 +910,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
                      clockSyncFloorSec: floor)
     }
 
-    // MARK: - 64 / 65 · ring shapes
+    // MARK: - Ring shapes
 
     func test64WrappingGearIsRefusedByShapeViolation() throws {
         // 2^33 cubed overflows UInt64, so the coarsest span wraps to 0 and
@@ -951,9 +952,9 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertNotNil(GearedRings.shapeViolation(gear: 2, rings: 1_000_000, cellsPerRing: 4096))
         XCTAssertNotNil(GearedRings.shapeViolation(gear: 2, rings: 6, cellsPerRing: 4097))
         XCTAssertNil(GearedRings.shapeViolation(gear: 2, rings: 16, cellsPerRing: 4096))
-        // S5 (ii): the memberwise init THROWS on exactly this validator
+        // The memberwise init THROWS on exactly this validator
         // now — it used to `precondition`, an abort no test could reach, so
-        // the gate had to be carried by the trap-free doors beside it. Each
+        // the check had to be carried by the trap-free entry points beside it. Each
         // out-of-range shape is driven through the memberwise door itself
         // and the refusal is read back and matched against the validator's
         // own message.
@@ -982,7 +983,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(sealed.capacity, 192)
     }
 
-    // MARK: - S5 (ii) · the gear ratio's own traps, now thrown
+    // MARK: - The gear ratio's own traps, now thrown
 
     func testS5GearRatioRefusesOutOfRangeInsteadOfTrapping() throws {
         // Zero components: `precondition(num > 0 && den > 0)` before.
@@ -1019,7 +1020,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(try a.composed(with: try GearRatio(3, over: 1 << 62)), try GearRatio(1, over: 1))
     }
 
-    // MARK: - 66 / 67 / 68 · gears
+    // MARK: - Gears
 
     func test66ComposedReducesBeforeMultiplying() throws {
         // 3/2^32 ∘ 2^32/5: the unreduced numerator product is 3·2^32 and
@@ -1079,7 +1080,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         XCTAssertEqual(back, g)
     }
 
-    // MARK: - 69 · draws that disagree with the slices
+    // MARK: - Draws that disagree with the slices
 
     func test69RecordRefusesDrawsThatDisagreeWithItsSlices() throws {
         let header = Self.admissibleHeader()
@@ -1117,7 +1118,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
         }
     }
 
-    // MARK: - 71 · the seventh t-zero quantity is compared
+    // MARK: - The seventh t-zero quantity is compared
 
     func test71ClockSyncFloorIsComparedNotMerelyDeclared() throws {
         // A single-clock stream declares 0 — the sealed regime, untouched.
@@ -1149,7 +1150,7 @@ final class SubsystemsBoundsBetaTests: XCTestCase {
                        [.nonPositiveQuantity("clockSyncFloorSec")])
     }
 
-    // MARK: - 72 / 73 · the rank-bound fixture
+    // MARK: - The rank-bound fixture
 
     private func makeEngine(side: Int) throws -> DagDBEngine {
         try DagDBEngine(grid: HexGrid(width: side, height: side),

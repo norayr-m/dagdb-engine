@@ -22,8 +22,8 @@
 ///
 /// Single-threaded. Daemon accept loop is serial; no concurrent
 /// mutation of the index structure itself. Under the reader-session
-/// MVCC path (T7), queries against a session use the *primary's*
-/// index of the moment the session opened — good enough for Pass 2,
+/// MVCC path, queries against a session use the *primary's*
+/// index of the moment the session opened — good enough for now,
 /// can tighten later if snapshot-specific indexes become a real need.
 
 import Foundation
@@ -36,12 +36,12 @@ public final class TruthRankIndex {
     private var lists: [UInt8: [(rank: UInt64, node: Int)]] = [:]
     private var dirty: Bool = true
 
-    /// C6 · the last `nodeCount` this index was handed that it could not
+    /// The last `nodeCount` this index was handed that it could not
     /// honour, named, or nil when the last call agreed with the engine.
     ///
     /// `nodeCount` is used as the `capacity:` for `bindMemory` on the
-    /// engine's own buffers, so a larger one is a read past them (audit A,
-    /// finding 27). The engine's count is authoritative and the index is
+    /// engine's own buffers, so a larger one is a read past them. The
+    /// engine's count is authoritative and the index is
     /// built over it; the caller's number is refused by name here and on
     /// stderr rather than obeyed or silently clamped. This is a property
     /// rather than a throw because both entry points are called from
@@ -51,6 +51,8 @@ public final class TruthRankIndex {
     public init() {}
 
     public var isDirty: Bool { dirty }
+    /// The index holds its lists (built at least once; a stale index keeps them until its rebuild).
+    public var holdsLists: Bool { !lists.isEmpty }
 
     /// Bucket counts keyed by truth code — useful for introspection.
     public var bucketSizes: [UInt8: Int] {

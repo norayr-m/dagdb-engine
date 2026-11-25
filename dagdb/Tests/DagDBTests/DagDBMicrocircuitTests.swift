@@ -8,7 +8,7 @@ import XCTest
 /// Ohm's V = I·R, 4-bit × 4-bit → exact 8-bit product, built as
 /// 16 AND2 partial products reduced carry-save (Wallace) by XOR/MAJ
 /// full/half adders. Product bits P3..P7 each depend on all 8 input
-/// bits (exhaustive census in the edt prototype), so no single LUT6 —
+/// bits (by an exhaustive census), so no single LUT6 —
 /// which reads at most 6 — can compute them; the composed network must.
 ///
 /// Python twin: a reference implementation held outside this repository (2026-07-01).

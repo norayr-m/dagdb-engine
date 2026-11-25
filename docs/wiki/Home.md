@@ -1,9 +1,7 @@
 # Welcome to DagDB
 
-> Amateur engineering project. The numbers here come from a single machine
-> and a single family of runs, with no controlled benchmark: reproduce them
-> with the script in this repository rather than taking them on trust.
-> Errors likely.
+> Amateur engineering project. We are not HPC professionals and make
+> no competitive claims. Numbers speak. Errors likely.
 
 Hi. If you've never heard of DagDB before, this is the right page.
 Five-minute read.
@@ -65,7 +63,8 @@ billion (with tile streaming).
   nodes.
 - **Persisting them durably.** Snapshots are atomic on Apple SSDs
   (full F_FULLFSYNC discipline). A write-ahead log lets you replay
-  every mutation. Multi-version reads (MVCC) let multiple clients
+  the logged writes past the last snapshot (not `TICK`, whose results
+  come back only as far as the last snapshot). Multi-version reads (MVCC) let multiple clients
   query a consistent snapshot while writers continue.
 - **Querying them as graphs.** Breadth-first search, ancestry
   walks, subgraph similarity (eight metrics including Jaccard,
@@ -80,9 +79,10 @@ billion (with tile streaming).
   deterministic replayable random streams, a sealed knapsack
   allocator, a cross-ear identity check, a geared recording
   odometer, a rational-gear master clock — each one code for a
-  frozen contract from outside work; they're tested library types
-  today, not yet reachable through the DSL or MCP surface. 249 Swift
-  tests green as of 2026-09-05. See `ARCHITECTURE.md` §13 for detail.
+  frozen contract from outside work; they began as tested library types
+  and have been reachable through the DSL and MCP surface since the
+  interface phase (2026-09-06). 1,540 Swift tests green on 2026-11-24
+  (49 skipped). See `ARCHITECTURE.md` §13 for detail.
 
 ---
 

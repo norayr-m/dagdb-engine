@@ -3,8 +3,8 @@ import XCTest
 
 final class DagDBJSONIOTests: XCTestCase {
 
-    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when several checkouts run swift test concurrently in one shared dir).
+    /// Per-test unique temp dir (fixed /tmp names race when several
+    /// checkouts run swift test concurrently in one shared dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {
@@ -110,7 +110,10 @@ final class DagDBJSONIOTests: XCTestCase {
         }
     }
 
-    func testJSONRejectsBadRankEdge() throws {
+    /// Under the slot model a same-rank edge (S3, a rank inversion) is a
+    /// store shape — the tampered file loads, and the loaded slots equal the
+    /// file's. (It used to be refused: `testJSONRejectsBadRankEdge`.)
+    func testJSONAcceptsARankInversion() throws {
         let (eng, gw, gh) = try makeEngine(side: 8)
         seed(eng)
 
@@ -130,15 +133,13 @@ final class DagDBJSONIOTests: XCTestCase {
         try tampered.write(to: URL(fileURLWithPath: path))
 
         let (eng2, _, _) = try makeEngine(side: 8)
-        XCTAssertThrowsError(
-            try DagDBJSONIO.loadJSON(engine: eng2, nodeCount: eng2.nodeCount,
+        _ = try DagDBJSONIO.loadJSON(engine: eng2, nodeCount: eng2.nodeCount,
                                      gridW: gw, gridH: gh, path: path)
-        ) { err in
-            guard case DagDBJSONIO.JSONError.invalidFormat(let msg) = err,
-                  msg.contains("rank") else {
-                XCTFail("expected rank-violation, got \(err)"); return
-            }
-        }
+        let n = eng2.nodeCount
+        let got = Array(UnsafeBufferPointer(start: eng2.neighborsBuf.contents().bindMemory(to: Int32.self, capacity: n * 6),
+                                            count: n * 6))
+        XCTAssertEqual(got, nb.flatMap { $0.map { Int32($0) } }, "the loaded slots equal the file's")
+        XCTAssertEqual(got[2 * 6 + 1], 1, "the same-rank edge is installed")
     }
 
     // MARK: - CSV

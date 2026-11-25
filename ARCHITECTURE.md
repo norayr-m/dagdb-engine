@@ -45,8 +45,9 @@ Every node carries six parallel fields:
 | Field | Width | Purpose |
 |---|---|---|
 | `id` | 32-bit | Index into the node buffer. |
-| `rank` | 64-bit | 0 at root (the "queen" node in the 4-cycle model; see `docs/engine.md`), higher toward leaves. Widened `UInt8 → UInt32` on 2026-04-20 (T1), then `UInt32 → UInt64` on 2026-04-21 (T1b) for the 10¹¹-on-laptop target. |
-| `truth` | 8-bit | Ternary state 0 / 1 / 2, or an event-type code in adapter instances (instance-defined; the Loom adapter in `dagdb/plugins/loom/adapter.py` ships one example mapping). Instance-scoped semantics. |
+| `rank` | 64-bit | 0 at root (the "queen" node in the 4-cycle model; see `docs/engine.md`), higher toward leaves. Widened `UInt8 → UInt32` on 2026-04-20, then `UInt32 → UInt64` on 2026-04-21 for the 10¹¹-on-laptop target. |
+| `truth` | 8-bit | 0 = FALSE, 1 = TRUE, 2 = UNDEFINED, or an event-type code 3–255 in adapter instances on BINARY nodes (instance-defined; the Loom adapter in `dagdb/plugins/loom/adapter.py` ships one example mapping). A BINARY node reads it as the bit `byte == 1`; a ternary-mode node reads it as a trit (0 → −1, 1 → +1, 2 and ≥ 3 → 0) and stores −1/0/+1 as 0/2/1. Instance-scoped semantics. |
+| `mode` | 8-bit | Ternary build: kind (0 BINARY, 1 TTABLE, 2 TTHRESH) in bits 0–1, NOSKIP in bit 2, bits 3–7 zero; legal bytes 0, 1, 2, 5, 6. With `ttableId` (16-bit), `thrLo`/`thrHi` (2 × 32-bit float) and a shared, dense table library (at most 65,536 tables of 729 bytes). |
 | `nodeType` | 8-bit | User-assigned category. |
 | `lut6Low / lut6High` | 2 × 32-bit | 64-bit truth table for the node's Boolean function of up to 6 inputs. |
 | `inputs[0..5]` | 6 × 32-bit int | Directed-edge slots; −1 = absent. |
@@ -103,10 +104,10 @@ DagDBEngine (Metal + state)
     │     ├── weisfeilerLehman1Histogram + weisfeilerLehmanL1
     │     └── laplacian / eigenvaluesSymmetric (inline Jacobi) / spectralL2
     │
-    ├── DagDBReaderSession        — snapshot-on-read MVCC (T7)
+    ├── DagDBReaderSession        — snapshot-on-read MVCC
     │     └── open / close / get / closeAll; session-local DagDBEngine
     │
-    ├── DagDBSecondaryIndex       — TruthRankIndex (T15)
+    ├── DagDBSecondaryIndex       — TruthRankIndex
     │     ├── per-truth rank-sorted list, lazy rebuild on dirty flag
     │     └── select(truth, rankLo, rankHi) → O(log N + matches)
     │
@@ -115,8 +116,8 @@ DagDBEngine (Metal + state)
     │                                t-zero admissibility header, slice-
     │                                boundary bit-for-bit replay (§13.3)
     ├── BudgetLayout              — twin spec: per-frame knapsack allocator
-    │                                over sealed court decision letters (§13.3)
-    ├── CrossConvolutionCheck     — twin spec: sealed cross-ear W1 identity
+    │                                over the sealed courts' decision rules (§13.3)
+    ├── CrossConvolutionCheck     — twin spec: sealed cross-ear identity
     │                                as a standing engine check (§13.3)
     ├── GearedRings               — twin spec: six-ring signed-extremum
     │                                recording odometer (§13.3)
@@ -130,7 +131,7 @@ Interfaces on top:
 DagDBCLI        — command-line driver over the library
 DagDBDaemon     — Unix-socket server, DSL parser + dispatch,
                    WAL-aware, session-aware, error-taxonomy prefixes
-mcp_server.py   — Python MCP wrapping the daemon (104 tools)
+mcp_server.py   — Python MCP wrapping the daemon (116 tools)
 pg_dagdb/       — PostgreSQL C extension
 web/bridge.py   — browser bridge (HTTP → daemon socket)
 E2Runner        — standalone executable, frozen async-Jacobi smoother
@@ -144,7 +145,7 @@ plugins/biology/rank_policies.py   — Python `RankPolicy` Protocol
                                        ChainBandPolicy,
                                        TopologicalSortPolicy
 plugins/loom/                      — Stop-hook event adapter
-                                       (T4 adapter): pure-function
+                                       pure-function
                                        event_to_node, backfill script,
                                        16-test pytest suite
 ```
@@ -161,27 +162,59 @@ version, nodeCount, grid dims, tickCount, flags, body size) followed
 by the six buffers concatenated, optionally zlib-compressed.
 
 **Formats**: v1 (pre-2026-04-20, 8-bit rank, 35 bytes/node body),
-v2 (32-bit rank, 38 bytes/node body, 2026-04-20 T1), v3 (64-bit
-rank, 42 bytes/node body, 2026-04-21 T1b), v4 (v3 + back-edge
+v2 (32-bit rank, 38 bytes/node body, 2026-04-20), v3 (64-bit
+rank, 42 bytes/node body, 2026-04-21), v4 (v3 + back-edge
 trailer), v5 (v4 + env-origin trailer, 2026-05-01 phase 3), and
 **v6** (v5 + a `WGTS` weight/value-lane section between the
-back-edge section and the `ENVS` trailer, 2026-08-22 E1 — see
-§13.1). Load reads all six and widens v1/v2 on read; save always
-writes v6. Body size is unchanged from v3 onward; v4, v5, and v6
-add fixed trailers/sections, not per-node bytes. Cross-env loads
-are rejected when both sides are env-tagged and disagree.
+back-edge section and the `ENVS` trailer, 2026-08-22 — see
+§13.1). Load read all six and widened v1/v2 on read; save wrote v6
+until v7. Body size is unchanged from v3 to v7; v4–v7 add fixed
+trailers/sections, not per-node bytes. Cross-env loads are rejected
+when both sides are env-tagged and disagree.
+
+**Current version line (2026-10-10, the native ternary tick).**
+v7 adds the TWIN section (§13). **v8** carries a 53-byte-per-node body
+— the v3 body, then mode (u8), table id (u16) and the two thresholds
+(f32 each) — behind a u64 body length that follows the 32-byte header
+(`bodyBytes`@28 = 0xFFFFFFFF; offsets 8 nodeCount and 20 tickCount keep
+their meaning), and a TERN library section after WGTS. Load reads
+v1–v8; a v1–v7 file loads as a binary graph (the four ternary lanes at
+their defaults, the library empty). **SAVE writes v7 for a graph with no
+ternary content** — every node's mode, table id and both threshold bit
+patterns zero and the library empty — byte for byte as before, and
+**v8 otherwise**; a binary graph whose v7 body would not fit v7's u32
+length field is written as v8 too. WAL v3, backup
+diff format 3 (written only when a diff has a ternary part), JSON v2
+and CSV v2 carry the new lanes.
 
 Atomic save on macOS APFS:
 
 ```swift
 write(path + ".tmp")                    // data
 fcntl(fd, F_FULLFSYNC)                  // flush the SSD, not just OS buffers
+digest = sha256(path + ".tmp")          // read back after the fsync
+beforeRename(digest)                    // the daemon: WAL SNAPSHOT_BIND + fsync
+unlink(path + ".sha256")                // the replaced file's manifest
 FileManager.replaceItemAt(path, tmp)    // atomic rename
 fcntl(dirFd, F_FULLFSYNC)               // make the rename durable
+write(path + ".sha256", digest)         // the manifest
 ```
 
 `defer` removes the `.tmp` on any error. A crash at any step leaves
 either the old file or the new file — never a truncated one.
+
+**The slot model.**
+Persistence checks one slot rule (`DagDBSnapshot.persistenceSlotScan`): a
+source at or past the node count is refused; a duplicate source (S1), a
+slot self-loop (S2) and a rank inversion (S3) are store shapes that SAVE
+writes and LOAD, IMPORT MORTON, LOAD JSON/CSV and BACKUP RESTORE load; a
+slot into a register (S4) is refused on every path, with a way out named
+when an older log replays one. A rank-mode rule (range, S2, S3; S1
+accepted, as rank TICK runs it) is kept for TILED OPEN's tile
+bodies (a tiled graph stays a rank-mode object: it accepts exactly what rank
+TICK runs, and SAVE TILED refuses S2/S3), and rank-mode TICK refuses S2/S3
+itself. No `.dags` version
+changes: a build before the slot model refuses an S1–S3 file by its own DAG rule.
 
 ### 4.2 Write-ahead log (`DAGW`)
 
@@ -194,23 +227,64 @@ SET_TRUTH      0x01  u32 node + u8 value                   5 bytes
 SET_RANK       0x02  u32 node + u32 value                  8 bytes  (v2)
                      u32 node + u8 value                   5 bytes  (v1 — load-compat)
 SET_LUT        0x03  u32 node + u64 lut                   12 bytes
+SNAPSHOT_BIND  0x51  u64 epoch + SHA-256 of the snapshot  40 bytes
 CHECKPOINT     0xF0  u64 epoch                             8 bytes
 ```
 
 The appender writes the record, then F_FULLFSYNC before returning —
 log-first discipline. The daemon appends to the WAL before mutating
 the engine buffer so crashed mutations either never happened (no
-record) or are replayed on restart.
+record) or are replayed on restart. The WAL recovers inputs, not
+computed state: TICK, TICK_SYNC, EVAL and TICK UNTIL_STABLE write no
+record, so tick-computed truth and the tick counter survive a hard kill
+only through the last durable SAVE.
 
 Replay:
 
-1. Scan forward, note the offset of the **last** `CHECKPOINT`.
-2. Scan again, apply only records at or past that offset.
-3. If a record's declared length overruns the file end, drop the
+1. Scan forward, note the offset of the **last** `CHECKPOINT` and of
+   every `SNAPSHOT_BIND`.
+2. If the caller passed the loaded snapshot's digest and a bind record
+   carries it, the window starts after the **last** such record;
+   otherwise after the last `CHECKPOINT`.
+3. Scan again, apply only records in the window.
+4. If a record's declared length overruns the file end, drop the
    partial tail — treat it as a mid-append crash.
+5. With no snapshot loaded, the window is the whole log:
+   its checkpoints and bind records mark other snapshots.
 
-After a successful snapshot the daemon writes a new `CHECKPOINT` with
-the current tick count. The next replay skips everything before.
+The appender keeps the log ending at a record boundary: a
+write that fails part-way cuts the log back to the record's start (and
+an import's records back to its first), a failed cut stops every later
+append, and opening a log cuts a tail a crash left (a cut record, or
+`IMPORT_PART` records without their `IMPORT_MORTON`). So the only bytes
+that are not whole records are ever at the end, where replay drops them.
+
+A durable snapshot appends and fsyncs a `SNAPSHOT_BIND`
+with its file's digest after the `.tmp` fsync and before the rename,
+then the `CHECKPOINT` after the rename and the manifest. The bind record
+is the snapshot's WAL position, so a kill between the rename and the
+checkpoint (or a checkpoint append that failed, now named in the reply)
+no longer replays the records before the snapshot onto it. A log or
+snapshot from before bind records existed has no bind record and replays from the last
+checkpoint, as before.
+
+**Version 4.** A fresh log is stamped 3. The first
+`IMPORT MORTON` whose slots hold S1–S3 rewrites the header's version to 4
+in place (4 bytes at offset 4, fsynced) before its record(s): an older build
+would refuse that import on replay and apply the later records over the
+pre-import graph; a v4 header makes it refuse the whole log by version
+instead, applying nothing. Versions 1–6 are read (5 and 6 are raised in
+place by the first `TICK_NOTE` and `TWIN_HOOK_SWEEP` records); above 6 is
+refused by name. An older `SET_NEIGHBORS_BULK` record that gave a register a
+slot replays as logged and is named (the boot WARNs with the way out).
+
+`TICK` writes no record. The loaders that replace the engine's state
+from a file (`LOAD`, `LOAD JSON`, `LOAD CSV`, `BACKUP RESTORE`) write
+none either: with the WAL on and `DAGDB_STARTUP_LOAD` set, a successful
+load ends with the same durable snapshot to the startup path plus a
+`CHECKPOINT` (`DagDBCommandHandler.rebaseAfterLoad`), so
+recovery (startup snapshot + the records past its bind record)
+rebuilds on the loaded state. `IMPORT MORTON` logs its bytes.
 
 ### 4.3 Backup chain
 
@@ -251,8 +325,9 @@ constructors (`all`, `rankRange(lo: UInt64, hi: UInt64)`).
 | `spectralL2` | Jacobi eigenvalues of induced Laplacian | O(n³) per side |
 
 All symmetric. Identical subgraphs produce distance 0. Rank-profile
-histograms are sparse `[UInt64: Int]` post-u64-rank widen (2026-04-21
-T1b); dense 256 slots were dropped at T1, u64 keys at T1b.
+histograms are sparse `[UInt64: Int]` post-u64-rank widen (2026-04-21);
+dense 256 slots were dropped at the u32 widening, u64 keys came with the
+u64 widening.
 
 ### 5.3 BFS primitives
 
@@ -282,7 +357,7 @@ Built on top of BFS + WL-1 + SELECT:
   filters (agent, timestamp, event-type name) are client-side on
   the returned node IDs.
 
-### 5.5 Secondary index (T15)
+### 5.5 Secondary index
 
 `TruthRankIndex` — per-truth-code rank-sorted list of
 `(rank, nodeId)`.
@@ -315,7 +390,7 @@ a command is at most 4,095 bytes plus a newline, a short read is
 completed by reading again, and a line that reaches the cap without a
 newline is refused rather than parsed.
 
-**Snapshot-on-read MVCC** (T7) gives readers a point-in-time view
+**Snapshot-on-read MVCC** gives readers a point-in-time view
 without full multi-version machinery:
 
 - `OPEN_READER` allocates a fresh `DagDBEngine` and memcpys the six
@@ -361,7 +436,7 @@ Shared-memory outputs at `/tmp/dagdb_shm_file`, layout
 
 | Command | Record bytes | Fields |
 |---|---|---|
-| `NODES`, `EVAL`, `TRAVERSE` | 24 | u64 node, u64 rank, u8 truth, u8 type, 6 pad |
+| `NODES`, `EVAL`, `TRAVERSE` | 24 | u64 node, u64 rank, u8 truth, u8 type, u8 mode, 5 pad (bytes 19–23, written 0) |
 | `BFS_DEPTHS` | 4 | i32 depth (indexed by node) |
 | `SELECT` | 4 | i32 node |
 | `ANCESTRY` | 8 | i32 node, i32 depth |
@@ -377,20 +452,25 @@ Shared-memory outputs at `/tmp/dagdb_shm_file`, layout
 ### 8.2 Daemon + socket
 
 `dagdb-daemon` binds a Unix domain socket (default
-`/tmp/dagdb.sock`) and writes shared-memory records to
-`/tmp/dagdb_shm_file`. Launchd supervises it via
-`~/Library/LaunchAgents/com.hari.dagdb.plist` (not in repo); the
-plist points at `dagdb/.build/release/dagdb-daemon --grid 1024`.
+`/tmp/dagdb.sock`) and writes shared-memory records to the file
+`--shm-file` names (required; in older builds the default
+was `/tmp/dagdb_shm_file`). On the author's machine launchd supervises it
+through a per-user agent plist (local, not in this repository); the
+plist points at `dagdb/.build/release/dagdb-daemon --grid 1024 --shm-file <path>`.
 
 Environment variables:
 
 - `DAGDB_WAL=<path>` — enable WAL at the given path.
-- `DAGDB_AUTOSAVE=<path>` — snapshot on SIGTERM / graceful exit.
+- `DAGDB_AUTOSAVE=<path>` — durable snapshot on SIGTERM / SIGINT, taken
+  between commands (the signal is a DispatchSource on the
+  shutdown gate's queue; the command in flight completes, the next is
+  refused with `ERROR shutdown:`).
 
 ### 8.3 MCP server
 
 `dagdb/mcp_server.py` exposes the daemon as a Model Context Protocol
-server. 104 tools wrap the DSL commands. `mcpo` bridges to HTTP on
+server: 116 tools, among them `dagdb_query`, which sends any DSL
+command. `mcpo` bridges to HTTP on
 `localhost:8787/dagdb/<tool_name>`. Config at
 `dagdb/mcpo_config.json` (gitignored).
 
@@ -440,19 +520,18 @@ treat the table below as a topical map, not a tally.
 | `DagDBU64RankTests` | NODES AT RANK over the u64 ceiling (2026-05-11). |
 | `GlobalNodeIDTests` | 24+40 tile-local node ID encoding. |
 | `TileHaloTests` | NSEW halo serialisation. |
-| `TiledGraphRouterTests` | Tile router scaffold stubs. |
+| `TiledGraphRouterTests` | Tile router: cross-tile BFS, ancestry and select equal to the untiled engine; residency; refusals; the `runQuery` stub. |
 | `SlimeMoldPerfScoutTests` | Slime-mold workload perf scout. |
 
 Plus:
 - `dagdb/plugins/biology/rank_policies.py::_selftest` — self-test
   covering all three rank policies.
 - `dagdb/plugins/loom/test_adapter.py` — pytest suite on the
-  event adapter + ingest-context serialisation. **Currently
-  broken at collection** (module-path drift after the worktree
-  split); not blocking, repair pending.
+  event adapter + ingest-context serialisation, 16 tests, all
+  passing on 2026-11-24 (`python3 -m pytest plugins` from `dagdb/`).
 
-Total: **249 Swift green, 2026-09-05.** Full suite ~50 s. Python
-pytest temporarily off the green count (collection error).
+Total, 2026-11-24: **1,540 Swift tests, 0 failures, 49 skipped**
+(one full `swift test` run from `dagdb/`), and 26 Python tests passed (Loom adapter 16, browser bridge 10).
 
 ## 10. Performance signature
 
@@ -530,23 +609,23 @@ Two standalone executables (`dagdb/Sources/E2Runner`,
 the engine's own fabric rather than a side simulation, so what gets
 judged is the actual DagDB substrate.
 
-- **E2Runner** — the smoother, per the frozen E2 contract
-  (held outside this repository, frozen 2026-08-22). Runs the frozen async
+- **E2Runner** — the smoother, per a frozen out-of-repo contract
+  (2026-08-22). Runs the frozen async
   Jacobi schedule over the engine's `HexGrid` wiring, reading and
   writing the `nodeValue` lane in `Float32` with `Float64`
-  accumulation for the convergence check. It is the builder's half
+  accumulation for the convergence check. It is the runner's half
   only — it writes raw per-cell results (work, rounds, final
   relative error); it computes no ratios, and it does not judge
-  pass/fail. That belongs to the judge's gate, outside this repository.
-- **E3Ladder** — the exact tier ladder, per the frozen E3 contract
-  (held outside this repository, frozen 2026-08-26). Topology, per-edge
+  pass/fail. That belongs to the out-of-repo court.
+- **E3Ladder** — the exact tier ladder, per a frozen out-of-repo contract
+  (2026-08-26). Topology, per-edge
   weights, per-node leaks, and ranks all live fabric-resident — in
   the engine's `neighborsBuf`, `edgeWeightsBuf`, `nodeValue` (as the
   leak carrier), and `rankBuf` — rather than in a shadow array. Each
   fold eliminates one rank ring via a dense symmetric solve
   (`dgesv_` through Accelerate/LAPACK, `Float64` arithmetic), then
   stores the reduced operator and folded sources back to `Float32`
-  per rung — the fabric width the court judges. Raw fold logs and
+  per rung — the fabric width the out-of-repo court judges. Raw fold logs and
   per-checkpoint tier answers only; again, the judge owns every
   ratio.
 
@@ -555,7 +634,7 @@ judged is the actual DagDB substrate.
 Seven small, independently-sealed types under `dagdb/Sources/DagDB/`,
 each encoding one frozen "twin spec" contract as executable code
 rather than as a description of one. Since the interface phase
-(merged 2026-09-06) all seven — plus the twin spec line 4
+(merged 2026-09-06) all seven — plus the
 alarm-stream type below — carry state-bearing inits and `Codable`, are
 held in one daemon-global `TwinState` of typed-id registries, and are
 reachable over the daemon socket (DSL) and MCP; see §13.5's replacement
@@ -565,12 +644,12 @@ grammar.
 - **`NamedStream.swift`** — a deterministic named random stream:
   PCG64 (XSL-RR, 128-bit state as `(hi, lo)` `UInt64` pairs),
   bit-compatible with numpy's PCG64 when seeded from an explicitly
-  printed generator state. Encodes twin spec line 3 (deterministic
-  replay): the Python-fixture bridge is explicit state, not seed
+  printed generator state. Encodes the twin spec's deterministic
+  replay: the Python-fixture bridge is explicit state, not seed
   hashing, so both sides produce the identical draw sequence.
   Test file: `NamedStreamTests.swift`.
 - **`StreamHeader.swift`** — the time-domain admissibility header,
-  twin spec line 7 (the "t-zero law"). Seven quantities (signal
+  the twin spec's mandatory header (the "t-zero law"). Seven quantities (signal
   band, τ-window, comb rate, first-echo time, record window,
   integrator step, clock-sync floor) must be declared before a
   stream is used; `violations()` catches a signal wider than its
@@ -581,20 +660,20 @@ grammar.
   `NamedStream` and records draws in slices, each capturing the
   generator's state *at entry*. Any slice then replays bit-for-bit
   in isolation by reseeding from its boundary words — the property
-  twin spec line 3's courts depend on. Refuses inadmissible headers
+  the twin spec's replay courts depend on. Refuses inadmissible headers
   at construction rather than at first use. Test file:
   `StreamRecordTests.swift`.
-- **`BudgetLayout.swift`** — the per-frame knapsack primitive, twin
-  spec line 5. Encodes the sealed decision letters from the
-  allocator and successor courts verbatim: maximize total read
+- **`BudgetLayout.swift`** — the per-frame knapsack primitive, the
+  twin spec's per-frame budget layout. Encodes the sealed decision rules
+  of the allocator and successor courts verbatim: maximize total read
   value under budget; ties break on minimum total cost, then on the
   lexicographically smallest sorted pocket set; claims on one pocket
   merge, with read values adding and the purchase tier set to the
   cheapest tier sufficient for the deepest requirement among the
   pocket's claims. Exact search, capped at 20 claimed pockets
   (exponential in that count). Test file: `BudgetLayoutTests.swift`.
-- **`CrossConvolutionCheck.swift`** — the sealed cross-ear W1
-  identity, twin spec line 6, as a standing engine check rather than
+- **`CrossConvolutionCheck.swift`** — the sealed cross-ear
+  identity, the twin spec's cross-convolution self-test, as a standing engine check rather than
   a one-off court exhibit. For two ears with per-path kernels from a
   common source, a true source-born signal satisfies
   `kB ⋆ a == kA ⋆ b`; a forged recording or a corrupted path model
@@ -602,14 +681,14 @@ grammar.
   warmup. Storage is `Float32` (engine lane width), accumulation is
   `Double`. Test file: `CrossConvolutionCheckTests.swift`.
 - **`GearedRings.swift`** — the geared six-ring recording odometer,
-  twin spec line 1's memory half, sealed at gear 6 / 6 rings / 32
+  the memory half of the twin spec's ranked-shell state, sealed at gear 6 / 6 rings / 32
   cells (192 numbers total). Ring `j` advances every `gear^j` ticks
   and keeps only the signed extremum of its span plus the tick it
   occurred; this gearing (not a uniform pyramid or an equal-budget
   tail) is what gives signed recall across six orders of lag from a
   fixed, small footprint. Test file: `GearedRingsTests.swift`.
-- **`MasterClock.swift`** (with `GearRatio` and `PhaseGear`) — twin
-  spec line 2: one master tick, every generator and scanner derived
+- **`MasterClock.swift`** (with `GearRatio` and `PhaseGear`) — the
+  twin spec's single clock: one master tick, every generator and scanner derived
   from it through a rational-gear phase accumulator with a latch.
   Integer arithmetic only, so a `p/q` gear fires exactly
   `floor(N·p/q)` times after `N` master ticks — drift-free by
@@ -619,8 +698,8 @@ grammar.
   `MasterClockTests.swift`.
 - **`AlarmRecord.swift`/`SealedCourt.swift`/`AlarmFixture.swift`/
   `CorruptionModel.swift`/`SuccessorCourt.swift`/`AllocatorCourt.swift`**
-  (interface phase, 2026-09) — twin spec line 4, the alarm-stream contract.
-  `AlarmFixture` loads the sealed, SHA-pinned, out-of-repo 29 MB W2
+  (gates T2–T4 of the P4 contract, 2026-09-06) — the twin spec's alarm-stream contract.
+  `AlarmFixture` loads the sealed, SHA-pinned, out-of-repo 29 MB
   fixture (`DAGDB_W2_FIXTURE`) and reconstructs file order from the
   sealed keys; `SealedCourt` holds the frozen pocket/tier/tariff
   vocabulary; `CorruptionModel` mirrors the Python
@@ -634,7 +713,8 @@ grammar.
   `AlarmRecordTests.swift`, `AlarmFixtureTests.swift`,
   `CorruptionModelTests.swift`, `SealedGateTests.swift`.
 
-**State-bearing inits, Codable, registries, WAL, snapshot v7 (the interface phasea/T1b/T5–T7, 2026-09-06).** Every primitive above gained a
+**State-bearing inits, Codable, registries, WAL, snapshot v7 (gates
+T1a/T1b/T5–T7 of the P4 contract, 2026-09-06).** Every primitive above gained a
 state-bearing initializer and `Codable` conformance so a daemon-held
 instance survives a restart in O(1) rather than being reconstructed
 from scratch. `TwinRegistry<Entry>` (`dagdb/Sources/DagDB/
@@ -654,18 +734,18 @@ state to empty on load). Alarm sets persist by reference (path +
 sha256) — a missing or hash-mismatched file on restore drops that one
 entry with a stderr `WARN` rather than refusing the whole load.
 
-### 13.4 Durability (G73) and tick performance
+### 13.4 Durability and tick performance
 
-**G73** (`docs/g73/SPEC_g73.md`) hardens the fsync/durability path:
+The durability hardening (July 2026) covers the fsync/durability path:
 an opt-in WAL group-commit batch knob (prod stays per-record +
 `F_FULLFSYNC`; dev/test may batch by count or time, whichever
 first, with an explicit and tested loss bound), a side-by-side
 snapshot `.sha256` manifest verified *before* buffers are touched
 (mismatch refuses the load rather than half-loading), and a kill-9
 stress probe plus a deterministic in-suite torn-tail-WAL acceptance
-test. See `docs/g73/` for the full spec and results.
+test. See `docs_g73/` for the full spec and results.
 
-**Tick performance** (`docs/perf_recovery/SPEC_tick_perf.md`)
+**Tick performance** (`docs_perf_recovery/SPEC_tick_perf.md`)
 recovers throughput lost to rank×color serialization and early-out
 thread waste: precomputed per-(rank, color) node lists give a
 **compacted dispatch** that is bit-for-bit identical to the legacy
@@ -674,8 +754,116 @@ mutation; an opt-in **`TICK_SYNC`** double-buffered synchronous mode
 matches a pure-CPU reference simulation bit-for-bit, including
 register latching, and is deliberately *not* the same schedule as
 rank-ordered `TICK` (a rank-ordered chain settles in one rank tick
-but takes `depth` ticks under `TICK_SYNC`). See `docs/perf_recovery/`
-for measured ms/tick and GCUPS on the 1M-node grid.
+but takes `depth` ticks under `TICK_SYNC`). See `docs_perf_recovery/`
+for measured ms/tick and GCUPS on the 1M-node grid. The
+daemon's rank-mode `TICK`, which first checks that every edge reads a
+strictly higher rank, dispatches each rank once from a per-rank
+contiguous list (ascending ids, 4 bytes per node, allocated on first
+use) — bit-identical on such a graph, one dispatch per rank instead of
+up to seven. The lists (colour and per-rank) are rebuilt only after a
+write that moves a rank, not after a truth write, and a failed first
+allocation of the per-rank lists refuses the `TICK` by name instead of
+stopping the daemon.
+`TICK UNTIL_STABLE` takes each tick's change count from the
+tick itself: counting twins of the two rank kernels (dispatched only
+inside UNTIL_STABLE; every other tick runs the kernels unchanged) add the
+nodes whose byte changed to one atomic counter, one add per SIMD group,
+and the latch counts its own writes; there is no copy and byte compare of
+the whole truth buffer per tick.
+The back-edge latch runs as GPU kernels in the tick's own
+command buffer — inside UNTIL_STABLE always, in plain `TICK` from 65,536
+back edges — over one effective back edge per register (its last one in
+list order, built on the CPU when the list changes and cached), one kernel,
+or two (snapshot, then write) when a source is also a register; bytes and
+counts are the CPU latch's, which stays as the reference.
+A plain `TICK` that is the first after a change to the
+back-edge list takes the CPU latch and builds nothing; the plan is built at
+the second consecutive plain `TICK` with no change between (an engine's
+first plain `TICK`, with no `TICK` before it, builds at once;
+UNTIL_STABLE builds on entry), so an edit/`TICK` alternation costs what the
+CPU latch costs. The plan's build is one branch-free backwards pass over the
+two lists with a flag byte per node.
+The engine has a frontier session (`frontierSession`): a
+counting session whose rank-ordered ticks dispatch, per rank, only a
+worklist — readers (through a slot, by a reverse CSR index of slots and
+effective back edges) of a node whose byte changed this tick, readers of a
+register the previous latch changed, NOSKIP nodes that changed in the
+previous tick — and latch only the effective back edges whose source
+changed. Pushes are deduplicated by a bit per node (per back edge) and land
+at the rank's span offset in the per-rank list; the session's first tick is
+whole (a whole-rank fallback for large lists is no longer part of the
+policy and remains only as a test seam). Bytes and counts equal the plain
+per-rank tick after every tick. The index (with the lists, two
+halves) is kept between sessions and dropped by topology writers only.
+`TICK UNTIL_STABLE` runs on the frontier session, several ticks
+per command buffer (`DagDBEngine.sessionTicks`): each tick's two counts land
+in its own slot of a per-batch counter buffer, read after the batch, so the
+CPU waits on the GPU once per batch instead of once per tick; the verb stops
+at the first tick with both counts 0 (ticks a batch ran past it changed no
+byte). Replies and bytes are those of the one-tick-at-a-time path, except
+`nodes_computed=`, which is the node slots the session evaluated.
+The batches of one call ramp 1, 2, 4, 8,
+16, 16, … (a stable graph encodes one tick; ticks encoded ≤ 2 × run), a
+command buffer holds at most 131,072 dispatches (at least one tick), and a
+graph with more than R* = 24 non-empty rank levels runs the counting path
+instead of the frontier (the frontier's two dispatches per rank lose to the
+plain tick's one there; R* from the measured crossover). Every tick path —
+TICK, TICK_SYNC, EVAL, UNTIL_STABLE's batches and per-tick paths — reads its
+command buffer's status after the wait; any status but completed replies
+`ERROR gpu:` by name and claims nothing of that buffer. The tiled router's
+tile ticks do too (`TILED TICK`, and the
+recovery and round-completion ticks of a writer's `TILED OPEN`): a tile whose
+buffer did not complete is not flushed, and its in-memory engine is dropped.
+`tickLegacy` and `tickWithResonance` (test-only callers) still do not.
+The frontier session's first, whole tick pushes nothing into
+its own half (`FrontierParams.push` 0): every rank and the latch take their
+whole lists there, so no dispatch reads that half, and the session's open
+left it empty. Its pushes into the next half (a changed NOSKIP node; the
+latch's readers of a changed register and the back edges it feeds) are every
+tick's, so tick 1's lists are unchanged by this. On a 128³ flood the six
+border constants' 16,384-reader walks, measured at 39 % of the flood's GPU
+time, are gone.
+A push is a SIMD group's: the readers of every changed node
+in the group (rank kernels, both latch kernels, the seed kernel) are walked
+together, one CSR entry per lane per round, deduplicated by the half's bitmap
+as before, and each round's new entries take their slots with one atomic add
+per receiving list (warp-aggregated appends) instead of one per entry.
+A `TILED TICK` loads every tile it will tick,
+not already resident, before advancing any (a writer `TILED OPEN` likewise
+before recovery or completion writes), so a refused tile load never tears
+the directory; every refused load is counted in `TILED STATUS`.
+A tiled verb never leaves a
+torn world: `TILED TICK` and a writer `TILED OPEN` are planned against the
+files before their first write (every refusal a later tile, a later pending
+tile or completion could raise is raised first, counted in `TILED STATUS`,
+or for a refused open in `STATUS tiled_refused=`), and every write step of a
+flush and of recovery is whole or not at all (the tile wal's records
+appended whole or cut back, temp-and-rename for strip, meta, manifest and
+sidecar, the sidecar checked after the save), a failed one named in the
+reply; a fresh writer open then leaves every tile at its pre- or post-round
+files. Each tile
+wal record is one `write(2)`, a writer open cuts a torn last record (a kill
+inside that write: its step never started) before recovering, an unreadable
+wal is refused by name (never read as clean), and the `TILED TICK` refusals
+after a failed write step are counted.
+`SET_LUTS NODES|RANK <lo>-<hi> FILL <v> | MAP [MASK <m>]
+<from>=<to> …` writes the LUT lane by selection, with no vector through shm:
+one kernel (`dagdb_set_luts`), one thread per node of the id range, of a
+rank's per-rank list (lo == hi, the lists made current first), or of the rank
+lane; MAP is a simultaneous substitution keyed on the LUT ANDed with the mask,
+1–16 pairs. The bytes are SET_LUTS_BULK's for the equivalent vector after
+every verb; a CPU twin writes them when no command buffer can be
+had. It is on the DAG-shape allow-list (no rank, slot or back edge moves), so
+the verdict, the frontier index and the latch plan survive it. One WAL record per
+verb, opcode 0x4F.
+`SET_TRUTH NODES|RANK <lo>-<hi> FILL <v>` writes the truth
+lane by the same selection on the CPU (a memset of an id range, a scatter
+through a rank's per-rank list, or a pass over the rank lane); v ≥ 3 is refused
+by name on a graph with a ternary node. A voxel client's zero phase is this
+verb and no tick: the state after the flood's first tick is the zero-tick
+path's. A truth write, so the (truth, rank) index is
+dirtied and the DAG verdict, the frontier index and the latch plan survive it.
+One WAL record per verb, opcode 0x50, 23 bytes.
 
 ### 13.5 What is still NOT wired
 
@@ -684,17 +872,17 @@ for measured ms/tick and GCUPS on the 1M-node grid.
   interface phase (2026-09-06) — every verb has a `TwinCommand` case,
   a handler, WAL persistence, and a snapshot v7 slot. What is still
   NOT done: they are not fused into the tick loop (the interface phase exposes them,
-  does not wire them into `TICK`/`TICK_SYNC` dispatch — that is spec 8,
-  per `ROADMAP.md`), and **the two sealed gates depend on an
+  does not wire them into `TICK`/`TICK_SYNC` dispatch), and **the two sealed gates depend on an
   out-of-repo fixture** (`DAGDB_W2_FIXTURE`, SHA-pinned, 29 MB) — the
-  9 fixture-gated tests in the 439-case suite skip (not fail) when
+  15 tests gated on it (of 1,540, counted 2026-11-24) skip (not fail) when
   that environment variable is unset, so "the suite is green" does not
   by itself mean the gates ran; see `CURRENT_STATE.md` and
   `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md`.
-- **`TiledGraphRouter`** (with `GlobalNodeID`) remains a routing
-  scaffold: cross-tile addressing and stubs exist and are tested,
-  but there is no working multi-tile query path. Section 11's "no
-  distributed mode" still holds in practice.
+- **`TiledGraphRouter`** (with `GlobalNodeID`) answers the three typed
+  cross-tile queries (`runBFS`, `runAncestry`, `runSelect`, the daemon's
+  `TILED BFS`/`SELECT`), tested equal to the untiled engine; only its
+  free-form `runQuery` DSL entry point is still a stub that throws. All
+  tiles live on one machine, so Section 11's "no distributed mode" holds.
 
 ---
 

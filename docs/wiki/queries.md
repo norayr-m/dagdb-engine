@@ -6,7 +6,7 @@ Five read primitives on DagDB, ordered by abstraction level:
 2. **`SELECT truth k rank lo-hi`** — secondary-indexed fast path.
 3. **`BFS_DEPTHS`** — depth vector from a seed.
 4. **`DISTANCE`** — eight subgraph similarity metrics.
-5. **`ANCESTRY` / `SIMILAR_DECISIONS`** — hive-friendly provenance
+5. **`ANCESTRY` / `SIMILAR_DECISIONS`** — agent-friendly provenance
    and similarity wrappers.
 
 All five can run against a reader-session snapshot via the
@@ -148,7 +148,7 @@ computation. Rejected with `ERROR forbidden:`.
 ## 7. `HIVE_QUERY` — MCP-level convenience
 
 Thin alias over `SELECT` for the common `(truth, rank-range)`
-hive query. Only available through MCP, not as a DSL verb.
+query. Only available through MCP, not as a DSL verb.
 
 ```python
 dagdb_hive_query(truth=2, rank_lo=1000000, rank_hi=1000099, limit=100)

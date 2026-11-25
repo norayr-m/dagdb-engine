@@ -173,10 +173,22 @@ What it does:
 - Buttons: inject APAP, trigger hypoxia, inflammation, NAC recovery, TICK 1, TICK 5, VALIDATE
 - MCP response panel shows every call and its return
 - Calls mcpo from the browser. mcpo's defaults are permissive: it listens on every
-  interface (`0.0.0.0`), accepts every origin (`*`) and asks for no key, so while it
-  runs any machine on the network and any web page can call the tools. Bind it with
-  `--host 127.0.0.1`, serve this page with `python3 -m http.server --bind 127.0.0.1 8000`,
-  and pass `--cors-allow-origins http://127.0.0.1:8000`.
+  interface (`0.0.0.0`), accepts every origin (`*`) and asks for no API key, so while
+  it runs any machine on the network and any web page can call the tools. Run it
+  bound to this machine, with a key and one allowed origin, and serve the page from
+  that origin (both from `dagdb/`):
+
+  ```bash
+  export MCPO_KEY=$(openssl rand -hex 16)
+  mcpo --config mcpo_config.json --port 8787 --host 127.0.0.1 \
+       --api-key "$MCPO_KEY" --cors-allow-origins http://127.0.0.1:8000
+  python3 -m http.server --bind 127.0.0.1 8000
+  # then open http://127.0.0.1:8000/examples/liver/explorer.html
+  ```
+
+  `explorer.html` does not send the key yet, so with `--api-key` set mcpo answers
+  its calls with HTTP 401. To use the page as it is, drop `--api-key`: the host and
+  origin bounds still hold, and any process on this machine can then call the tools.
 
 ## Amateur disclaimer
 

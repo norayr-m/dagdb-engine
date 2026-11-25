@@ -5,8 +5,8 @@
 # records; a hard kill after a tail replays exactly the tail.
 #
 # Scratch only: its own data root under ~/dag_databases/test, its own socket.
-# Refuses to run if any dagdb-daemon is alive (the shm backing file
-# /tmp/dagdb_shm_file is shared by every daemon on this machine).
+# Refuses to run if any dagdb-daemon is alive (it greps for any, by name).
+# The daemon needs --shm-file (no default); this smoke's is under $TMP.
 #
 # Usage: examples/twin_primitives/socket_smoke.sh   (from the repo root)
 set -u
@@ -25,7 +25,7 @@ check() { # check <label> <actual> <expected-substring>
 say() { echo "$1" | nc -U "$SOCK"; }
 start() { # start <logfile>
   DAGDB_DATA_ROOT="$ROOT" DAGDB_WAL="$ROOT/live.wal" DAGDB_STARTUP_LOAD="$ROOT/auto.dags" DAGDB_AUTOSAVE="$ROOT/auto.dags" \
-    "$BIN" --grid 16 --socket "$SOCK" > "$1" 2>&1 &
+    "$BIN" --grid 16 --socket "$SOCK" --shm-file "$TMP/smoke_shm" > "$1" 2>&1 &
   PID=$!
   for i in {1..100}; do [[ -S "$SOCK" ]] && break; sleep 0.1; done
   sleep 0.2
@@ -77,10 +77,10 @@ stop_soft
 
 echo "== D: refusals"
 printf 'garbage' > "$ROOT/auto.dags"
-DAGDB_DATA_ROOT="$ROOT" DAGDB_STARTUP_LOAD="$ROOT/auto.dags" "$BIN" --grid 16 --socket "$SOCK" > "$TMP/d.log" 2>&1; rc=$?
+DAGDB_DATA_ROOT="$ROOT" DAGDB_STARTUP_LOAD="$ROOT/auto.dags" "$BIN" --grid 16 --socket "$SOCK" --shm-file "$TMP/smoke_shm" > "$TMP/d.log" 2>&1; rc=$?
 check "D1 corrupt snapshot fatal (exit 2)" "$rc" "2"
 check "D1 message"            "$(grep -c 'FATAL: startup snapshot unreadable' $TMP/d.log)" "1"
-DAGDB_DATA_ROOT="$ROOT" DAGDB_STARTUP_LOAD="/tmp/outside.dags" "$BIN" --grid 16 --socket "$SOCK" > "$TMP/d2.log" 2>&1; rc=$?
+DAGDB_DATA_ROOT="$ROOT" DAGDB_STARTUP_LOAD="/tmp/outside.dags" "$BIN" --grid 16 --socket "$SOCK" --shm-file "$TMP/smoke_shm" > "$TMP/d2.log" 2>&1; rc=$?
 check "D2 outside data root fatal" "$rc" "2"
 check "D2 message"            "$(grep -c 'FATAL: startup snapshot path rejected' $TMP/d2.log)" "1"
 

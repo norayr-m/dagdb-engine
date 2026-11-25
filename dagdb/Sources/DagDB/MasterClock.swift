@@ -1,6 +1,6 @@
 import Foundation
 
-/// One master clock, rational gears — twin spec line 2.
+/// One master clock, rational gears.
 ///
 /// Every generator and scanner derives from a single tick through a phase
 /// accumulator with a RATIONAL gear and a latch. Integer arithmetic only:
@@ -21,7 +21,7 @@ public struct GearRatio: Equatable, CustomStringConvertible {
     public let num: UInt64
     public let den: UInt64
 
-    /// S5 (ii): the refusals that used to be `precondition` aborts.
+    /// The refusals that used to be `precondition` aborts.
     public enum RatioError: Error, Equatable, CustomStringConvertible {
         case zeroComponent(num: UInt64, den: UInt64)
         case accumulatorUnsafe(num: UInt64, den: UInt64)
@@ -39,7 +39,7 @@ public struct GearRatio: Equatable, CustomStringConvertible {
         }
     }
 
-    /// S5 (ii): the two remaining traps on public paths become thrown
+    /// The two remaining traps on public paths become thrown
     /// errors. This init used to `precondition` on a zero component and on
     /// an accumulator-unsafe numerator — an abort no caller could catch and
     /// no test could reach. It now refuses by name, and it is the only door
@@ -55,7 +55,7 @@ public struct GearRatio: Equatable, CustomStringConvertible {
         self.den = den / a
     }
 
-    /// Finding 67: `PhaseGear.advance` adds `num` to an accumulator whose
+    /// `PhaseGear.advance` adds `num` to an accumulator whose
     /// invariant is `accumulator < den`, so the largest value ever summed
     /// is `den − 1 + num`. A numerator that makes that exceed UInt64 wraps
     /// the accumulator and silently loses fires — refuse it at the door.
@@ -66,7 +66,7 @@ public struct GearRatio: Equatable, CustomStringConvertible {
 
     /// Exact gear composition: (p1/q1) ∘ (p2/q2) = p1·p2 / q1·q2, reduced.
     ///
-    /// Finding 66: cross-reduce BEFORE multiplying, so a chain whose
+    /// Cross-reduce BEFORE multiplying, so a chain whose
     /// reduced ratio is small never overflows on the unreduced product.
     /// The result is identical to reducing afterwards — gcd is
     /// multiplicative across the two cross pairs.
@@ -131,7 +131,7 @@ extension GearRatio: Codable {
 /// Phase accumulator + latch driven by the master tick.
 public struct PhaseGear: Equatable, Codable {
     public enum GearError: Error, Equatable, CustomStringConvertible {
-        /// Finding 68: the invariant `advance` maintains is
+        /// The invariant `advance` maintains is
         /// `accumulator < ratio.den`; a restored gear above it fires
         /// `accumulator/den` extra times on its next tick.
         case accumulatorAboveDenominator(accumulator: UInt64, den: UInt64)
@@ -194,7 +194,7 @@ public struct PhaseGear: Equatable, Codable {
     }
 
     /// Decode enforces the same invariant the state-bearing init does
-    /// (finding 68) — a hand-edited or corrupted snapshot must not
+    /// — a hand-edited or corrupted snapshot must not
     /// resurrect a gear the front door would have refused.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

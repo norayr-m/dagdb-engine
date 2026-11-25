@@ -8,8 +8,8 @@ import XCTest
 /// Each cell is a register node (rank 1) whose next state is computed by a
 /// 5-input combinational gate (rank 0): cell + 4 von Neumann neighbors. The
 /// combinational gate latches back into the register via BACK_EDGE. The
-/// boolean update function is a placeholder (5-input majority) — Ref's
-/// Adamatzky spec will decide the real transition table later.
+/// boolean update function is a placeholder (5-input majority) until a
+/// real transition table is chosen.
 ///
 /// What we want to know:
 /// - Does graph construction at 80 000 nodes / 240 000 edges stay reasonable?

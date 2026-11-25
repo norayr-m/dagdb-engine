@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C7 · reader sessions see the whole graph —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// Reader sessions see the whole graph.
 final class CoreDurabilityReaderTests: XCTestCase {
 
     /// A primary with registers, non-default lanes and no hex adjacency, so
@@ -20,7 +19,7 @@ final class CoreDurabilityReaderTests: XCTestCase {
     /// Control gate: a reader on a graph with registers ticks bit-for-bit
     /// with the primary. A session that copied six of ten buffers saw the
     /// registers as ordinary combinational nodes, so the two diverged on the
-    /// first tick (audit A, finding 41).
+    /// first tick.
     func testReaderOnAGraphWithRegistersTicksBitForBitWithThePrimary() throws {
         let side = 8
         let (primary, grid, state) = try makePrimary(side: side)

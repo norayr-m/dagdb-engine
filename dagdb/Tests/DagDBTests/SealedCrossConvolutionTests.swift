@@ -2,11 +2,13 @@ import XCTest
 import Foundation
 @testable import DagDB
 
-/// Per-path kernel storage and the sealed cross-convolution residual —
-/// gates K1/K2/K5 from docs/contracts/KERNELS_GATES_FROZEN.md (amendment
-/// 1: 190 trials). Non-sealed tests exercise KernelPair and the formula
+/// Per-path kernel storage and the sealed cross-convolution residual,
+/// checked over the 190 sealed trials: each trial's engine residual against
+/// the in-repo reference residuals, the out-of-repo court's four checks
+/// re-derived from the engine's residuals, and the patrol check's divergence
+/// printed beside the sealed residual. Non-sealed tests exercise KernelPair and the formula
 /// against the in-repo fixtures (loaded, sha-checked, never skipped).
-/// Sealed tests replay the 190 W1 records against the frozen residual
+/// Sealed tests replay the 190 sealed records (`DAGDB_W1_RECORDS`) against the frozen residual
 /// fixture — skip (XCTSkip) when DAGDB_W1_RECORDS is unset, FAIL (never
 /// skip) if present with the wrong hash — precedent DerivedViewsTests.
 final class SealedCrossConvolutionTests: XCTestCase {
@@ -35,7 +37,7 @@ final class SealedCrossConvolutionTests: XCTestCase {
     private static let w1ResidualsSHA = "f02b1e18b7b6a3fee3b8e6bb9029a6a558647c7cfc991697237b204d4fe29a06"
     private static let w1RecordsSHA = "ba899eeff82a85b74ce5572d8a5297eee479d9eb4b72b11ea0add2359f633f1a"
 
-    // MARK: - KernelPair / derived warmup (K4)
+    // MARK: - KernelPair / derived warmup
 
     func testDerivedWarmupIs185ForW1() {
         let metaWithSigma = KernelPair.Meta(fs: 3000, window: 2048, earA: 170, earB: 236,
@@ -65,7 +67,7 @@ final class SealedCrossConvolutionTests: XCTestCase {
         XCTAssertEqual(declared?.derived, false)
     }
 
-    // MARK: - KernelPair.load (K3 storage)
+    // MARK: - KernelPair.load (storage)
 
     func testLoadW1KernelsFixture() throws {
         let path = Self.fixturesDir.appendingPathComponent("w1_kernels.json").path
@@ -93,7 +95,7 @@ final class SealedCrossConvolutionTests: XCTestCase {
         }
     }
 
-    // MARK: - Sealed formula (K1/K2 formula shape, unsealed inputs)
+    // MARK: - Sealed formula (the formula's shape, on unsealed inputs)
 
     func testResidualIdentityIsZeroWhenMirrored() {
         let meta = KernelPair.Meta(fs: 3000, window: 8, earA: 0, earB: 1)
@@ -237,23 +239,22 @@ final class SealedCrossConvolutionTests: XCTestCase {
         if !failures.isEmpty {
             for f in failures { print("K1 miss: \(f)") }
         }
-        // Contract amendment 2 (2026-09-10): the absolute control tolerance
-        // 2.533e-14 was set for R of order ≤ 0.11; fake trials reach R ≈ 24.7,
-        // where the float64 floor of two different summation orders is
-        // ~2.6e-15 relative = up to 6.4e-14 absolute. FAIL by the letter,
-        // recorded as a floor measurement; an unexpected pass here means the
-        // instrument changed and the contract must say so.
-        // Amendment 3 (judge's ruling): the standing gate is relative —
-        // |ΔR| ≤ 3e-15 · max(1, R_python) — asserted here beside the frozen
-        // absolute letter, which stays as an expected failure in the record.
+        // The absolute control tolerance 2.533e-14 was set for R of order
+        // ≤ 0.11; fake trials reach R ≈ 24.7, where the float64 floor of two
+        // different summation orders is ~2.6e-15 relative = up to 6.4e-14
+        // absolute. It fails as written and is recorded as a measurement of
+        // that float64 floor; an unexpected pass here means the instrument changed.
+        // The standing check is relative — |ΔR| ≤ 3e-15 · max(1, R_python) —
+        // asserted here beside the absolute tolerance, which stays as an
+        // expected failure.
         var relativeMisses: [String] = []
         for (key, expected) in fixture.trials {
             guard let r = engineResiduals[key] else { continue }
             let bound = 3e-15 * max(1.0, abs(expected.R))
             if abs(r - expected.R) > bound { relativeMisses.append("\(key): |ΔR|=\(abs(r - expected.R)) bound=\(bound)") }
         }
-        // Measured floor across the two regimes (amendment 4): the bound the
-        // judge set next is read from these two numbers, not from R alone.
+        // Measured floor across the two regimes: the next bound is read from
+        // these two numbers, not from R alone.
         var floorAbsSmall = 0.0, floorRelLarge = 0.0
         for (key, expected) in fixture.trials {
             guard let r = engineResiduals[key] else { continue }
@@ -262,8 +263,8 @@ final class SealedCrossConvolutionTests: XCTestCase {
         }
         print("K1 measured floor: max |ΔR| at R ≤ 1 = \(floorAbsSmall); max |ΔR|/R at R > 1 = \(floorRelLarge)")
         print("K1' relative bound 3e-15·max(1,R): misses = \(relativeMisses.count)")
-        // Amendment 5 — K1'' is THE gate: |ΔR| ≤ 1e-14 · max(1, R_python), the
-        // judge's letter after the two measured regimes; asserted unwrapped.
+        // The check that must pass: |ΔR| ≤ 1e-14 · max(1, R_python),
+        // set after the two measured regimes; asserted unwrapped.
         var gateMisses: [String] = []
         for (key, expected) in fixture.trials {
             guard let r = engineResiduals[key] else { continue }
@@ -272,9 +273,9 @@ final class SealedCrossConvolutionTests: XCTestCase {
         }
         print("K1'' gate 1e-14·max(1,R): misses = \(gateMisses.count)")
         XCTAssertTrue(gateMisses.isEmpty, "K1'' misses: \(gateMisses)")
-        // Amendment 4: K1' misses on trials with R ≤ 1 where the absolute floor
-        // (up to ~4.9e-15) exceeds 3e-15 — the floor is not proportional to R
-        // at small R. FAIL by the letter, recorded; the judge sets the next bound.
+        // The relative bound 3e-15 · max(1, R) misses on trials with R ≤ 1,
+        // where the absolute float64 floor (up to ~4.9e-15) exceeds 3e-15 — the floor is not proportional to R at
+        // small R. An expected failure, recorded.
         XCTExpectFailure("K1' floor finding (amendment 4): the relative bound 3e-15·max(1,R) misses at R ≤ 1 where the absolute float64 floor reaches ~4.9e-15") {
             XCTAssertTrue(relativeMisses.isEmpty, "K1' relative-bound misses: \(relativeMisses)")
         }
@@ -296,7 +297,7 @@ final class SealedCrossConvolutionTests: XCTestCase {
             records.filter { $0.value.classLabel == label }.map(\.key)
         }
 
-        // G0: the cal0 entry whose numeric part is "1"
+        // The calibration check: the cal0 entry whose numeric part is "1"
         let cal0Keys = keys(class: "cal0")
         let g0Key = cal0Keys.first { key in
             guard let underscore = key.lastIndex(of: "_") else { return false }
@@ -309,7 +310,7 @@ final class SealedCrossConvolutionTests: XCTestCase {
         XCTAssertLessThanOrEqual(g0, 2.533e-14)
         print("K2 G0 R = \(String(format: "%.3e", g0)) (court printed 4.101e-15; both ≤ 2.533e-14 — at the numeric floor the third digit is summation-order noise, not a pin)")
 
-        // G1: every court trial R <= TOL; worst printed
+        // Every court trial R <= TOL; worst printed
         let courtRs = keys(class: "court").map { rByKey[$0]! }
         let g1Worst = courtRs.max()!
         let g1Within = courtRs.filter { $0 <= 1.00452e-2 }.count
@@ -317,13 +318,13 @@ final class SealedCrossConvolutionTests: XCTestCase {
         XCTAssertTrue(courtRs.allSatisfy { $0 <= 1.00452e-2 })
         XCTAssertEqual(String(format: "%.3e", g1Worst), "5.415e-03")
 
-        // G2: fakes with R > 10*TOL, strict, count == 50
+        // Fakes with R > 10*TOL, strict, count == 50
         let fakeRs = keys(class: "fake").map { rByKey[$0]! }
         let g2Flares = fakeRs.filter { $0 > 10 * 1.00452e-2 }.count
         print("K2 G2_flares = \(g2Flares)/\(fakeRs.count)")
         XCTAssertEqual(g2Flares, 50)
 
-        // G3: perturbed with R > TOL, strict, count == 50; quartiles
+        // Perturbed with R > TOL, strict, count == 50; quartiles
         let pertRs = keys(class: "pert").map { rByKey[$0]! }
         let g3Flares = pertRs.filter { $0 > 1.00452e-2 }.count
         print("K2 G3_flares = \(g3Flares)/\(pertRs.count)")
@@ -346,7 +347,7 @@ final class SealedCrossConvolutionTests: XCTestCase {
         print("K2 cal_maxR = \(String(format: "%.3e", calMax))")
         XCTAssertEqual(String(format: "%.3e", calMax), "3.348e-03")
 
-        _ = fixture // fixture gates already cross-checked in K1; kept for symmetry with the loader
+        _ = fixture // the fixture is already cross-checked in the per-trial residual test; kept for symmetry with the loader
     }
 
     func testK5PatrolDivergenceAttributed() throws {

@@ -57,7 +57,9 @@ sleep 1
 # Start daemon
 echo ""
 echo "  Starting daemon (256x256 grid = 65,536 nodes)..."
-.build/debug/dagdb-daemon --grid 256 &>/dev/null &
+# --shm-file is required (the result-row file; no default), kept under ~/.dagdb, not in /tmp.
+mkdir -p "$HOME/.dagdb"
+.build/debug/dagdb-daemon --grid 256 --shm-file "$HOME/.dagdb/dagdb_shm" &>/dev/null &
 DAEMON_PID=$!
 sleep 2
 
@@ -68,7 +70,7 @@ STATUS=$(echo 'STATUS' | nc -U /tmp/dagdb.sock 2>/dev/null)
 if echo "$STATUS" | grep -q "OK STATUS"; then
     echo "  ✓ $STATUS"
 else
-    echo "  ✗ Daemon not responding. Check: .build/debug/dagdb-daemon --grid 256"
+    echo "  ✗ Daemon not responding. Check: .build/debug/dagdb-daemon --grid 256 --shm-file \"\$HOME/.dagdb/dagdb_shm\""
     kill $DAEMON_PID 2>/dev/null
     exit 1
 fi

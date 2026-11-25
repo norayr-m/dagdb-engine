@@ -1,0 +1,40 @@
+{
+  "what": "main's pg_dagdb source and setup_views.sql at the branch point of dag/ternary, for TERNARY AMENDMENT 8 item 1's upgrade gate (test_pg_dagdb_upgrade_live.py). Main's crate = this branch's pg_dagdb skeleton (the four files below, byte-identical to main's) + lib.rs here.",
+  "commit": "ab9a79404b8607eb3d0a90a3b3fb06ce74d90964",
+  "files": {
+    "lib.rs": {
+      "path": "dagdb/pg_dagdb/src/lib.rs",
+      "git_blob": "220559ce0f7ac57e90b322198e4334f99db2c9f0",
+      "sha256": "7b5ca8f82c6a421dc8b5491fbe9c06971ac42510910098fefb83794ff304cd5b"
+    },
+    "setup_views.sql": {
+      "path": "dagdb/setup_views.sql",
+      "git_blob": "a294fe0f2997644cc307267c6efc96bb4168841d",
+      "sha256": "960062325cba686184a3fc71d8e4c84a7c6830ba08e55bf362fea51d982c7638"
+    }
+  },
+  "skeleton": {
+    "Cargo.toml": {
+      "git_blob": "19417ab9ff8972c08b94e457d85696f137865a56",
+      "sha256": "22acb392648cf18f2453f5f3f9e34105d8c98d79be7b8e714ecb3734195b121f"
+    },
+    "pg_dagdb.control": {
+      "git_blob": "405242f9038fe4c6e2bc8fdd37598b63f0da06e1",
+      "sha256": "208d74bdef5fad118be3a3ed4ff28adf6b4cd550ffa2021d4b5d6b1f2d9dba37"
+    },
+    ".cargo/config.toml": {
+      "git_blob": "13c456b5dd31f198c6f4597c003d52eed16c98ab",
+      "sha256": "177f97299cbcde01273425156afcef93b69a3fdeee8a0b243bd194967d819608"
+    },
+    "src/bin/pgrx_embed.rs": {
+      "git_blob": "57483f10867b5acdaf338ef0cfb145e6b5ebf11f",
+      "sha256": "18c815a7f3f4c2af663752dac873b162f8acc319a8b108cfd8eb545fc2f25b82"
+    }
+  },
+  "skeleton_in_fixture": {
+    "files": [
+      "Cargo.toml"
+    ],
+    "why": "pg_dagdb 0.1.0 (dag/pgext-0.1.0): this branch's Cargo.toml carries version 0.1.0, so main's own Cargo.toml (version 0.0.0, the skeleton pin above) is kept here; main's crate is built from it. The other skeleton files must still be byte-identical in this crate."
+  }
+}

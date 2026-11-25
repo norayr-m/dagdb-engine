@@ -2,12 +2,11 @@ import Foundation
 import Dispatch
 import Accelerate
 
-/// WaveBank — spec 8, the waveform mouth as a matrix product: a frozen bank
+/// WaveBank — the waveform mouth as a matrix product: a frozen bank
 /// Φ of T×K atoms; generating M waveforms is one matrix product W = Φ·C.
 ///
-/// Mirrors the numpy reference (`dagdb/scripts/mouth_reference.py`, frozen in
-/// `docs/contracts/SPEC8_MOUTH_GATES_FROZEN.md`) bit-for-bit up to the
-/// instrument floors written there: harmonic cos/sin columns, then Gabor
+/// Mirrors the numpy reference (`dagdb/scripts/mouth_reference.py`)
+/// bit-for-bit up to its measured instrument floors: harmonic cos/sin columns, then Gabor
 /// atoms (Gaussian envelope × cos/sin) on a center/frequency grid, built in
 /// Double and cast to Float32, each column then unit-normalized with a
 /// Float32-accumulated norm (numpy's float32 `np.linalg.norm`).
@@ -40,20 +39,46 @@ public struct WaveBank: Equatable, Codable {
                                             harmonics: 32, gaborCenters: 8, gaborFreqs: 6,
                                             gaborSigmaFrac: 0.02)
 
-        /// SPEC8_MOUTH_GATES_FROZEN.md AMENDMENT 2: the repaired bank at the
+        /// The repaired bank at the
         /// reference rates. `.reference`'s H = 32 puts harmonics 26..32 above
         /// Nyquist (fs/2 = 1500 Hz at fs = 3000), where they alias exactly
         /// onto harmonics 24..18 — fourteen of its 160 atoms are dependent.
         /// H = 24 keeps every harmonic strictly below Nyquist: K = 144,
-        /// float64 rank 144, condition number 2.666 (twin lane's numbers,
-        /// G8(b)). This is the object the daemon opens by default going
-        /// forward; `.reference` (K = 160) stays the sealed CONTROL object
-        /// for G1–G5.
+        /// float64 rank 144, condition number 2.666. This is the object the
+        /// daemon opens by default; `.reference` (K = 160) stays the sealed
+        /// CONTROL object the reference tests use.
         public static let referenceNyquistSafe = Spec(samples: 4096, sampleRate: 3000, f0: 60,
                                                         harmonics: 24, gaborCenters: 8, gaborFreqs: 6,
                                                         gaborSigmaFrac: 0.02)
 
         public var atomCount: Int { 2 * harmonics + 2 * gaborCenters * gaborFreqs }
+
+        /// `atomCount` computed with
+        /// overflow-reporting operations; nil when it does not fit Int.
+        /// harmonics, gaborCenters and gaborFreqs come from the wire (BANK
+        /// OPEN), from a WAL record and from a snapshot, and the plain
+        /// `atomCount` trapped inside the validator meant to refuse them.
+        /// The operations are the plain expression's, in its order
+        /// (`(2 * harmonics) + ((2 * gaborCenters) * gaborFreqs)`): a spec
+        /// this answers for never traps in `atomCount` later (WaveBank.init,
+        /// buildAtoms, the BANK OPEN reply), and a spec whose `2 *
+        /// gaborCenters` overflows is refused even when gaborFreqs is 0.
+        public var checkedAtomCount: Int? {
+            let (h2, o1) = harmonics.multipliedReportingOverflow(by: 2)
+            let (c2, o2) = gaborCenters.multipliedReportingOverflow(by: 2)
+            let (cf, o3) = c2.multipliedReportingOverflow(by: gaborFreqs)
+            let (k, o4) = h2.addingReportingOverflow(cf)
+            return (o1 || o2 || o3 || o4) ? nil : k
+        }
+    }
+
+    /// The validator's words for an atom count that overflows
+    /// Int, or nil when it fits. `validationError` returns exactly this line
+    /// for such a spec (after its sign checks), so a caller can tell the
+    /// overflow from the other refusals by comparing the two.
+    public static func atomCountOverflow(_ s: Spec) -> String? {
+        guard s.checkedAtomCount == nil else { return nil }
+        return "atomCount 2*\(s.harmonics) + 2*\(s.gaborCenters)*\(s.gaborFreqs) overflows Int (must be <= 4096)"
     }
 
     /// nil iff the spec admits a bank: samples in [2, 1<<20], sampleRate/f0/
@@ -68,7 +93,8 @@ public struct WaveBank: Equatable, Codable {
         if s.gaborCenters < 0 { return "gaborCenters must be >= 0" }
         if s.gaborFreqs < 0 { return "gaborFreqs must be >= 0" }
         if !(s.gaborSigmaFrac > 0) || !s.gaborSigmaFrac.isFinite { return "gaborSigmaFrac must be positive and finite" }
-        let atomCount = s.atomCount
+        // Overflow-reporting, before the bounds read it.
+        guard let atomCount = s.checkedAtomCount else { return atomCountOverflow(s) }
         if atomCount < 1 { return "atomCount must be >= 1" }
         if atomCount > 4096 { return "atomCount must be <= 4096" }
         if atomCount > s.samples { return "atomCount must be <= samples" }
@@ -93,6 +119,15 @@ public struct WaveBank: Equatable, Codable {
         let nyquist = s.sampleRate / 2.0
         let topFreq = Double(s.harmonics) * s.f0
         if topFreq >= nyquist - 1e-9 {
+            // fs and f0 are wire numbers (BANK OPEN),
+            // and `Int(floor(nyquist / f0 + 1e-9))` trapped when the quotient
+            // was not finite or did not fit Int: a degenerate f0 against a
+            // tiny fs enters this branch through the 1e-9 Hz tolerance (fs =
+            // 2e-9, f0 = 1e-300 gives 1e291). The index is converted exactly,
+            // or this refusal is returned (`nyquistIndexOverflow`'s words).
+            let (q, index) = nyquistIndex(s)
+            guard let qi = index else { return nyquistIndexWords(s, q) }
+            //
             // First k with k·f0 > nyquist: content exactly at Nyquist does
             // not alias (the boundary is real and representable), only
             // content strictly above it folds back — hence
@@ -102,11 +137,11 @@ public struct WaveBank: Equatable, Codable {
             // against a float division that comes in a hair under that
             // integer.
             //
-            // Audit C finding 32: that +1 could name `H + 1`, an atom the
+            // That +1 could name `H + 1`, an atom the
             // bank does not contain (exactly the case H·f0 == fs/2). The
             // named harmonic is clamped into 1…H, so the message always
             // points at a column that exists.
-            let raw = Int(floor(nyquist / s.f0 + 1e-9)) + 1
+            let raw = qi + 1
             let k = Swift.min(Swift.max(raw, 1), s.harmonics)
             let freq = Double(k) * s.f0
             return "harmonic \(k) at \(WaveBank.formatHz(freq)) Hz reaches Nyquist "
@@ -116,15 +151,38 @@ public struct WaveBank: Equatable, Codable {
         return gaborAliasingViolation(s)
     }
 
-    /// Audit C finding 31 (contract ruling: "the bank's Nyquist rule covers
-    /// every atom family"). The bank's other half is
+    /// The harmonic index `floor(nyquist / f0 + 1e-9)`
+    /// the Nyquist rule above reads, and that index as an Int when it is
+    /// finite and below Int.max (so the rule's `+ 1` fits), else nil.
+    private static func nyquistIndex(_ s: Spec) -> (q: Double, index: Int?) {
+        let q = floor(s.sampleRate / 2.0 / s.f0 + 1e-9)    // the rule's own expression, nyquist = fs / 2.0
+        guard let i = Int(exactly: q), i < Int.max else { return (q, nil) }
+        return (q, i)
+    }
+
+    private static func nyquistIndexWords(_ s: Spec, _ q: Double) -> String {
+        "Nyquist harmonic index floor(fs/2 / f0) = \(q) for fs \(s.sampleRate) Hz, f0 \(s.f0) Hz does not fit Int"
+    }
+
+    /// The words `aliasingViolation` returns when the
+    /// Nyquist rule's harmonic index does not fit Int (the rule applies and
+    /// its index is not finite or not below Int.max), or nil. A caller tells
+    /// this refusal from the rule's own by comparing the two, as BANK OPEN
+    /// does with `atomCountOverflow`.
+    public static func nyquistIndexOverflow(_ s: Spec) -> String? {
+        guard Double(s.harmonics) * s.f0 >= s.sampleRate / 2.0 - 1e-9 else { return nil }
+        let (q, index) = nyquistIndex(s)
+        return index == nil ? nyquistIndexWords(s, q) : nil
+    }
+
+    /// The bank's Nyquist rule covers every atom family. The bank's other half is
     /// `2 · gaborCenters · gaborFreqs` Gabor columns on the frequency grid
     /// `geomspace(f0, fs/4, gaborFreqs)` — no Nyquist rule covered them.
     ///
     /// A Gabor atom is not a line: it is a Gaussian envelope of time width
     /// σ_t = gaborSigmaFrac · T / fs seconds, whose spectrum is a Gaussian
-    /// of width σ_f = 1/(2π σ_t) Hz about its centre frequency. The ruling's
-    /// rule — "the highest Gabor centre plus its bandwidth against fs/2" —
+    /// of width σ_f = 1/(2π σ_t) Hz about its centre frequency. The rule —
+    /// "the highest Gabor centre plus its bandwidth against fs/2" —
     /// is therefore `max(grid) + σ_f >= fs/2`, refused with the same
     /// `ALIASED` opt-out the harmonic rule offers.
     ///
@@ -142,7 +200,7 @@ public struct WaveBank: Equatable, Codable {
         }
         let sigmaF = 1.0 / (2.0 * Double.pi * sigmaT)
         // `geomspace(f0, fs/4, gf)`'s top entry is fs/4 exactly for gf > 1,
-        // and f0 for gf == 1 (the one-point grid the builder emits).
+        // and f0 for gf == 1 (geomspace's one-point grid).
         let topCenter = s.gaborFreqs == 1 ? s.f0 : s.sampleRate / 4.0
         let reach = topCenter + sigmaF
         guard reach >= nyquist - 1e-9 else { return nil }
@@ -154,8 +212,7 @@ public struct WaveBank: Equatable, Codable {
 
     /// Formats a value that is, in every call site here, mathematically a
     /// whole number (a rate/frequency derived from integer-ish spec
-    /// literals) without a trailing ".0" — matching the frozen contract's
-    /// example message text.
+    /// literals) without a trailing ".0", as the refusal messages print it.
     private static func formatHz(_ v: Double) -> String {
         if v.isFinite, v == v.rounded(), abs(v) < 1e15 {
             return String(Int64(v))
@@ -192,8 +249,16 @@ public struct WaveBank: Equatable, Codable {
         }
         self.spec = decodedSpec
         self.K = decodedSpec.atomCount
-        self.atoms = WaveBank.buildAtoms(spec: decodedSpec)
+        // A snapshot's LOAD decodes the spec alone (`deferAtoms`), so the 4*T*K atoms are
+        // built only after they are admitted (`TwinState.restore`). Every other decode builds them, as before.
+        self.atoms = WaveBank.deferAtoms ? [] : WaveBank.buildAtoms(spec: decodedSpec)
     }
+
+    /// Bound true around a decode that defers the atoms (see `init(from:)`). A bank decoded
+    /// under it has no atoms (`atomsDeferred`) and never leaves the restore that rebuilds it.
+    @TaskLocal public static var deferAtoms = false
+    /// True for a bank decoded under `deferAtoms` (a built bank always holds T*K >= 2 atoms).
+    public var atomsDeferred: Bool { atoms.isEmpty }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -322,7 +387,7 @@ public struct WaveBank: Equatable, Codable {
     /// `atoms` (column-major Φ, T×K) is, read as row-major, exactly Φ^T
     /// (K×T) — so the sgemm call transposes it in place via a flag rather
     /// than copying into a new layout.
-    /// Audit C finding 34: `generate` had no ceiling on M — `T * M` sized
+    /// `generate` once had no ceiling on M — `T * M` sized
     /// an uninitialized allocation and `Int32(M)` TRAPPED above 2^31, while
     /// `bench` had clamped M at 100 000 all along. That clamp is the
     /// declared ceiling; the public entry point refuses past it by name
@@ -330,8 +395,7 @@ public struct WaveBank: Equatable, Codable {
     public static let maxGenerateColumns = 100_000
 
     /// nil iff `(coefficients, M)` is a bank product this bank can make:
-    /// M in `1...maxGenerateColumns` and exactly `K * M` coefficients
-    /// (findings 34 and 35).
+    /// M in `1...maxGenerateColumns` and exactly `K * M` coefficients.
     public func generateViolation(coefficients: [Float], columns M: Int) -> String? {
         if M < 1 { return "columns \(M) must be >= 1" }
         if M > WaveBank.maxGenerateColumns {
@@ -344,7 +408,7 @@ public struct WaveBank: Equatable, Codable {
         return nil
     }
 
-    /// Finding 35's refusing door: a length or column-count mismatch is a
+    /// The refusing door: a length or column-count mismatch is a
     /// thrown, named error instead of an empty array indistinguishable from
     /// an empty request.
     public func generateChecked(coefficients: [Float], columns M: Int) throws -> [Float] {
@@ -355,7 +419,7 @@ public struct WaveBank: Equatable, Codable {
     }
 
     public func generate(coefficients: [Float], columns M: Int) -> [Float] {
-        // Findings 34/35: the empty return is kept for the callers that
+        // The empty return is kept for the callers that
         // already read it that way, but it is no longer SILENT — the value
         // and the true extent go to stderr as a named ERROR line.
         if let violation = generateViolation(coefficients: coefficients, columns: M) {
@@ -477,14 +541,14 @@ public struct WaveBank: Equatable, Codable {
         return Fit(residual: residual, targetNorm: targetNorm, coefficients: coefficients)
     }
 
-    // MARK: - Declaration (G8 — rank and condition number at bank creation)
+    // MARK: - Declaration (rank and condition number at bank creation)
 
     public struct Declaration: Equatable {
         public let rank: Int
         public let conditionNumber: Double
         public let sigmaMax: Double
         public let sigmaMin: Double
-        /// Appended fields, audit C finding 33: the LAPACK `info` the two
+        /// Appended fields: the LAPACK `info` the two
         /// `dgesdd_` calls returned (0 = success), and a message naming the
         /// failure when this declaration is not a trustworthy one (a LAPACK
         /// failure, or a zero smallest singular value making the condition
@@ -506,7 +570,7 @@ public struct WaveBank: Equatable, Codable {
     /// Singular values of the Double copy of `atoms` via LAPACK `dgesdd_`
     /// (JOBZ "N", singular values only — same workspace-query call style as
     /// `dgelsd_` in `fit`). rank = count of σ_i > σ_max·1e-9 (the twin
-    /// lane's rule, SPEC8_MOUTH_GATES_FROZEN.md AMENDMENT 2); condition
+    /// lane's rule); condition
     /// number = σ_max/σ_min over ALL K singular values — σ_min is the
     /// smallest one, even if it prints as numerically zero, because that is
     /// what the twin lane's own diagnostic prints. Computed fresh on every
@@ -539,7 +603,7 @@ public struct WaveBank: Equatable, Codable {
         let sigmaMin = s.last ?? 0
         let threshold = sigmaMax * 1e-9
         let rank = s.reduce(0) { $0 + ($1 > threshold ? 1 : 0) }
-        // Audit C finding 33: `info` from BOTH dgesdd_ calls was discarded
+        // `info` from BOTH dgesdd_ calls was once discarded
         // (`fit` guards its own), and σ_max/σ_min had no zero guard — a
         // LAPACK failure or a rank-deficient bank returned rank 0 and a
         // NaN/inf condition number dressed as a valid Declaration. The
@@ -562,7 +626,7 @@ public struct WaveBank: Equatable, Codable {
                             lapackInfo: Int(info), refusal: refusal)
     }
 
-    /// Finding 33's refusing door: a declaration whose CONDITION NUMBER is
+    /// The refusing door: a declaration whose CONDITION NUMBER is
     /// a usable statement, or a named refusal. That is stricter than
     /// `declaration()`'s own `refusal`, which fires only on a LAPACK
     /// failure or a literally zero / non-finite smallest singular value:
@@ -574,7 +638,7 @@ public struct WaveBank: Equatable, Codable {
     /// `declaration()` itself keeps its shape and stays silent about mere
     /// rank deficiency, because the sealed 160-atom CONTROL bank is
     /// deliberately rank deficient (146 of 160) and its printed numbers are
-    /// a gate of their own.
+    /// tested on their own.
     public func declarationChecked() throws -> Declaration {
         let d = declaration()
         if let refusal = d.refusal {
@@ -630,7 +694,7 @@ public struct WaveBank: Equatable, Codable {
         return result
     }
 
-    // MARK: - Out-of-bank noise law (G3)
+    // MARK: - Out-of-bank noise law
 
     public struct NoiseLaw: Equatable {
         public let expected: Double
@@ -648,7 +712,7 @@ public struct WaveBank: Equatable, Codable {
 
     /// Seed i (0..<n): copy the stream, advance it by 2*T*i draws, draw T
     /// Gaussians, fit. Independent-ish substreams spaced apart in one PCG
-    /// sequence, per the frozen gate contract (G3).
+    /// sequence.
     public func noiseLaw(seeds n: Int, stream: NamedStream) -> NoiseLaw {
         var residuals: [Double] = []
         residuals.reserveCapacity(n)
@@ -670,7 +734,7 @@ public struct WaveBank: Equatable, Codable {
         (1.0 - Double(K) / Double(T)).squareRoot()
     }
 
-    // MARK: - Throughput (G6, printed, not gated)
+    // MARK: - Throughput (printed, not checked)
 
     public struct Bench: Equatable {
         public let columns: Int

@@ -1,14 +1,12 @@
 /// TwinCommand — DSL grammar for the seven twin-spec primitives, reached
-/// over the daemon socket (interface phase, 2026-09). One case per grammar line in the plan;
+/// over the daemon socket. One case per grammar line;
 /// `isReadOnly` gates which verbs a `READER <id> …` session may run — the
-/// twin registries are daemon-global (§0.13), so every mutating verb is
+/// twin registries are daemon-global, so every mutating verb is
 /// forbidden inside a reader session regardless of which registry it touches.
 ///
-/// Wiring is staged: T8.1 lands the grammar + parser + dispatch skeleton
-/// only. The four verb families (STREAM/HEADER/RECORD, RINGS/CLOCK/GEAR,
-/// XCONV/BUDGET, ALARM) are implemented in T8.2–T8.5; until then every case
-/// falls through to a stub reply. BANK (spec 8, the waveform mouth) lands
-/// in T9.
+/// The verb families (STREAM/HEADER/RECORD, RINGS/CLOCK/GEAR,
+/// XCONV/BUDGET, ALARM, and BANK, the waveform mouth) are implemented in
+/// their own handler extensions (DagDBCommandHandler+Twin*.swift).
 import DagDB
 
 public enum TwinCommand: Equatable {
@@ -65,11 +63,10 @@ public enum TwinCommand: Equatable {
     // MARK: XCONV
 
     case xconvCheck(nA: Int, nB: Int, kA: Int, kB: Int, warmup: Int)
-    // gate K3 (docs/contracts/KERNELS_GATES_FROZEN.md) — the sealed
+    // The sealed
     // cross-convolution residual, distinct from XCONV CHECK (the patrol
-    // check, unchanged above): this is the court's frozen formula, and it
-    // is NOT the contract's finding — XCONV CHECK stays the standing cheap
-    // check.
+    // check, unchanged above): this is the court's fixed formula, and
+    // XCONV CHECK stays the standing cheap check.
     case xconvSealed(id: String, n: Int, warmup: Int?)
 
     // MARK: BUDGET
@@ -103,9 +100,9 @@ public enum TwinCommand: Equatable {
     case viewList
     case viewClose(id: String)
 
-    // MARK: KERNEL (gate K3/K4 — docs/contracts/KERNELS_GATES_FROZEN.md).
+    // MARK: KERNEL.
     // Per-path kernel pairs, stored BY REFERENCE (path + sha256); τA/τB/
-    // σ_source are DECLARED at LOAD (K4: never read from the kernels
+    // σ_source are DECLARED at LOAD (never read from the kernels
     // file), and drive the derived warmup XCONV SEALED uses by default.
 
     case kernelLoad(path: String, sha256: String?, tauA: Double?, tauB: Double?, sigmaSource: Double?, declaredWarmup: Int?)
@@ -124,7 +121,7 @@ public enum TwinCommand: Equatable {
     case bankList
     case bankClose(id: String)
 
-    // MARK: FOLD (gate F4 — docs/contracts/FOLD_API_GATES_FROZEN.md). Pure
+    // MARK: FOLD. Pure
     // computation over the daemon's CURRENT lanes (neighbors, edge weights,
     // nodeValue-as-leak, rank); nothing persisted, no WAL, no registry —
     // every FOLD verb is read-only, RUN included.
@@ -135,7 +132,7 @@ public enum TwinCommand: Equatable {
     case foldTier(level: String, which: Int)
     case foldInfo
 
-    // MARK: HOOK (gate H5 — docs/contracts/HOOK_GATES_FROZEN.md). The
+    // MARK: HOOK. The
     // attention hook — the sealed allocator court as a daemon-global ticked
     // process, bound to an alarm set + budget layout (SEALED default,
     // `layoutId == nil`) + budget B + lag delta + policy, and optionally a
@@ -156,8 +153,8 @@ public enum TwinCommand: Equatable {
 
     /// Read-only iff the verb's second token is one of
     /// STATE/LIST/INFO/CHECK/REPLAY/VERIFY/RECALL/ALLOCATE/FRAME/COURT/SUCCESSOR/CORRUPT/LEDGER
-    /// — plus `FOLD KEPT/SOURCE/TIER/INFO`, and NOT `FOLD RUN` (D5)
-    /// (§0.13 — twin registries are daemon-global; a reader session may only
+    /// — plus `FOLD KEPT/SOURCE/TIER/INFO`, and NOT `FOLD RUN`
+    /// (twin registries are daemon-global; a reader session may only
     /// look, never mutate).
     public var isReadOnly: Bool {
         switch self {
@@ -188,11 +185,10 @@ public enum TwinCommand: Equatable {
              .viewLoad, .viewClose,
              .kernelLoad, .kernelClose,
              .hookOpen, .hookStep, .hookClose,
-             // D5 · `FOLD RUN` assigns daemon-global `lastFold`
+             // `FOLD RUN` assigns daemon-global `lastFold`
              // (DagDBCommandHandler+TwinFold.swift), which every other FOLD
              // verb reads — so a reader session, or a browser through the
-             // web bridge, overwrote what the primary saw (audit B finding
-             // 18). Nothing is minted and nothing is persisted, but the
+             // web bridge, overwrote what the primary saw. Nothing is minted and nothing is persisted, but the
              // handler's state moves, and that is what read-only means here.
              // The four look-only FOLD verbs stay read-only above.
              .foldRun:

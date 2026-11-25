@@ -5,73 +5,768 @@ engineering project, no competitive claims.
 
 ---
 
-## 2026-10-30 — web bridge: `Origin: null` is no longer admitted by default
+## 2026-11-24 — release: upgrading from the September public release (breaking changes)
 
-`dagdb/web/bridge.py`'s default Origin allowlist included the literal
-origin `null`. Browsers send `Origin: null` from `file://` pages and from
-sandboxed iframes, including iframes embedded in remote sites, so while
-the bridge ran such a page could reach its allowlisted read-only verbs:
-read graph state, and through an out-of-range argument abort the daemon.
-`null` is out of the default; a trusted `file://` UI can opt back in with
-`DAGDB_WS_ALLOW_ORIGINS=...,null`. The bridge is not started by default
-and binds localhost only. Three tests: `null` refused while localhost
-pages and origin-less native clients pass and look-alike hosts are
-refused; a control showing the previous default admits `null`; the
-localhost-only bind. The first fails on the previous code; all ten
-bridge tests pass on this one.
+**Fixed:** a file path given to the daemon could resolve outside the configured data root when it passed through a
+symbolic link to a directory. Every file the daemon reads or writes is now checked against the data root after links
+are resolved, and files with more than one hard link are refused.
 
-Corrected in the same change: test and MCP-tool counts across the
-README, CAPABILITIES, CONTRIBUTING and the wiki pages now match this
-tree (1,052 tests; 104 tools); ARCHITECTURE's result-row size reads 24.
-
-**Known limitations.** Not every numeric argument on the daemon socket
-is range-checked: a negative rank in `NODES AT RANK`, for one,
-aborts the daemon instead of returning `out_of_range`. The PostgreSQL
-extension in `dagdb/pg_dagdb/` predates the 24-byte result row and
-misreads rank, truth and type from it, and its `dagdb_exec(text)`
-forwards any command, writes included, to the daemon; PostgreSQL grants
-EXECUTE on it to PUBLIC unless you revoke it. Replies echo arguments
-without escaping carriage returns or the Unicode line separators (NEL,
-U+2028), so a client that splits replies on them can be misled by the
-input it forwards, and some error replies include memory addresses. A snapshot
-whose `.sha256` sidecar is missing or unreadable loads unverified. The
-daemon writes its result rows to the fixed file `/tmp/dagdb_shm_file`
-whatever `--socket` says (`--shm <name>` is printed at startup but not
-used), so two daemons on one machine overwrite each other's results.
+- **`--shm-file <path>` is required.** The September build wrote its result rows to `/tmp/dagdb_shm_file` whatever
+  its flags said (`--shm <name>` was printed, never used). This build writes result rows, and reads bulk input, only
+  in the file `--shm-file` names: created owner-only (0600), refused if it is not a regular file or is a link, and
+  refused if another setting names the same file. Point every client that reads results or writes bulk input at
+  that file. A launch with every file under one root, from `dagdb/`:
+  `MallocLargeCache=0 DAGDB_DATA_ROOT=<root> DAGDB_WAL=<root>/dagdb.wal DAGDB_STARTUP_LOAD=<root>/base.dags .build/release/dagdb-daemon --grid 256 --socket <root>/dagdb.sock --shm-file <root>/dagdb_shm`.
+  `dagdb/scripts/start_sandbox.sh <root> [grid] [maxRank]` starts the daemon in the background the same way (data
+  root, log, socket and result file under `<root>`, `MallocLargeCache=0`, `DAGDB_ENV` unset, grid 256 and max
+  rank 16 by default) but sets no startup snapshot: export `DAGDB_STARTUP_LOAD=<root>/<file>` before calling it,
+  or the loaders are refused (see below). It refuses a daemon binary built before `--shm-file`.
+- **Flags are strict.** The daemon refuses to start (exit status 2) on an unknown argument, on `--shm`, on a flag
+  without its value, on a number that does not parse or is not positive, and on a number out of range (`--grid`
+  1 to 32768, `--max-rank` 1 to max(16, n²) for an n × n grid, `--mem-budget-gb` 2^-30 ≤ G < 2^33). It prints
+  `FATAL: <reason>` and then
+  `usage: dagdb-daemon --shm-file <path> [--grid <n>] [--socket <path>] [--max-rank <n>] [--mem-budget-gb <GiB>]`
+  to standard error and to its log. The September build ignored unknown flags and unparsable numbers.
+- **Client protocol 2.** The 14 verbs that read bulk input (codes 1 to 14, in this order: `SET_RANKS_BULK`,
+  `SET_LUTS_BULK`, `SET_NEIGHBORS_BULK`, `SET_MODES_BULK`, `SET_TTABLE_IDS_BULK`, `SET_THRESH_BULK`, `TTABLE_BULK`,
+  `CONNECT_BACK_BULK`, `SET_TRUTH_BULK`, `XCONV CHECK`, `XCONV SEALED`, `BUDGET OPEN`, `BANK GENERATE`,
+  `BANK FIT`) read a frame that starts `[u32 count][u32 0x314D4800 | code]`, little-endian at bytes 0..7, the
+  payload at byte 8 as before; the count is the number of elements the verb reads. A frame without the mark (what
+  a September client writes) is refused: `ERROR stale_frame: <VERB> reads a client frame; the shm header is (<w0>,
+  <w1>), not (<count>, <mark>): write [u32 count][u32 <mark>] at bytes 0..7, then the payload at 8; nothing
+  written`. A frame marked for another verb is refused naming that verb, and a wrong count as `ERROR bad_value:
+  <VERB> frame count <w0>, the verb reads <count>; nothing written`. STATUS now carries `tiled_refused=<n>` and
+  `client_protocol=2` after every field it printed before (a reader's STATUS carries `client_protocol=2` too).
+  Every client that sends bulk input must write the mark.
+- **Log (WAL) format.** This build creates a log at version 3 and raises it in place to 4, 5 or 6 the first time it
+  writes a record that needs the newer version (TICK, TICK_SYNC, TICK UNTIL_STABLE and EVAL raise a version 2 to 4
+  log to 5). It reads versions 1 to 6 and refuses anything newer by name. A September log is read and appended to; a
+  record it is too old to hold is refused by name, with the steps to a fresh log. The September build reads only
+  versions 1 and 2: on a log this build created or raised it prints `WAL: replay failed: version <n> — continuing
+  without WAL` and runs on without a log. To roll back: stop every writer, `SAVE` to your startup snapshot, stop the
+  daemon, move the log aside, and start the September build on that snapshot with a fresh log (it writes its result
+  rows to `/tmp/dagdb_shm_file` again). These steps were run once, end to end, on a small graph without ternary
+  state (ranks, LUTs, edges, a back edge, an edge weight, a node value, truth values, ticks) holding a stream, rings,
+  a clock with a gear and a record with slices: the September build loaded the snapshot, its `.sha256` checked,
+  showed the same ranks, truth values, LUTs, edges, tick count and twin state, then ticked and saved, and its own
+  save of the state it loaded was byte-identical to this build's snapshot. The other twin kinds (budget layouts,
+  alarms, banks, views, kernels, hooks) were not tested end to end. `SAVE` writes snapshot format 7, which the
+  September build reads, unless the graph holds ternary state (a non-default node mode, ternary table or
+  threshold): that snapshot is format 8, which the September build refuses, at startup with `FATAL: startup
+  snapshot unreadable: '<path>' — unsupported version: 8` (it does not start) and on LOAD with `ERROR io: load:
+  unsupported version: 8`, so such a graph cannot be rolled back this way.
+- **Error replies.** One line per reply, in the form `ERROR <class>: <text>`, with the September class words and
+  seven new ones: `out_of_budget`, `stale_frame`, `control_character`, `gpu`, `invalid_graph`, `resource` and
+  `shutdown`. Inside the text: client and file text is echoed in double quotes with an embedded `"` doubled
+  (`ERROR io: path: "<p>" outside DAGDB_DATA_ROOT`); control, line-break and invisible format characters are
+  escaped (`\\`, `\n`, `\r`, `\t`, `\xNN`, `\uNNNN`); a system error reads as its errno name and number and the
+  quoted path (`ENOENT (errno 2) path="<p>"`), or as `<domain> code <n>`, never as the operating system's message;
+  timing fields (`elapsed=` and the like) and `footprint=` move to the end of the line; a reply past 1 MiB is cut
+  and says `[truncated: <n> bytes over the reply cap of 1048576]`. Many refusals end by saying that nothing
+  changed, in the verb's words: `; nothing written` (the most common), `nothing loaded`, `nothing read`,
+  `nothing changed`. A command line holding a control character other than tab (C0, DEL, C1, U+2028, U+2029) is
+  refused before parsing, without echoing it: `ERROR control_character: the command holds a C0 control (U+000D CR)
+  at byte <n>; a command line may hold no control character but tab (C0, DEL, C1, U+2028, U+2029); refused before
+  parsing, nothing changed`. Clients that matched the old wording need updating.
+- **Memory and time budget.** The commands the README lists (writes, loads, ticks, first-use allocations, the read
+  verbs) are admitted before they run, against a memory budget on the daemon's physical footprint and a
+  per-command work cap of about 60 s, and refused by name instead of running: `ERROR out_of_budget: <VERB> needs
+  <N> bytes (<what>), the budget is <B>; nothing written footprint=<F>`, or `ERROR out_of_budget: <VERB> needs <W>
+  <units>, the per-command work cap is <C>; nothing written`. Time is bounded only for the access patterns
+  measured, on an M5; the README says what each bound covers. The default budget is min(max(8 GiB, 2 × fixed
+  state), 32 GiB), with the fixed state 191 B per node + 2.55 MB; `--mem-budget-gb <G>` overrides it (STATUS then
+  shows `mem_budget_gb=<G>`), and a budget too small for the fixed state refuses the start, naming the value to
+  pass. Launch with `MallocLargeCache=0` in the daemon's environment; without it, memory a big command freed keeps
+  counting against the budget.
+- **Loud, not silent.** A snapshot with no `.sha256` file still loads, and LOAD's reply says `unverified: no
+  manifest`; a snapshot whose `.sha256` exists but cannot be read is refused (`LOAD <path> UNVERIFIED` loads it
+  without the check) and, as the startup snapshot, stops the start. A log the daemon cannot use (a newer version,
+  not a regular file, a cut header, another grid's log) refuses the start instead of running without one. With the
+  log on and no `DAGDB_STARTUP_LOAD`, `LOAD`, `LOAD JSON`, `LOAD CSV` and `BACKUP RESTORE` are refused (`ERROR wal:
+  <VERB> refused: the WAL is on and no startup snapshot is set, …; nothing loaded`); with both set, each of them
+  ends by saving the loaded state to the startup snapshot, and its reply adds `wal_base="<path>"`.
+- **Configured paths.** With a data root (`DAGDB_DATA_ROOT`, or `DAGDB_ENV`), `DAGDB_WAL` and `DAGDB_AUTOSAVE` must
+  now lie inside it, as `DAGDB_STARTUP_LOAD` already had to, or the daemon does not start. `DAGDB_WAL`, like
+  `--shm-file`, must be a regular file and not a link, and no two settings may name the same file, except
+  `DAGDB_STARTUP_LOAD` and `DAGDB_AUTOSAVE`.
+- **pg_dagdb 0.1.0.** The September extension misread the 24-byte result row; this one reads it, and `dagdb_exec`
+  now returns `node_id` and `rank` as bigint and adds `mode` and `trit` columns. After installing it, run
+  `ALTER EXTENSION pg_dagdb UPDATE;` and then `setup_views.sql` again: the update drops every view built on
+  `dagdb_exec`, your own included. The extension finds the daemon through `DAGDB_SOCK` and `DAGDB_SHM_FILE` in the
+  PostgreSQL server's environment (defaults `/tmp/dagdb.sock` and `/tmp/dagdb_shm_file`): set `DAGDB_SHM_FILE` to
+  the daemon's `--shm-file`.
+- **Known limit: the names of the daemon's own files.** The daemon protects its live files (the log, the result file,
+  the socket) from client writes by comparing names as text, while the default macOS volume treats names that differ
+  only in letter case as one file. So if one of those files has a name that differs only in case from a name a save or
+  an export writes (a log called `Nodes.csv` in a folder clients save CSV into; a result file started as `SHM` where a
+  file `shm` already exists), a client's save can replace it, and two configured names that differ only in case are
+  not caught at startup. Give the log, the result file and the socket names that no saved or exported file can share
+  in any letter case, keep them out of the folders clients write into, and start the daemon with the spelling the
+  files have on disk. Nothing leaves the data root in any of these cases.
 
 ---
 
-## 2026-09-12 — post-merge follow-up: the nine edits five branches could not make inside their own scope
+## 2026-10-30 — an ERROR means nothing changed: fixes after an independent verifier's breaks
 
-Branch `main`, after the five repair branches merged (backup, daemon
-bounds, core durability, subsystems α and β). Criterion:
-`docs/contracts/POST_MERGE_FOLLOWUP_2026-09-12.md`. Each item was
-deferred by its own branch's contract because it crossed a file another
-branch owned; each is gated here on merged main.
+- **RECORD SLICE** refuses a count above the replay cap (10 000) before the WAL, in the same words; the record no
+  longer lands in the log. **The class, mechanically:** every WAL append site's post-append refusals are listed by a
+  script and each is shown checked before the append. The script found one more: an
+  opener whose 32-bit id counter wrapped onto a live id is refused before the WAL (`duplicate id: …; nothing written`).
+- **A log too old for a record** names its remedy in every refusal, in the boot line when the sweep cannot be
+  written, and in CLOCK ADVANCE's refusal: SAVE to the startup snapshot path, stop, move the log aside, restart.
+- **SAVE** names the removal of an old manifest it could not read when the rename then fails.
+- **With the WAL off**, the sweep's boot line says it is not logged and repeats until a SAVE to the startup snapshot.
 
-- **F1 · `HexGrid.init(width:height:)` throws.** It used to guard with a
+---
+
+## 2026-10-30 — an ERROR means nothing changed, or the reply names what did
+
+- **Checked before the change:** ALARM CLOSE and BUDGET CLOSE (the dependency refusal), RECORD OPEN (the clock-sync
+  floor), BANK OPEN (the bank is built and its declaration checked before the WAL), CLOCK ADVANCE (an id naming no
+  open gear or hook), the table library's growth (TTABLE DEFINE / PRESET / TTABLE_BULK / COMPOSE, and every loader
+  before its commit), EVAL (the rows' room before the tick).
+- **LOAD** checks every section after the body (the WGTS structure, the TWIN section decoded and restored into a
+  staged twin state, the ENVS trailer and the env guard) before anything is copied into the engine.
+- **Staged, then renamed:** SAVE CSV and EXPORT MORTON write into a stage inside the target and rename after every
+  name passed its check; SAVE TILED writes the world beside it and swaps it in.
+- **The backup chain:** BACKUP INIT saves the new base first and removes the old diffs only after it lands;
+  BACKUP APPEND removes its own diff when the sidecar fails; COMPACT's removals are checked.
+- **Rolled back or named:** SAVE puts the old manifest back when the rename fails and names the bind record it
+  leaves; a failed append puts the log header's version back; TILED BFS/SELECT/GET name a tile-cache move in their
+  errors; TILED TICK names what it flushed before any other error.
+- **Hooks and clocks:** HOOK CLOSE removes a bound hook's id from its clock (logged as `TWIN_HOOK_SWEEP`, `0x31`,
+  log version 6 on demand); a LOAD or startup load steps a bound hook once per tick; CLOCK CLOSE counts live hooks.
+- **Old logs:** a log written before this change replays as its daemon ran it (the closed hook's id on the clock is the
+  era marker), labelled `pre_hook1_stop=`, never `skipped`; one logged sweep after recovery removes what is left
+  (`Twin: swept <n> dangling hook ids left by pre-HOOK1 logs`, `0 removed` included). A build before this change refuses a
+  v6 log by name.
+
+---
+
+## 2026-10-29 — admission of what accumulates: fixes after an independent verifier's breaks
+
+- **TILED OPEN** reads `manifest.json` once, only as a regular file: a FIFO, a device or a directory there is
+  refused with the existing reply ("tile manifest not found"), never waited on. It admits the read (1.1 × 2.52 B per
+  byte) and then the decode (1.1 × (97.4 B per `, : [ {` byte + 2.52 B per byte)) over the bytes it read, decodes
+  that copy once, and admits the router from every field the decoded manifest keeps (per global node, per
+  crossingsIn and crossingsOut entry, per tile, boundary and engineIndexOf entry, and each string by its bytes)
+  before the router is built.
+- **TILED TICK's preflight** counts the ghosts (996 B per crossingsIn entry); **the ternary table library** is
+  admitted at each growth and counted in the ledger.
+- **Rates round up at their last stated digit:** BANK BENCH 0.112 ns/B, the CPU latch 1,080, CLOCK ADVANCE's
+  hook step 185 ns and row 13.78 ns.
+- **README** states that the Metal pool (about 118 MB idle) is outside the budget.
+
+## 2026-10-29 — what accumulates is admitted against the budget
+
+- **Admission at creation, for every resident object** the first budget pass did not cover: STREAM, RECORD and RINGS OPEN,
+  RECORD SLICE, CLOCK and GEAR OPEN, BUDGET OPEN and SEALED, ALARM, VIEW and KERNEL LOAD (by the file's size,
+  before it is read), HOOK OPEN, CONNECT BACK and CONNECT_BACK_BULK, TILED OPEN (its manifest and
+  2·min(K, tiles) tile engines). RINGS WRITE admits its copy-on-write; TILED TICK admits its preflight, which
+  holds every tile at once.
+- **The committed-bytes ledger.** admit() checks max(footprint, fixed state + ledger) + new ≤ budget. The ledger
+  is the sum of every live object's admitted bytes (its measured factor + 10 %), recomputed from the registries
+  at each admission, so objects the footprint under-counts (bound-hook ledgers, routers) are counted, a close
+  gives its bytes back, and objects a LOAD or the startup replay restored are counted too. The existing refusal
+  text is unchanged when the footprint refuses; when the committed bytes do, it adds
+  `(current footprint F; committed C: fixed state X + ledger L)`.
+- **OPEN_READER** also admits the back-edge list and table library the session copies (8·M, 729 B per table).
+- **CLOCK ADVANCE** admits its work, n·87.7 + n·G·70.2 + Σ over bound hooks [s·688 + (n−s)·184 + 13.77·(s·L +
+  s(s−1)/2)] ns against 60 s, and its bound hooks' new ledger rows (1.1 × 104.9 B each).
+- **Count caps:** 1,024 of each twin kind; 4,096 slices on a record (after RECORD SLICE's shm check); 16 tiled
+  routers; readers stay at 64; back edges are bounded by bytes only.
+- **Rates re-measured at the machine's real load** (1-minute load average 3.0–4.4): the tick
+  dispatch unit 2.84 → 3.221 µs (cap 21,126,000 → 18,628,000), the CPU latch 1,213 → 1,081 edges per unit, BANK
+  BENCH 0.100 → 0.111 ns per output byte and 0.74 → 0.823 ps per flop. The boot QoS line and README state the
+  load. `EngineALLOC1aTests.testTickWork`'s three pinned tick assertions follow.
+
+## 2026-10-28 — spectralL2's Jacobi path is admitted by its per-component work
+
+- **The cost fixed.** The first budget pass admitted a DISTANCE spectralL2 side with an induced edge at the worst case,
+  1.11·50·n²(n−1) ns, so a 4,096-node side holding a 4-node chain was refused (3.8e12 ns), though it answers
+  in about 0.5 s. Jacobi rotates only inside the induced subgraph's connected components: the Laplacian is
+  block-diagonal by component, and a rotation inside one leaves every entry outside it exactly zero.
+- **The unit now, per side** (`DaemonMemoryBudget.swift`, `spectralSideNs`): 8.0·n² without an induced edge,
+  as before; with one, the frozen worst case, and for n ≤ 16,384 the smaller of that and
+  G' = 8.0·n² + 50·(1.273·n(n−1)/2 + 18.26·n·S) ns, S = Σ over the induced components of |C|(|C|−1)/2.
+  α = 1.273 ns (the two pair scans of a sweep) and β = 18.26 ns (a rotation's 2n-pair row and column update)
+  are each the slowest measured under `MallocLargeCache=0` plus 10 %; β above n = 16,384 is unmeasured, so
+  the frozen worst case alone applies there. A single component spanning the side gives G' above the frozen
+  unit, so it is admitted exactly as before.
+- **S** comes from a union-find over the members' input slots with a member-index map (O(6n) work, O(n)
+  memory), computed only for a side with an induced edge and n ≤ 16,384.
+- The work refusal names the new unit. The memory admission and the cheap branch are unchanged.
+
+## 2026-10-28 — a restart says how many unsaved ticks it lost
+
+- **TICK_NOTE (`0x52`).** After each tick-family command that ran (TICK,
+  TICK_SYNC, TICK UNTIL_STABLE, EVAL), one advisory 13-byte record carrying
+  the tick total (u64). Replay applies none and changes no state. Written
+  unsynced: it rides the next synced write, SAVE or
+  checkpoint, so a tick command pays no fsync; a power loss can lose the
+  latest notes.
+- **WAL v5, on demand.** The first note rewrites a v2–v4 log's header to 5
+  (fsynced, before the record). A log with no tick command keeps
+  its version; a v1 log takes no note. A build before this change refuses a
+  v5 log by name (`WAL: replay failed: version 5 — continuing without WAL`).
+  Version 6 was reserved for record checksums.
+- **The boot line, after replay** (T is the HIGHEST total
+  among the notes after the loaded snapshot's position, so a later `TICK 0`
+  cannot hide a higher note): `WAL: at least <L> ticks were not recovered
+  (highest logged total <T>, recovered tick count <S>); the recovered truth
+  is the pre-tick state; earlier restarts, a command interrupted before it
+  replied, and a power loss can each hide more`; `WAL: no lost ticks logged
+  (highest logged total <T>, recovered tick count <S>; earlier restarts, an
+  interrupted command, or a power loss can hide ticks)` when L = 0;
+  `WAL: tick history unknown` for a log with no note (or, with the reason,
+  a total above the u32 tick counter), never "0 lost". STATUS is unchanged.
+- **COUNTER_DROP (`0x53`).** A command other than a tick
+  that moves the tick counter, up or down, with no successful durable
+  rebase (a LOAD or LOAD JSON whose rebase failed) writes one advisory,
+  unsynced 13-byte marker; a marker in the window makes the boot say
+  `WAL: tick history unknown (the tick counter moved within this window
+  without a durable rebase: a load whose rebase failed)` instead of a false
+  zero or an overstated count.
+- **Test:** `CoreDurabilityWALTests.testVersionAboveTwoIsRefusedByName` now
+  pins 6 as the first refused version.
+
+## 2026-10-26 — a memory budget, and admission on the one-line sites
+
+- **The budget.** The daemon reads its own physical footprint
+  (`proc_pid_rusage`, `ri_phys_footprint`). Default min(max(8 GiB,
+  2 × fixed state), 32 GiB), the fixed state 191.0 B/node + 2.55 MB
+  (8 GiB at 65,536 and 2.1M nodes, 20.30 GiB at 57M);
+  `--mem-budget-gb <G>` (GiB) overrides it. The daemon logs
+  `Memory budget: <G> GiB (…)`, `scripts/start_sandbox.sh` prints it
+  (and passes `DAGDB_SANDBOX_MEM_BUDGET_GB` as the flag). When the
+  budget is set with `--mem-budget-gb`, STATUS (and a reader's STATUS)
+  ends with ` mem_budget_gb=<G>` after `client_protocol=2`, the prefix
+  unchanged; the default prints no token.
+- **MallocLargeCache=0.** `start_sandbox.sh` launches the daemon with
+  it, so freed large blocks go back to the OS between commands; any
+  other launcher should set it too (README).
+- **Admission.** Each heavy verb, after its argument checks and before
+  its first large allocation or loop, is refused by name:
+  `ERROR out_of_budget: <VERB> needs <N> bytes (<what>), the budget is
+  <B> (current footprint <F>); nothing written`, or `ERROR
+  out_of_budget: <VERB> needs <W> <units>, the per-command work cap is
+  <C>; nothing written`. The sites and caps (60 s at the slowest rate
+  measured on the M5):
+
+  | verb | bytes | work, cap |
+  |---|---|---|
+  | `DISTANCE spectralL2` (primary and READER) | 8·(\|A\|²+\|B\|²+max²) | per side on its path: n² when no member's input slot names another member (Jacobi stops before its first sweep), else 50·n²(n−1) worst-case pair updates; cap 5.95e10 |
+  | `FOLD RUN` (the projection) | 8N | (maxRank − keepRank) × N filter steps, 3.17e10 |
+  | `FOLD RUN` (the library's dense operator) | 26·N², with CHECK 38·N² | ns of work: 9.7·N² + per fold 9.7·m² + 1.01·ka²·kb + 0.0023·kb³ + per tier 9.7·k² + 0.0069·k³, 60 s |
+  | `BANK OPEN`, `BANK INFO` | OPEN 12·T·K, INFO 8·T·K | T·K² SVD units, 1.48e12 |
+  | `BANK BENCH` | 4TM + 4KM | output bytes × reps, 3.43e12; flops reps × 2TKM, 1.00e14 |
+  | `BANK NOISE`; `BANK FIT` (n = 1) | 16·T·K | draws T·n², 3.74e10; fits n·T·K², 1.74e12 |
+  | `HOOK STEP` | 240·taken + 104·L | frames, 1.59e9 |
+  | `TICK`, `TICK UNTIL_STABLE` (count = MAX), `TICK_SYNC` | — | count × (L + 56) + ⌈count × N / 28,700⌉ dispatch-equivalents (L = the non-empty rank levels; 1 for `TICK_SYNC`), plus the back-edge latch: ⌈count·M/2,531⌉ on the CPU (TICK_SYNC; rank-mode TICK under 65,536 back edges), else ⌈M/2,531⌉ + ⌈count·M/381,500⌉ on the GPU; 2.42e7 |
+  | `OPEN_READER` | (77 + 59)·N + 118 KB | at most 64 open sessions: `ERROR out_of_budget: OPEN_READER needs 65 open sessions, the session cap is 64; nothing written` |
+
+- **The recalibration** (rates measured under `MallocLargeCache=0`, the slowest of each plus 10 % for run-to-run noise; caps 60 s at that rate). It supersedes the numbers in the table above:
+  - spectralL2's work is in ns per side: 3.92·n² on the cheap branch, 1.11·50·n²(n−1) with an induced edge.
+  - FOLD RUN: the projection cap is 2.0548e10 steps (2.65 ns measured at 1M nodes); `LadderFold.Object` is admitted at 168·N in both FOLD admissions; the library rates are a = 10.7, b = 1.11, c = 0.00253 ns.
+  - BANK OPEN / INFO: 1.398e12. BANK BENCH: output bytes 6.493e11, flops 8.108e13, and their sum with the coefficient draws, 60 s in ns. NOISE draws 3.324e10; fits (NOISE and FIT) 1.379e12. HOOK STEP frames 1.898e9.
+  - The tick verbs count dispatch-equivalents of 2.84 µs: count × (L + 60) + ⌈count·N/30,669⌉ + the latch (⌈count·M/2,634⌉ on the CPU; ⌈M/2,634⌉ + ⌈count·M/397,202⌉ on the GPU); cap 2.1126e7.
+  - Every exact byte formula (spectral, BANK OPEN / INFO / BENCH / NOISE / FIT, HOOK STEP) is admitted at formula × 1.05 + 64 MiB.
+- **Access patterns.** Every work cap uses the slowest rate measured on sequential, page-crossing strided and random access, plus 10 %: FOLD's Schur b = 1.81 ns (1.645 strided); the CPU latch 1,213 edges per dispatch-equivalent (2.13 ns per random edge); the GPU latch 8,958 (0.288 ns per random edge); and, from a ratio run beside the suite, spectral's cheap branch 8.0 ns per n² (a page-fault-bound path that spreads 3x; memory binds it first), the FOLD projection 3.18 ns per step (cap 1.8867e10), HOOK STEP 40.7 ns per frame (cap 1.474e9), BENCH's output 0.100 ns per byte (cap 6.0e11). **The claim: a command is admitted only if its work, at the slowest rate measured on sequential, strided and random access, fits in 60 s. Memory is a hard bound; time is a bound on the patterns measured.**
+- **Behaviour change.** Commands over a cap that used to run for
+  minutes or hours (or be killed for memory) are now refused at once;
+  a deep graph's `TICK UNTIL_STABLE` without `MAX` is charged its full
+  10,000 ticks. Every other reply is unchanged.
+
+---
+
+## 2026-10-26 — an input verb reads only a frame its client wrote, for it
+
+**Client-protocol break: client_protocol 2, input frames carry
+`[count][0x314D4800 | v]`; an unmarked frame, or one marked for another
+verb, is refused as stale_frame.**
+
+- **The defect.** 14 verbs read their input from the result file, and
+  12 of them never read bytes 0..7. So the daemon could not tell a
+  frame its client wrote from the previous result left in place, and
+  read stale results as input, silently (`SET_TRUTH_BULK` after `FOLD
+  KEPT` wrote truth 0 on every node listed; `SET_LUTS_BULK` after
+  `SET_MODES_BULK` installed LUTs built partly from BFS bytes).
+- **The frame.** Every input verb now reads `[u32 count][u32 0x314D4800
+  | v]`, little-endian, at bytes 0..7, then the payload at offset 8 as
+  before. `v` is the code of the one verb that may read the frame;
+  `count` is the number of elements it reads:
+
+  | v | verb | word 1 | count |
+  |---|---|---|---|
+  | 1 | `SET_RANKS_BULK` | `0x314D4801` | nodeCount |
+  | 2 | `SET_LUTS_BULK` | `0x314D4802` | nodeCount |
+  | 3 | `SET_NEIGHBORS_BULK` | `0x314D4803` | nodeCount (nodes, not slots) |
+  | 4 | `SET_MODES_BULK` | `0x314D4804` | nodeCount |
+  | 5 | `SET_TTABLE_IDS_BULK` | `0x314D4805` | nodeCount |
+  | 6 | `SET_THRESH_BULK` | `0x314D4806` | nodeCount (pairs) |
+  | 7 | `TTABLE_BULK <first> <c>` | `0x314D4807` | c |
+  | 8 | `CONNECT_BACK_BULK` | `0x314D4808` | the rows |
+  | 9 | `SET_TRUTH_BULK` | `0x314D4809` | the rows |
+  | 10 | `XCONV CHECK <nA> <nB> <kA> <kB> <w>` | `0x314D480A` | nA + nB + kA + kB |
+  | 11 | `XCONV SEALED <id> <n> [<w>]` | `0x314D480B` | 2n |
+  | 12 | `BUDGET OPEN <p> <t> <c>` | `0x314D480C` | p·t + c |
+  | 13 | `BANK GENERATE <id> <M>` | `0x314D480D` | K·M |
+  | 14 | `BANK FIT <id>` | `0x314D480E` | T |
+
+- **The refusals**, one line each, nothing written, no WAL record:
+  `ERROR stale_frame: <VERB> reads a client frame; the shm header is
+  (<w0>, <w1>), not (<count>, 0x314D48<VV>): write [u32 count][u32
+  0x314D48<VV>] at bytes 0..7, then the payload at 8; nothing written`;
+  for a frame marked for another verb, `ERROR stale_frame: <VERB> reads
+  a client frame, and this one is marked for <OTHER>; …`; for a wrong
+  count, `ERROR bad_value: <VERB> frame count <w0>, the verb reads
+  <count>; nothing written`. Every daemon write leaves a word 1 below
+  256, so no result can carry a mark; the mark survives commands that
+  write no shm, so the same verb may resend its frame. The two framed
+  verbs' `row size <n>, expected 8` refusal is gone (word 1 is the mark
+  now).
+- **STATUS** (and `READER <id> STATUS`) ends with ` client_protocol=2`;
+  every field before it is unchanged. No unmarked-accept mode.
+- **Who must change:** every client that sends an input verb. In this
+  repo the Python tests' helpers and `tools/ternary_scale.py` write the
+  frame; the MCP tools (`mcp_server.py`, which never writes the shm)
+  document it in each input wrapper and in `dagdb_query` /
+  `dagdb_reader_query`; `docs/wiki/dsl.md` § Input frames,
+  `llm-reference.md` and `mcp.md` carry the header and the codes. A
+  client that must also talk to older daemons can read STATUS once and
+  write the frame when it sees `client_protocol=2`, the old framing
+  otherwise.
+
+---
+
+## 2026-10-11 — pg_dagdb 0.1.0: ALTER EXTENSION UPDATE from 0.0.0
+
+- **The extension's version is 0.1.0** (it was 0.0.0). The package
+  ships `pg_dagdb--0.0.0--0.1.0.sql`, so a database that ran
+  `CREATE EXTENSION pg_dagdb` at 0.0.0 updates with
+  `ALTER EXTENSION pg_dagdb UPDATE;` and then `setup_views.sql`.
+- **The views.** The update drops `dagdb_exec` CASCADE (its result row
+  changes) and creates the 7-column one. The CASCADE takes every view
+  that reads `dagdb_exec`, setup_views.sql's four and any of the
+  operator's own; Postgres hides an extension script's NOTICEs, so the
+  script names them in a WARNING first. Re-run `setup_views.sql` after
+  the update.
+- `CREATE EXTENSION IF NOT EXISTS` still does not update; through the
+  0.0.0 catalog `dagdb_exec` refuses by name, and
+  its remedy now names ALTER EXTENSION first.
+- **Gate** `dagdb/test_pg_dagdb_ext_update_live.py` (16 tests), against
+  a private copy of PostgreSQL 17 only (never Homebrew's): CREATE
+  EXTENSION at 0.0.0; without the update script ALTER EXTENSION
+  fails (no update path) and the stale catalog is refused by name; with
+  it the update succeeds with no crash, setup_views.sql runs, and the
+  live pg_dagdb checks pass on the upgraded database and on a fresh 0.1.0 one,
+  whose catalogs are equal. Four breaks of the update script, each
+  caught. Python on a pure archive, nine files: 73 passed, 0 skipped.
+  Homebrew's Postgres byte-identical before and after.
+- Open: `install_postgres.sh` runs only `CREATE EXTENSION IF NOT
+  EXISTS`; the `ALTER EXTENSION pg_dagdb UPDATE` line it needs is not
+  added (ungated: the installer writes into Homebrew).
+
+---
+
+## 2026-10-10 — the native ternary tick
+
+Every number below was produced by the build's own runs. Every check
+below ran and passed; acceptance then waited for an independent
+verification, which included a paired main-versus-build A/B of the
+binary-only tick time.
+
+**What landed**
+
+- **A node can tick in ternary.** A mode lane (u8 per node) picks the
+  rule: BINARY (the LUT6 rule, bit for bit as before), TTABLE (a 729-entry
+  table over the six input trits) or TTHRESH (a weighted trit sum, in
+  slot order, against two thresholds), with an optional NOSKIP bit (no
+  direct −1 → +1; the step writes 0). A ternary node reads every byte
+  as a trit (0 → −1, 1 → +1, 2 and Loom codes ≥ 3 → 0, absent slot → 0)
+  and stores −1/0/+1 as 0/2/1, so nothing collapses its UNDEFINED.
+  Registers stay binary and latch the byte unchanged. One rank kernel
+  and one sync kernel branch on the kind, identical in `dagdb.metal` and
+  in the inline shader source; the sync kernel gained the
+  `nb ≥ node_count` guard the rank kernel had. `tickWithResonance`
+  refuses a graph with a non-binary node.
+- **Lanes and library.** `nodeMode`, `ttableId` (u16), `thrLo`/`thrHi`
+  (f32) and a dense library of up to 65,536 tables, in the state, the
+  engine, reader sessions (ten lanes → fourteen, plus the library), the
+  tiles (with the edge weights TTHRESH reads), and every format: `.dags`
+  v8 (a 53-byte-per-node body behind a u64 length, a TERN library
+  section; **v7 is still written, byte for byte, for a graph with no
+  ternary content**), WAL v3 (opcodes 0x40–0x4A), backup
+  diff format 3 (written only when a diff has a ternary part), JSON v2
+  and CSV v2 (every lane), Morton export (sixteen files). `.dagb`
+  refuses a graph with a non-binary node. Every writer refuses, by name
+  and leaving nothing behind, a state its loader would refuse.
+- **DSL.** `SET <id> MODE|TTABLE|THRESH|TRIT`, `GET <id> TRIT`,
+  `TTABLE DEFINE|PRESET|GET`, four bulk verbs through the result file,
+  COMPOSE on tables (AND → min, OR → max, NOT → negation). GRAPH INFO
+  appends `ternary_nodes=` and the trit counts; 24-byte result rows carry
+  the mode in byte 18 (the row size is unchanged). Refusals are
+  `ERROR bad_value: ternary: <reason>` and write nothing. Fixes on the
+  same surface: the truth index is marked dirty after TICK, TICK_SYNC
+  and EVAL (a SELECT after a tick used to answer from pre-tick truth);
+  SET TRUTH on a ternary node takes 0..2; JSON v2 refuses an
+  out-of-range truth instead of truncating it. Replies:
+  `docs/wiki/dsl.md` § Ternary.
+- **pg_dagdb, MCP, SQL.** pg_dagdb read rank, truth and type at the
+  offsets of the row layout from before the u64 widening — inside the
+  node-id field — so every row it returned through `dagdb_exec` had
+  them wrong; it now parses the real 24-byte row and takes its socket
+  and result-file paths from DAGDB_SOCK / DAGDB_SHM_FILE, with the
+  `/tmp` defaults as before. A tool for every new verb; the three stale
+  docstrings fixed, and the others this build made stale;
+  `setup_views.sql` renders trits as − ○ +.
+
+**Checks** (persistence, daemon, tiling and Python/MCP/SQL/pg were each
+run against deliberate breaks of the mechanism and seen failing before
+they were believed)
+
+- **Binary unchanged:** the truth-array hashes the main build
+  recorded before any engine change reproduce **18/18 EQUAL** (re-checked
+  at every build step from the third on). Pre-existing tests edited: version pins
+  only — DagDBWeightLaneTests:54 (snapshot 7 → 8), CoreDurabilityWALTests
+  :100 (versionV2 → versionV3) and :188/:193 (3 → 4).
+  CoreDurabilityUndefinedCollapseTests passes untouched.
+- **CPU reference:** 8/8; 32,076 (preset, k, input) cases equal to
+  their formulas.
+- **GPU = CPU:** 360 cells, bit for bit; the forced inline shader
+  equals the bundle library; `tickLegacy` equals `tick`.
+- **Persistence:** 17/17, plus old files recorded by a clean main
+  copy loading 15/15 EQUAL (`.dags` v1–v7 with zlib forms, WAL v2, diff
+  2, JSON v1, CSV v1, Morton eleven files); refusals by name, 63 cells on
+  write and 63 on load.
+- **Daemon:** 4/4 over a real socket; the session's WAL replayed
+  into a fresh engine `records=34 skipped=0`, hash EQUAL; the check that
+  the WAL logs every mutation extended to the new verbs, 29/29 mutating
+  forms.
+- **Tiling:** 144 checkpoint cells, 432 every-tick three-way
+  compares and 108 lane checks, all EQUAL; the daemon's tiled path, 8
+  cells.
+- **Python, MCP, SQL, pg:** PASS, built (not recorded as unbuilt): pg_dagdb
+  packaged offline with the installed cargo-pgrx 0.17.0 against
+  Homebrew's PostgreSQL 17.9, nothing installed; 256 rows through
+  `dagdb_exec` EQUAL. Python 44/44 in one session (29 pre-existing + 15
+  new), Rust units 2/2.
+- **Scale at 100M:** PASS. A 100,000,000-node mixed graph (about a
+  third each binary, TTABLE, TTHRESH; ranks 0..63; seeded) built through
+  the bulk verbs over the socket with the WAL on. (a) SAVE v8 in 3.1 s,
+  5,300,046,956 bytes, body 5,300,000,000 > 4 GiB; LOAD into a fresh
+  daemon in 25.4 s; every lane, the back edges and the library EQUAL by
+  hash before and after 10 ticks. (b) The 5.1 GB WAL of the bulk session
+  replayed into a fresh daemon at startup (16 s, skipped 0), hash EQUAL.
+  (c) Binary-only tick, median of 5 × 100 ticks on an idle GPU: 10M
+  1143.99 ms (≤ 1154.73, +4.0 % on main's baseline recorded before any
+  engine change), 100M
+  20721.88 ms (≤ 21188.20, +2.7 %). Beside those bounds, not a reading
+  of them: main's own binary under the same idle-GPU rule in the same hour
+  ran 10M in 1029.36 ms (6.4 % under that baseline), so against main
+  measured today this build is 11.1 % slower at 10M and 3.6 % at 100M
+  (one pair per size). Mixed and ternary-only: 10M 1219.17 / 1168.29 ms,
+  100M 20943.83 / 20524.84 ms. Peak daemon RSS at 100M: 33.3 GB while
+  building, 30.7 GB in LOAD, 23.7 GB in replay; lowest available memory
+  47.0 GiB.
+- **Suite:** PASS. The full Swift suite with all four sealed
+  fixtures (DAGDB_W2_FIXTURE, DAGDB_CORTEX_V4_FIXTURE, DAGDB_W1_RECORDS,
+  DAGDB_E3_RUNS; each file's SHA-256 matched its pin) and the six
+  Python test files in one session: **1,146 tests (Swift 1,102 + Python
+  44), 0 failures, 0 skips**. New tests 65 (Swift 50, Python 15);
+  pre-existing 1,081, of which Swift 1,052 — the count of the clean
+  main run before any engine change, the same test names class for class, every one passed.
+  Wall time: Swift 35 min 59 s, Python 1 min 2 s.
+
+**After an independent verification**
+
+The verifier, working from the specification alone, reported the
+persistence check and the binary-only tick time failed, plus a replay
+defect. Each finding was reproduced before it was
+fixed; acceptance then waited for a fresh independent re-verification.
+
+- **Binary-only fast path — PASS.** The verifier's
+  paired A/B against main's release daemon put binary-only ticks 12.3 %
+  above main at 10M and 6.4 % at 100M (main-vs-main control 1.001).
+  The build reproduced it before the fix with `tools/ternary_scale.py ab`
+  (6 interleaved pairs per size, alternating first, TICK 1 warm-up then
+  one TICK 100 per daemon, a main-vs-main control pair after each pair):
+  10M median 1.1218 (+12.18 %), 100M 1.0605 (+6.05 %), controls 0.9966
+  and 1.0002 — FAIL. The engine now keeps an exact count of non-binary
+  nodes: every write path (SET MODE, the bulk verb, LOAD, IMPORT
+  MORTON, JSON/CSV, backup restore, WAL replay, reader sessions, tile
+  engines) keeps it, and a caller that takes the raw lane makes the
+  engine recount before every tick. While the count is 0, TICK,
+  TICK_SYNC and EVAL dispatch main's kernels with main's bindings — no
+  mode-lane read, none of the seven ternary buffers — present in
+  `dagdb.metal` and in the inline shader source. After: **10M median
+  0.9955 (−0.45 %), 100M 1.0002 (+0.02 %), both ≤ 1.05; controls 1.0036
+  and 0.9999.** The fast kernels write the same bytes: the binary-unchanged
+  hashes 18/18 EQUAL (now through them), the GPU = CPU check's 360 cells
+  unchanged, and its objects made binary-only give the CPU reference, the forced inline shader, the
+  general kernel and `tickLegacy` bit for bit (360 cells). The whole Swift suite on that tree with the four sealed fixtures: 1,115 tests, 0 failures, 0 skips; the 1,052 pre-existing tests unchanged and all passing.
+- **Fixes.** The persistence check's old-file fixture's 14 binaries are committed
+  (the suite passes on a pure `git archive`); the `.dags` WGTS writer
+  decides lane presence by bit pattern, so a lone −0.0 survives; a
+  non-finite edge weight is refused by name, with node and slot, on
+  LOAD, IMPORT MORTON, LOAD JSON and LOAD CSV.
+- **Ticks are not durable without SAVE.** TICK, TICK_SYNC
+  and EVAL are not in the WAL; the log records inputs, and computed
+  truth becomes durable only at SAVE. **A write validated against
+  post-tick truth may be refused on WAL replay, by name**: SET MODE (or
+  SET_MODES_BULK) giving a ternary kind to a node whose Loom byte a
+  tick had rewritten to 0/1 is legal live, but on replay the byte is
+  still ≥ 3, so the record is skipped, counted in the startup line's
+  `skipped=` and named in `ReplayResult.refusals` (`node <i>: truth
+  byte <b> on a ternary node`). A proposal to accept it on
+  replay was withdrawn: the check it wrote was false on the object and
+  would have loosened the persistence check. Logging the ticks is left for later
+  work. `docs/wiki/dsl.md` § Lifecycle says the same.
+
+**After the re-verification**
+
+A fresh independent re-verifier found every gate holding, and four
+new findings. Each is fixed with a gate that was shown failing first.
+
+- **TTHRESH arithmetic flushes to zero.** The GPU flushes subnormal
+  operands and partial sums in hardware; the CPU reference did not, so
+  s = 0 against hi = −1.4e−45 gave +1 on the CPU and 0 on the GPU.
+  The TTHRESH rule now says so: each weight, lo, hi and every partial sum is
+  replaced by the zero of its sign when it is subnormal. The reference
+  does exactly that; no kernel changed. New gates:
+  - every case over a 16-value boundary set — one, two and three present
+    slots, all 137 legal threshold pairs, 4,636,080 cases — where the
+    restated rule, the reference and the GPU (bundle and inline, rank
+    and sync) must agree;
+  - the GPU = CPU sweep with subnormal weight and threshold pools (360 cells).
+
+  Before the change, the reference disagreed with the GPU on 1,006,236
+  of those cases, while the GPU matched the restated rule on all of
+  them.
+- **Non-finite values, on replay and on write.** WAL replay refuses a
+  non-finite SET WEIGHT or SET VALUE record, by name. These verbs refuse
+  an engine holding a non-finite weight or value, by name, and write
+  nothing: SAVE (plain, COMPRESSED, auto-snapshot), SAVE JSON, SAVE CSV,
+  SAVE TILED, EXPORT MORTON, BACKUP INIT and BACKUP APPEND. The check
+  sits at the verbs. In the library writers it would turn an existing
+  gate red, because that gate crafts its files through them.
+- **Replay applies every live rule that reads only logged state.** SET
+  TRUTH ≥ 3 on a ternary node, and CONNECT BACK into one, are refused
+  on replay as they are live, by name, and the replayed state can be
+  saved. The truth-byte refusal on replay is unchanged.
+- **The binary-unchanged check also runs through the general kernel.** Its 18 cells now also
+  run with the fast path switched off, through the bundle and the inline
+  source: 36 of 36 equal main's hashes. With a binary node made to read
+  UNDEFINED as 1 in the general kernels only, the original check stayed 18 of 18 equal
+  and the new gate failed 18 times.
+- The whole Swift suite with the four sealed fixtures, at the end of
+  this step: 1,123 tests, 0 failures, 0 skips. The 1,052 pre-existing tests
+  are unchanged, and all pass. Acceptance waits for the targeted blind
+  re-verification.
+
+**After a third re-check**
+
+The targeted re-check confirmed those four fixes and found one
+residual gap: a state that LOADs could fail to SAVE. LOAD (`.dags`,
+plain and zlib), LOAD JSON, LOAD CSV, IMPORT MORTON, BACKUP RESTORE and
+DAGDB_STARTUP_LOAD accepted a non-finite node value from a crafted or
+corrupt file, BACKUP RESTORE also a non-finite weight from a diff, and
+BACKUP COMPACT folded such a chain into a base and deleted its diffs.
+
+- **Every load and restore path refuses a non-finite node value or edge
+  weight**, by name (node, slot, value and bits), before any buffer is
+  written. Backup diffs are checked one by one, and the refusal names
+  the diff; this holds for RESTORE, COMPACT and APPEND, which all
+  replay the chain. COMPACT therefore writes and deletes nothing on
+  such a chain, and RESTORE still gives the same refusal afterwards.
+  New gate: 11 paths × 2 lanes × 5 bit patterns = 110 refusal cells,
+  plus 30 COMPACT cells and 30 APPEND cells; before the fix 45 of 110
+  and 5 of 30 were refused. Finite controls (the least subnormal, −0.0,
+  the largest finite float) load bit for bit through every path.
+- The library writers stay permissive (an existing gate
+  crafts its files through them); the daemon's verbs are the guarded
+  surface.
+- `docs/wiki/dsl.md` no longer says an engine can hold a non-finite
+  value only through raw buffer access.
+- The startup log names WAL replay refusals in one line beside the
+  counts.
+- The whole Swift suite with the four sealed fixtures, on a clean
+  export of the build's tree, at the end of this step: 1,126 tests, 0 failures,
+  0 skips. The 1,052 pre-existing tests are unchanged, and all pass.
+  No kernel changed. The build was then ready for a code review.
+
+**After a code review**
+
+The code review returned seven findings. Four are fixed,
+each shown failing before the fix; two were held for a decision,
+because building them as written would turn an existing gate red; one
+is noted.
+
+- **A database that ran main's pg_dagdb upgrades.** `dagdb_exec` now
+  returns `node_id` and `rank` as bigint and adds `mode` and `trit`,
+  and Postgres changes neither a function's return type nor a view's
+  column types in place. The extension's generated script now first
+  drops main's three functions when they exist (`dagdb_exec` with
+  CASCADE, which takes the views that read it), and `setup_views.sql`
+  first drops `dagdb_nodes` (CASCADE), the old `dagdb_run`,
+  `dagdb_rank` and `dagdb_traverse`, and a one-argument `dagdb_glyph`,
+  then re-creates everything it owns. New gate in a private cluster:
+  main's extension and views, built offline from main's source (pinned
+  in a fixture), then this build's. Before the fix both halves failed
+  (`function "dagdb_exec" already exists`, `cannot change return type
+  of existing function`). After it the upgraded database passes the
+  live pg_dagdb checks, the install re-runs cleanly over itself, and a fresh
+  install still passes.
+- **Found, not fixed: upgrading through CREATE EXTENSION.** The
+  extension's version is still 0.0.0, so after `cargo pgrx install`,
+  `CREATE EXTENSION IF NOT EXISTS` keeps main's catalog. This build's
+  library called through that catalog crashes the Postgres server
+  process (signal 11, reproduced in a private cluster). The README now
+  gives the remedy: `DROP EXTENSION pg_dagdb CASCADE; CREATE EXTENSION
+  pg_dagdb;` then `setup_views.sql`. A code fix (a version bump with an
+  update script, or a check inside `dagdb_exec`) was still to be decided.
+- **The lane-length error names the lane.** nodeMode, ttableId, thrLo
+  and thrHi are checked one by one, and the error gives the lane and its
+  actual length. Before, it reported nodeMode's length whichever lane was
+  short. 12 cells: 0 before, 12 after.
+- **Backup diff segments are read by name and bounded before anything
+  is allocated.** A diff cut short inside any segment names that
+  segment (32 cells, 0 named before). A declared library size above
+  65,536 × 729 = 47,775,744 bytes is refused by name before the segment
+  is read. A declared back-edge or library size larger than its
+  compressed bytes can decode to (deflate: at most 1,032 bytes per byte)
+  is refused by name inside the reader. Before, a diff declaring
+  0xFFFFFFFF bytes for either section allocated a 4 GiB buffer and was
+  then refused by length. The largest and most compressible legal
+  library (65,536 tables, 1028:1) still restores bit for bit.
+- **Held for a decision.** One finding would have moved the
+  register-stays-binary rule into the engine's checked `addBackEdge`;
+  an existing gate builds a ternary register through that call to test
+  the state check, so the two cannot both hold. Another would have put
+  the mode rules in one checker whose replay context leaves out the
+  truth-dependent rule; replay applies that rule today, as already
+  specified, and leaving it out would let replay accept the very records
+  the persistence check's WAL cell and the replay test refuse, and produce
+  states SAVE refuses. Neither was built. The double table scan, the
+  finding only noted, is unchanged.
+- Re-checks at the end of this step: every `Ternary*` test (78, 0 failures,
+  the binary-unchanged check on both kernel paths); on a clean export of
+  the build's tree, the Python
+  tests (51 passed, 0 skipped) and the whole Swift suite with the four
+  sealed fixtures: 1,130 tests, 0 failures, 0 skips; the 1,052
+  pre-existing tests are unchanged, and all pass. No kernel changed.
+
+**After the decisions**
+
+The two held findings and the crash the code review found were decided. One correction
+to how the earlier entries described the replay rule:
+replay applies every rule live applies. Each fix below was shown failing
+before it was made; nothing was stopped.
+
+- **One mode-write checker.** The rules for giving a node a mode (the
+  mode byte; then, for a ternary kind, the truth byte, the register and
+  the table id) now live once, in `TernaryReference`. The daemon's SET
+  MODE and SET_MODES_BULK and the WAL replay of those records both call
+  it. Its live or replay context chooses only the words of a refusal,
+  never the verdict. The load and save state check takes its verdict
+  from the same rules. New gate: 26 cases, 46 mode writes, each through
+  the handler, the replay and the checker in both contexts, 230
+  verdicts in all; every one equals the verdict written down from the
+  specification's rules, and the refusal texts are unchanged. Run against the old
+  code, the two old copies already agreed, so no verdict moved. A break
+  that lets the context change the verdict (replay skipping the
+  truth-byte rule) fails 12 of the 230, the persistence check's WAL cell
+  and the replay control.
+- **A register stays binary, in the engine.** `validateBackEdge` and
+  `addBackEdge` refuse a ternary destination by name, before the fan-in
+  rule. The daemon's CONNECT BACK uses the engine's check and gives the
+  reply it always gave. 9 cells: 0 refused before, 9 after. The one test
+  that built a ternary register through the checked call, to test the
+  state check, now builds it through the unchecked path;
+  its assertion is unchanged.
+- **The stale catalog no longer crashes Postgres.** `dagdb_exec` now
+  checks the result row its caller expects (column count and each
+  column's type) against the seven columns it builds, before it talks
+  to the daemon. Through main's five-column catalog it answers
+  `ERROR 42804` naming both rows and the remedy, sends nothing to the
+  daemon, and the session goes on. New gate in a private cluster: main's
+  generated SQL bound to this build's library, plus declarations with a
+  wrong column type, an extra column and no row at all. Before the fix
+  a NODES call through main's catalog killed the server process
+  (signal 11) and the cluster restarted, as did the extra column and
+  the no-row declaration; a TICK through main's catalog returned no
+  error, and the wrong column type was accepted. After it, all six
+  calls give the named error, the server log shows no crash, and the
+  daemon's tick count does not move. The version bump with an update script is still
+  open: it is still to be decided.
+- Re-checks at the end of this step: every `Ternary*` test (81, 0 failures,
+  the binary-unchanged check on both kernel paths); on a clean export of
+  the build's tree, the Python
+  tests (57 passed, 0 skipped) and the whole Swift suite with the four
+  sealed fixtures: 1,133 tests, 0 failures, 0 skips; the 1,052
+  pre-existing tests are unchanged, and all pass. No kernel changed.
+  The version bump stays open.
+
+**Found on main**
+
+- **The result-row file lived in `/tmp`.** The daemon's result rows were
+  written to a hard-coded `/tmp/dagdb_shm_file`, so query results landed
+  in `/tmp` and two daemons on one machine shared one file. Fixed on
+  main before this build began (`--shm-file`, and
+  `scripts/start_sandbox.sh` running one daemon with every file under
+  one root); pg_dagdb now follows it through DAGDB_SHM_FILE.
+- **A WAL record of 2 GiB or more could not be appended.** The appender
+  handed the record to one write(2), which returned −1 for the 100M-node
+  `SET_NEIGHBORS_BULK` record (2,400,000,009 bytes); the verb was then
+  refused (log-first held), so at 100M nodes main could not build a
+  graph through the bulk verbs with a WAL on. Fixed here: writes are
+  chunked at ≤ 1 GiB per write(2), and the snapshot writer's large
+  lanes likewise. The 100M scale run's WAL replay replays exactly that record.
+- **The clients' half-close race lost correct replies.** The daemon
+  reads one command, answers and closes; a client that calls
+  `shutdown(SHUT_WR)` after that close gets ENOTCONN on macOS although
+  the whole reply is readable, and reported the reply as an error —
+  seen once in about 1,500 calls of the live test. Fixed (ENOTCONN on
+  the half-close ignored, nothing else changed) in
+  `mcp_server.query_daemon`, `web/bridge.query_daemon`,
+  `tools/ternary_scale.py` and pg_dagdb's client, each gated by a
+  forced-race test seen failing first. The same pattern remains in
+  five scripts outside this build's surface (`demo_dsp.py`,
+  `diagram_mcp.py`, `liver.py`, `examples/liver/build_liver.py`,
+  `examples/liver/scenario_apap.py`), noted for their owner.
+
+---
+
+## 2026-09-12 — post-merge follow-up: the nine edits five passes could not make inside their own scope
+
+After the five repair passes landed (backup, daemon
+bounds, core durability, subsystems α and β), nine edits that each
+crossed a file another pass owned. Each item was
+deferred by its own pass because of that, and each is gated here.
+
+- **`HexGrid.init(width:height:)` throws.** It used to guard with a
   `precondition`, so a grid outside the 16-bit Morton encoding or above
   the `Int32` node index space aborted the process rather than returning
-  a refusal a caller could catch, and the gate had to be written against
+  a refusal a caller could catch, and the test had to be written against
   the separate `validated(width:height:)`. The initialiser now refuses
   by name what `validated` refused; `validated` is a thin alias over it,
   and there is no non-throwing construction path left that skips the
   check. The two-argument initialiser has 79 call sites across Sources
   and Tests, found by the compiler: 68 now take `try` directly and 11
   sit inside an expression an outer `try` already covers.
-- **F2 · `BFS_DEPTHS` prints the disclosure its result carries.** The
+- **`BFS_DEPTHS` prints the disclosure its result carries.** The
   walk excludes BACK_EDGEs — they are tick-boundary latches, not edges
   the rank order constrains — and the library result has said so since
-  the core branch. The reply now carries ` back_edges=excluded
+  the core-durability pass. The reply now carries ` back_edges=excluded
   back_edge_count=<n>`, on the primary and reader-session forms alike.
-- **F3 · `ALARM SUCCESSOR` validates its counts first.** A class label
+- **`ALARM SUCCESSOR` validates its counts first.** A class label
   declared in `classSpecs` but absent from the loaded fixture's own
   counts contributed zero silently, leaving the totals short by a whole
   class. The handler calls `SuccessorCourt.validate(counts:)` at the
   door and passes the named refusal through as `ERROR out_of_range:
   missing class count <label>`; an accepted table appends
   ` missing_class_counts=<n>`.
-- **F4 · `HEADER CHECK` and `RECORD OPEN` agree.** A declared clock-sync
+- **`HEADER CHECK` and `RECORD OPEN` agree.** A declared clock-sync
   floor coarser than the integrator step, or one reaching the record
   window, made `RECORD OPEN` refuse while `HEADER CHECK` answered
   `admissible=1`. The check now judges the clock-sync half too and names
@@ -79,7 +774,7 @@ branch owned; each is gated here on merged main.
   `floorOutlivesRecord(<floor>,<window>)` — in the same
   `FAIL HEADER CHECK violations=<k>` line as the body violations. A
   single-clock stream declares floor 0 and is unaffected.
-- **F5 · every daemon verb goes through the throwing door beside it.**
+- **Every daemon verb goes through the throwing door beside it.**
   Subsystems α could not make its seven public entry points throw
   (daemon and demo files outside its scope called them), so their
   refusals travelled as a stderr line plus a `refusal` field on an empty
@@ -94,29 +789,30 @@ branch owned; each is gated here on merged main.
   reason). Two consequences worth naming: `KERNEL LOAD` resolves the
   warmup before the id is minted and before the op reaches the WAL, so a
   refused load installs nothing — the refusal itself already came from
-  the library loader as `ERROR io: bad layout: …`, so F5 changed the
-  order there, not the answer, and the handler's own wording for that
+  the library loader as `ERROR io: bad layout: …`, so this switch changed
+  the order there, not the answer, and the handler's own wording for that
   case is defence in depth; and a refused `FOLD RUN` no longer
   overwrites the stored last-fold result with an empty one.
   `declarationChecked` is the one split: its stricter clause — any bank
   whose smallest singular value sits at or below the rank threshold — is
   DISCLOSED as a new ` rank_deficient=<0|1>` field rather than refused,
   because the sealed 160-atom control bank is deliberately rank
-  deficient (146 of 160) and its printed `rank=146` is a frozen gate.
+  deficient (146 of 160) and its printed `rank=146` is pinned by its test.
   What is refused is a declaration whose LAPACK solve failed or whose
   smallest singular value is zero or non-finite — numbers that state
   nothing.
-- **F6 · the daemon verifier's live scenario, gated.** `CONNECT BACK
+- **The daemon verifier's live scenario, gated.** `CONNECT BACK
   FROM 3 TO 5`; `CONNECT FROM 7 TO 5` refused by name; slot `5·6+0 := 7`
   installed through `SET_NEIGHBORS_BULK`, whose reply says
   `validation=skipped skipped=back_edge_register_fanin
-  recheck=VALIDATE`. On the daemon branch alone `VALIDATE` had no
-  register invariant — that clause is the core branch's — so the reply
+  recheck=VALIDATE`. In the daemon-bounds pass alone `VALIDATE` had no
+  register invariant — that clause came with the core-durability pass —
+  so the reply
   pointed the caller at a re-check that could not fire. On merged main
   it fires: `FAIL VALIDATE register invariant: node 5 is a BACK_EDGE
   destination (register) but has a combinational input at slot 0 (source
   node 7)`. Now a test, and it fails if the invariant is removed.
-- **F7 · the daemon verifier's own follow-ups.** (a) The vector-writer
+- **The daemon verifier's own follow-ups.** (a) The vector-writer
   test's four checks shared one shm header and read it as `0` after each
   writer, so removing ONE guard failed all four; the header is poisoned
   with a sentinel between writers instead, and removing `writeU64Vector`'s
@@ -134,11 +830,11 @@ branch owned; each is gated here on merged main.
   keeps serving after a refused over-long command. (c) `mcp_server.py`'s
   length check gained a pytest file of its own (six cases, including a
   multibyte one); removing the check fails four of them.
-- **F8 · audit C findings 24–25 confirmed closed by β's tests.** Finding
-  25 (a key whose `class` disagrees with its own prefix) is closed by
-  `test49FixtureLoadRefusesClassPrefixMismatch`, and the duplicate-index
-  consequence by `test49HookRefusesDuplicateRecordIndex`. Finding 24's
-  own refusal at the loader — two distinct JSON keys reconstructing to
+- **Two fixture-loader findings of the subsystems audit confirmed closed by
+  scope β's tests.** A key whose `class` disagrees with its own prefix is
+  refused by `test49FixtureLoadRefusesClassPrefixMismatch`, and the
+  duplicate-index consequence by `test49HookRefusesDuplicateRecordIndex`.
+  The loader's own refusal — two distinct JSON keys reconstructing to
   one position — was **ungated**, and the comment standing beside it said
   a genuine position collision was something JSON could not express.
   That was wrong: the suffix is parsed with `Int(...)`, so `quiet_1` and
@@ -150,15 +846,15 @@ branch owned; each is gated here on merged main.
 **Also repaired, and not one of the nine:** merged `main` did not
 compile. β's rank-bound fixture test called
 `DagDBEngine.addBackEdgeUnchecked` and `clearBackEdges(toNode:)`
-without `try`; the core branch had made both throwing (C4). Two tokens,
+without `try`; the core-durability pass had made both throwing. Two tokens,
 in β's own test file — a plain merge collision, found by the first build
 of the session and named here because nothing else would have.
 
-**S5 · the closing letter of the subsystems contract, four items.** The
-blind verifier's verdict over both halves left S1 failing on one finding
+**Four items the subsystems passes left open.** The independent
+verifier's verdict over both halves left one check failing on one finding
 and listed three more things to close before anything is pushed; all four
-are closed here, on merged `main`. (i) Finding 33's own edge is reached at
-last: a bank built from a legal spec has one column of its generated
+are closed here, on merged `main`. (i) The bank declaration's non-finite
+edge is reached at last: a bank built from a legal spec has one column of its generated
 matrix overwritten with NaN by the test — the production type gains no
 setter, no initialiser and no debug hook for it — and `declaration()` is
 taken over that matrix. Observed on this platform: Accelerate's `dgesdd_`
@@ -180,18 +876,18 @@ and the tests takes `try`; both doors are gated by driving six
 out-of-range shapes and seven out-of-range ratios through them and reading
 the refusals back. (iii) The six assertions the verifier found comparing
 a value to itself are rewritten against a value the test derives
-independently: F13's `adjacent + skipping == crossings` identity — true
+independently: the tile writer's `adjacent + skipping == crossings` identity — true
 by construction, since the writer computes skipping as the difference —
 is replaced by a walk over the manifest's own crossings lists, classifying
 each crossing by whether its remote node sits on the next tile or further
 up (204/200/4 at four tiles, 351/329/22 at six, 450/416/34 at eight, all
-three matching the report); F42's three lines on a local array are
+three matching the report); the reflex test's three lines on a local array are
 replaced by re-deriving the winner, the tied set and the minimum from the
 residual vector each decision carries, over both frames and two station
-counts, with the tied set proved free of non-finite residuals; F33's
-zero-σ block, which built a `Declaration` literal and asserted its own
+counts, with the tied set proved free of non-finite residuals; the bank
+test's zero-σ block, which built a `Declaration` literal and asserted its own
 fields back, is deleted and the real zero guard is reached by (i)'s NaN
-bank; F23's closing line, which asserted only that a constant is 64
+bank; the cortex fixture test's closing line, which asserted only that a constant is 64
 characters long, now measures the cortex fixture's sha256 with an outside
 hasher and compares it to the pin the loader defaults to (and asserts
 nothing, without skipping, when that fixture is not present); test 53's
@@ -201,10 +897,10 @@ mask; and test 46's field-versus-parameter comparison is replaced by
 walking the hook's per-frame ledger for the frames that run before the
 first judged one and the frames appended beyond the fixture's length,
 with the court's declared numbers matched against that walk at five
-lags. (iv) Finding 56's decode end is gated with records written byte by
+lags. (iv) The hook records' decode end is gated with records written byte by
 byte in the test, never by the encoder: a `hookOpen` whose four-byte
 `delta` slot has its top bit set, and a `hookStep` carrying the widest
-u32 count. Reading the letter plainly, its window `0..<2^32` is exactly
+u32 count. Read plainly, the required window `0..<2^32` is exactly
 what a u32 slot can spell, so there is no byte string for the decode end
 to refuse — what it must not do is hand back something outside that
 window, and what is asserted is that it does not: the slot decodes to the
@@ -216,14 +912,13 @@ stops instead of commanding 2^32 of them.
 
 ---
 
-## 2026-09-12 — audit C scope β: the newer subsystems refuse by name (courts, twin WAL, clocks, streams, fixtures)
+## 2026-09-12 — subsystems bounds, scope β: the newer subsystems refuse by name (courts, twin WAL, clocks, streams, fixtures)
 
-Branch `dag/subsystems-b`. Criterion:
-`docs/contracts/SUBSYSTEMS_BOUNDS_GATES_FROZEN.md` over
-`docs/contracts/AUDIT_C_subsystems.md` findings **45–73** and test items
-**74, 77, 84** — the β half of the two-builder split (α holds the tile
-files, router, npz/cortex/kernel/wave/ladder/derived-views family and
-findings 1–44). One file family, one rule: *refuse or count, never
+The checks cover the second half of an internal audit of the newer
+subsystems — the courts, the twin WAL, snapshot and registries, the
+clocks, rings, streams and fixtures, and three of its test items: the β
+half of a two-part split (α holds the tile files, router,
+npz/cortex/kernel/wave/ladder/derived-views family). One file family, one rule: *refuse or count, never
 silently; name the true extent; a fix ships with a gate that reaches the
 edge.* Every gate below builds its failing input by hand — a
 hand-written WAL payload, a corrupted snapshot field, an out-of-range
@@ -231,7 +926,7 @@ argument — never something the writer under test produced.
 
 ### The courts
 
-- **45 · the literal 200.** `AllocatorCourt.run` looped `1...(200 +
+- **The literal 200.** `AllocatorCourt.run` looped `1...(200 +
   delta)` and judged `srcIdx <= 200`, while `AttentionHook` derived the
   same quantity from `records.count`. On a 250-record fixture the court
   silently dropped the tail (served 115 against the hook's 165); on a
@@ -243,11 +938,11 @@ argument — never something the writer under test produced.
   all five budget points is identical before and after, pinned as
   literals in the new gate — and hook and court now agree bit for bit at
   150, 200 and 250 records.
-- **46 · warm-up and tail frame counts.** `warmupFramesExcluded` and
+- **Warm-up and tail frame counts.** `warmupFramesExcluded` and
   `tailFramesAppended` were `let … = 3` on every `ArmResult` while
   `delta` was a parameter. They now come from `delta`; at the sealed
   delta they still print 3.
-- **47 · a pocket outside 3…6.** `cheapestValue1Tier`,
+- **A pocket outside 3…6.** `cheapestValue1Tier`,
   `deepestAffordableTier`, `SuccessorCourt.allocatorDecide` and
   `greedyDecide` all took an arbitrary `Int` and then indexed
   `layout.cost` or force-unwrapped `SealedCourt.tariff[pocket]!`. All
@@ -256,35 +951,35 @@ argument — never something the writer under test produced.
   pockets come from an `AlarmRecord` and are 3, 5 or 6 by construction —
   use total variants that compute the identical numbers on a valid
   pocket.
-- **48 · per-class tallies.** Optional chaining dropped the increment
+- **Per-class tallies.** Optional chaining dropped the increment
   for any class or ear outside the seeded buckets while the global count
   still counted it. Both are `default:` subscripts now, and the gate
   asserts per-class totals sum to `served + misses` over 200- and
   250-record fixtures, on the court and on the hook.
-- **49 · a duplicate record index.** `Dictionary(uniqueKeysWithValues:)`
-  trapped on one. Per the ruling the refusal lands at the fixture door:
+- **A duplicate record index.** `Dictionary(uniqueKeysWithValues:)`
+  trapped on one. The refusal lands at the fixture door:
   `AlarmFixture.load` now refuses two entries that reconstruct to the
   same (class block, suffix) position, and a key whose `class` field
   disagrees with its own prefix — so a loaded fixture cannot carry a
   duplicate index at all. `AttentionHook.init` refuses one by name for
   hand-built arrays, and the court's index map is keep-first rather than
   trapping.
-- **50 / 77 · claimed-pocket ceilings.** The successor's cartesian
+- **Claimed-pocket ceilings.** The successor's cartesian
   product over occupied pockets had no ceiling; it now refuses above
   `BudgetLayout.maxClaimedPockets`. `BudgetLayout.allocate`'s own
   20-pocket guard was real code with no test — a 21-pocket claim set now
   drives it, and the at-the-ceiling case still lays out.
-- **51 · a class label absent from the counts.** `counts[label] ?? 0`
+- **A class label absent from the counts.** `counts[label] ?? 0`
   contributed zero silently: with drift dropped from the table, expected
   misses went from 25.0 to 0.0 without a word.
   `SuccessorCourt.validate(counts:)` now refuses the first missing label
-  by name, and `frameTotals` — whose signature is pinned by a non-β
-  caller — reports the same fact in a new `missingClassCounts` field
+  by name, and `frameTotals` — whose signature is pinned by a caller
+  outside this pass's files — reports the same fact in a new `missingClassCounts` field
   rather than folding it into zero.
-- **52 · `allocate` never called `claimError`.** The validator written
+- **`allocate` never called `claimError`.** The validator written
   for exactly the two bounds `allocate` indexes on is now called first;
   a claim with pocket 99 or classIndex 7 throws instead of trapping.
-- **53 · the phantom mask count.** `0..<16` over `0..<4` indexing a
+- **The phantom mask count.** `0..<16` over `0..<4` indexing a
   variable-length pocket list. Both come from
   `SealedCourt.pockets.count` now, as does the per-pocket probability;
   on the sealed four pockets the 16 masks and their weights are
@@ -292,46 +987,46 @@ argument — never something the writer under test produced.
 
 ### The twin WAL, snapshot and registries
 
-- **54 · count prefixes.** Every `u32` element count is bounded by the
+- **Count prefixes.** Every `u32` element count is bounded by the
   payload bytes actually remaining before anything is reserved. A
   20-byte `ringsWrite` declaring `0xFFFFFFFF` values used to reserve
   about 17 GB and then return nil; it returns nil first. The bound is a
   named helper the gate drives directly.
-- **55 · a string longer than its length field.** Encode wrote a
+- **A string longer than its length field.** Encode wrote a
   truncated `u16` length beside the full bytes — silent corruption for
   any path at or above 64 KiB. It refuses by name now; a string exactly
   at the field's width still round-trips.
-- **56 · delta and count outside `0..<2^32`.** A negative hook `delta`
+- **Delta and count outside `0..<2^32`.** A negative hook `delta`
   round-tripped as 4 294 967 295 and was then added to `records.count`
   as a frame budget; a hook-step count of −5 came back as 4 294 967 291.
   Both refuse at encode. On the decode side the slot is a `u32`, so
   every decoded value is inside the window by construction — the gate
   proves the round-trip at 0, 3 and `UInt32.max`.
-- **57 / 58 · bank specs.** A `bankOpen` payload with `samples = 2^63`
+- **Bank specs.** A `bankOpen` payload with `samples = 2^63`
   trapped inside a decoder documented to return nil on anything
   malformed; it decodes to nil. Encode validates the spec before any
   non-truncating width conversion, so a negative field refuses instead
   of trapping.
-- **59 · a minted id that collides.** Ids format only the low 32 bits of
+- **A minted id that collides.** Ids format only the low 32 bits of
   a `UInt64` counter, and the minting path had no duplicate check — past
   2^32 opens it silently overwrote a live entry. It now refuses with the
   same `duplicateId` the explicit-id path uses; the live entry survives
   with its own value.
-- **60 / 84 · snapshot `formatVersion`.** Decoded and never compared. A
+- **Snapshot `formatVersion`.** Decoded and never compared. A
   version-2 snapshot would have restored the bank, view, kernel and hook
   registries *empty* and reported success. Any version but 1 is refused
   by name.
-- **61 · the drop-one policy, as declared.** A missing or
+- **The drop-one policy, as declared.** A missing or
   hash-mismatched alarm file drops one entry with one warning — but the
   hook pass then threw `notFound` for any hook bound to it, turning the
   documented drop into a whole-restore refusal. Such a hook is now
   dropped with its own warning. A hook naming an alarm that was never in
   the snapshot is corruption and still refuses.
-- **62 · restore lands where it recorded.** Re-stepping is bounded by
+- **Restore lands where it recorded.** Re-stepping is bounded by
   the hook's own frame count, so a snapshot recording frame 10 000
   restored silently at frame 153. Restore now asserts the rebuilt frame
   equals the recorded one and names both numbers when it does not.
-- **63 · replay caps.** `recordSlice` drew and `clockAdvance` ticked
+- **Replay caps.** `recordSlice` drew and `clockAdvance` ticked
   whatever count the WAL carried — one 20-byte record could command up
   to 2^64 iterations. Both refuse above **10 000**, the same ceiling the
   daemon's own verbs use, stated once and used in both places; 10 000
@@ -339,70 +1034,72 @@ argument — never something the writer under test produced.
 
 ### Clocks, rings, streams, fixtures
 
-- **64 / 65 · ring shapes.** `spanLength` accumulates a *wrapping*
+- **Ring shapes.** `spanLength` accumulates a *wrapping*
   multiply, so a gear whose `gear^(rings−1)` overflows wrapped the
   coarsest span to zero and the next write divided by it.
   `shapeViolation` now bounds the gear with overflow-reporting
   arithmetic, and the memberwise initializer routes through
   `shapeViolation` instead of its own looser preconditions. The sealed
   6 × 6 × 32 shape is unaffected.
-- **66 · `composed(with:)`.** It multiplied before reducing and trapped
+- **`composed(with:)`.** It multiplied before reducing and trapped
   on overflow even when the reduced ratio was small. It cross-reduces
   first and reports overflow instead of trapping; 1/6 ∘ 1/6 is still
   1/36.
-- **67 · a numerator that wraps the accumulator.** `GearRatio.reduced`
+- **A numerator that wraps the accumulator.** `GearRatio.reduced`
   now refuses any numerator that could carry `accumulator + num` past
   `UInt64.max`, and decode refuses the same. Before the fix a ratio of
   `UInt64.max / 2` fired 9 223 372 036 854 775 807 times on its first
   tick and **zero** on its second.
-- **68 · a restored gear above its invariant.** A decoded `PhaseGear`
+- **A restored gear above its invariant.** A decoded `PhaseGear`
   with `accumulator = 100` against denominator 7 fired 14 times on its
   first tick. Decode and the state-bearing initializer both refuse it.
-- **69 · draws that disagree with the slices.** A record could be built
+- **Draws that disagree with the slices.** A record could be built
   or decoded with a generator claiming 99 draws against slices
   accounting for 12. Slice indices, payload lengths, entry-draw chaining
   and the generator's own counter are now checked at the state-bearing
   initializer and at decode.
-- **70 · slice counts.** `recordSlice(count:)` looped `0..<count` on a
+- **Slice counts.** `recordSlice(count:)` looped `0..<count` on a
   public unbounded `Int` — `-1` trapped. Negative and above-10 000
   counts refuse by name; 0 and exactly 10 000 are legal.
-- **71 · the seventh t-zero quantity.** The clock sync floor was
+- **The seventh t-zero quantity.** The clock sync floor was
   declared and never compared: a floor of 10⁹ seconds against a 1 ms
   step and a 1 s record window produced no violation at all. It is now
   **compared**, not documented as advisory — a declared floor must be no
   coarser than the integrator step and must sit inside the record
   window. A single-clock stream declares 0 and is untouched, which is
   every sealed fixture.
-- **72 / 73 · the rank-bound fixture.** `install(into:)` left a reused
+- **The rank-bound fixture.** `install(into:)` left a reused
   engine's back edges, register flags, node types and analogue buffers
   in place on an object documented as a purely combinational DAG, and
   used a `precondition` — a process abort — for the size check. It now
   refuses a non-empty back-edge registry and a wrong grid size by name,
   and clears the buffers it is responsible for.
-- **23 / 24 / 25, the alarm-fixture half.** These are numbered in α's
-  range but live in a β file, and finding 49's ruling names them: the
+- **The alarm-fixture findings.** Three findings of scope α's half
+  concern a file this pass owns, and the duplicate-index fix above covers
+  them: the
   SHA pin now **defaults** to the sealed constant (passing nil is an
   explicit opt-out that says `WARN unpinned fixture` once), duplicate
   reconstructed positions are refused, and a class field disagreeing
   with its key prefix is refused.
 
-### Test items
+### Tests
 
-- **74** · the v7 empty-TWIN byte guard compared `bytesWritten` against
+- The v7 empty-TWIN byte guard compared `bytesWritten` against
   a term-by-term restatement of the sum the writer builds that value
   from — the writer grading its own arithmetic. It now compares against
   the file's own size from `FileManager`, the pattern the WAL tests
   already use; the term sum is kept beside it as the layout
   documentation it always was.
-- **77** · `BudgetLayout.maxClaimedPockets` gets its 21-pocket fixture.
-- **84** · the snapshot `formatVersion` gets its negative fixture.
+- `BudgetLayout.maxClaimedPockets` gets its 21-pocket fixture.
+- The snapshot `formatVersion` gets its negative fixture.
 
 ### Notes
 
-- The sealed W2 alarm fixture (29 MB, by reference via
+- The sealed alarm fixture (29 MB, by reference via
   `DAGDB_W2_FIXTURE`) is not present on this machine, so the sealed
-  gate-1 tests skip as they always have. The S3 receipt is carried
-  instead by a synthetic fixture of the sealed shape (50 quiet, 17/17/16
+  allocator-table tests skip as they always have. The check that the
+  court's sealed numbers are unchanged is carried instead by a synthetic
+  fixture of the sealed shape (50 quiet, 17/17/16
   liar A/B/C, 50 deep, 50 drift): the court reads only class, pocket and
   index, so it reproduces the sealed arm numbers exactly, and the gate
   pins every one of them as a literal captured *before* the repair.
@@ -412,21 +1109,21 @@ argument — never something the writer under test produced.
   snapshot refusals.
 ## 2026-09-12 — subsystems bounds, scope α: the tile files, the npz reader, the kernels, the bank, the fold, the derived views
 
-Branch `dag/subsystems-a`. Answers the α half of
-`docs/contracts/SUBSYSTEMS_BOUNDS_GATES_FROZEN.md` — audit C findings 1-44
-and test items 75, 76, 78-83. The β half (findings 45-73, the courts and
-the twin WAL) is a separate branch and separate files.
+The α half of an internal audit of the newer subsystems: its findings on
+the tile files, the router, the npz reader, the kernels, the bank, the
+fold and the derived views, and their test items. The β half (the courts
+and the twin WAL) is a separate pass over separate files.
 
-The contract's general letter, applied throughout: **refuse or count,
+The rule applied throughout: **refuse or count,
 never silently; name the true extent; a fix ships with a gate that reaches
 the edge.** Every new gate's failing input is built BY HAND — a
 hand-assembled `.npy`, a hand-written `DAHA` header, a corrupted JSON
 field, an out-of-range argument — never something the writer under test
-produced, which is item 75's complaint about the old version test.
+produced, which is what was wrong with the old version test.
 
-### The tile files and the router (findings 1-17)
+### The tile files and the router
 
-- **Three counts, one truth (4, 5, 7, 12).** A tile's node count is
+- **Three counts, one truth.** A tile's node count is
   written in three independent places — the manifest entry, `meta.json`,
   and `body.dags`'s own header field — and nothing compared them. The
   engine was sized from the MANIFEST's (an unbounded `u64` out of a JSON
@@ -441,36 +1138,36 @@ produced, which is item 75's complaint about the old version test.
   `meta.json` lists for that local (more slots trapped, fewer wired the
   graph wrong and left a sentinel); and `engineIndexOf` is validated for
   length and range once at router open.
-- **Formats refuse versions that are not their own (1, 2, 3).** The
+- **Formats refuse versions that are not their own.** The
   rank-halo reader refused nothing, though a `badVersion` case existed for
   it; the manifest's `format`/`version` were stamped and never read back;
   the parity strip's `strip_kind` was read and returned unchecked.
-- **Epochs (9, 10).** A tile epoch that would not fit `body.dags`'s 32-bit
+- **Epochs.** A tile epoch that would not fit `body.dags`'s 32-bit
   tick field is refused by name at flush, before the BEGIN record is
   written — it used to truncate silently at both the tick call and the
   save, and past 2^32 the body-vs-meta check would then have refused every
   subsequent load of the world. **Widening that header field to 64 bits is
-  recorded as a core-format letter for a later window**, not done here. A
+  recorded as a core-format change for later**, not done here. A
   `TILE_FLUSH_BEGIN` at epoch 0 is refused rather than underflowing
   recovery's `epoch - 1`.
-- **A torn `flush.wal` is torn, never "clean" (11).** The file is
+- **A torn `flush.wal` is torn, never "clean".** The file is
   unfsynced appended text and the reader returned `nil` — i.e. clean — for
   anything that was not a well-formed four-field BEGIN. A half-written
   final record, an unknown verb, and a three-field BEGIN predating the
   mode field all read as committed and the tile loaded. The last record is
   now classified clean / pending / torn, and a torn wal refuses at tile
   load and at router open.
-- **The halo's provenance means what the doc says (14).** `source_tile_id`
+- **The halo's provenance means what the doc says.** `source_tile_id`
   is documented as "the most-referenced foreign tile" and the writer
   recorded the FIRST one. It is the mode now, ties to the lowest id.
-- **Counted, not lost (13).** `WriteReport.perBoundary` counts only
+- **Counted, not lost.** `WriteReport.perBoundary` counts only
   crossings whose remote tile is exactly `k + 1`, while `crossings` counts
   every one — a silent undercount for any 3-ring edge that skips a tile.
   The gap is now an appended `crossingsSkippingATile`, and
   `sum(perBoundary.up) + crossingsSkippingATile == crossings` is an
   identity the gate asserts. On side 16 it is 4 crossings at 4 tiles, 22
   at 6, 34 at 8.
-- **The router's own bounds (8, 15, 16, 17).** The resident-source ghost
+- **The router's own bounds.** The resident-source ghost
   fast path bounds the foreign local id against the source tile's node
   count, as `truth(of:)` already did; `maxResidentTiles < 1` is refused at
   init (both load paths evict exactly one before inserting one, so at
@@ -478,12 +1175,12 @@ produced, which is item 75's complaint about the old version test.
   path's residency, high-water mark and refusals, not the query path's
   alone — a router mid-tick reported zero residency; and
   `worldTick(count:)` refuses a negative count instead of trapping.
-- **The fixtures (18, 19).** `TiledFixture.populate` binds every Metal
+- **The fixtures.** `TiledFixture.populate` binds every Metal
   buffer at the GRID's size and the engine/grid pairing was "the caller's
   responsibility"; it throws on a mismatch now. `seeds(for:)` refuses an
   object whose centre it cannot address rather than trapping.
 
-### The npz reader and the sha-pinned fixtures (findings 20-23)
+### The npz reader and the sha-pinned fixtures
 
 - An `.npy` major version other than 1, 2 or 3 was parsed as if it were
   v2 — 0, 4 and 255 included. Both version bytes are read and refused by
@@ -501,9 +1198,9 @@ produced, which is item 75's complaint about the old version test.
   while the types' own docs call the fixtures SHA-pinned. The pin is the
   default now; `nil` is an explicit opt-out that prints
   `WARN unpinned fixture` once. `KernelPair` gained the `sealedSHA256`
-  constant it lacked, equal to the recorded sha of the sealed W1 file.
+  constant it lacked, equal to the recorded sha of the sealed kernels file.
 
-### The kernels and the cross-convolution (findings 26-30)
+### The kernels and the cross-convolution
 
 - A non-finite `fs`/τ or a non-finite or negative σ is refused at
   `KernelPair.init` — `Int(inf)`/`Int(nan)` trapped inside the derived
@@ -511,7 +1208,7 @@ produced, which is item 75's complaint about the old version test.
   non-integral or out-of-`Int` `window_samples` is refused instead of
   being truncated by `NSNumber.intValue`. A resolved warmup that leaves no
   comparison window against `window_samples` is refused at load.
-- **Cross-convolution, per the contract's ruling.** The class stays,
+- **Cross-convolution.** The class stays,
   deprecated as it is, and becomes honest: the compared window stops at
   the RECORD's end (`min(a.count, b.count)`), never `taps − 1` samples
   into the convolution tail; `warmup >= n` is refused by name rather than
@@ -519,9 +1216,9 @@ produced, which is item 75's complaint about the old version test.
   `comparedSamples == 0`. A check that compared nothing used to report
   residual 0 and pass every tolerance.
 
-### The bank (findings 31-35)
+### The bank
 
-- **The Nyquist rule covers every atom family**, per the ruling. The
+- **The Nyquist rule covers every atom family.** The
   refusal is now stated over the Gabor columns too — the highest Gabor
   centre (fs/4 by construction) plus that atom's bandwidth
   `1/(2*pi*sigma_t)` against fs/2 — with the same `ALIASED` opt-out. Both
@@ -545,10 +1242,10 @@ produced, which is item 75's complaint about the old version test.
   named rather than answered with an empty array indistinguishable from an
   empty request.
 
-### The fold (findings 36-40)
+### The fold
 
-- **A node above the schedule is refused before the first fold**, per the
-  ruling. The fold loop is bounded by `schedule.maxRank`, and a node above
+- **A node above the schedule is refused before the first fold.**
+  The fold loop is bounded by `schedule.maxRank`, and a node above
   it is in neither the ring nor the keep set, so it was DROPPED at the
   first fold with its row and column of the operator — silently. Both
   frozen schedules sit exactly AT the bound with zero headroom (control
@@ -566,7 +1263,7 @@ produced, which is item 75's complaint about the old version test.
   gate stats them on disk against `finalBytes` and `Tier.bytes` instead of
   recomputing `k*k*4` — a check that could not fail.
 
-### The derived views (findings 41-44)
+### The derived views
 
 - A station count above `fixture.stations` is refused by name on every
   public entry point. Above it, `tau[c*stride + s]` read silently into the
@@ -575,7 +1272,7 @@ produced, which is item 75's complaint about the old version test.
 - A failed least-squares solve no longer produces a scorable residual: the
   candidate is skipped (kept out of both the minimum and the tied set) and
   COUNTED — `skipped` on the decision, `skippedTotal` on the summary.
-  Pre-audit a LAPACK failure was scored from a fabricated
+  Before this pass a LAPACK failure was scored from a fabricated
   `(alpha, beta) = (0, 0)` and could win the tie-break. Nothing is skipped
   on a well-posed fixture, which is the receipt that no sealed number can
   have moved by this.
@@ -593,8 +1290,8 @@ produced, which is item 75's complaint about the old version test.
 `LadderFold.run`, `LadderFold.Object(engine:grid:)`, `WaveBank.generate`,
 `WaveBank.declaration`, `TiledFixture.seeds`, `KernelPair.warmup` and the
 `DerivedViews` entry points are all NON-throwing public functions called
-from outside this branch's file set. Their refusals therefore travel the
-way the contract's general letter allows in place of a throw: a named
+from outside this pass's file set. Their refusals therefore travel the
+way the pass's rule allows in place of a throw: a named
 `ERROR <subsystem>:` line carrying the value and the true extent, plus an
 appended `refusal` field on the returned value — and, for callers who want
 a throw, a new checked door beside each (`runChecked`, `declarationChecked`,
@@ -603,34 +1300,31 @@ validator (`violation`, `generateViolation`, `warmupViolation`,
 `stationsViolation`) that names the same message without computing
 anything. Every appended field defaults, so no existing caller changes.
 
-### Gates
+### Tests
 
-Two new files, 44 tests: `SubsystemsBoundsTiledTests` (findings 1-19,
-items 75, 76, 78, 81, 82) and `SubsystemsBoundsTwinTests` (findings 20-44,
-items 79, 80, 83). The sealed courts in the tree are unchanged — the
-kernels' residual fixture, the tiling and ticking three-way equalities and
-the mouth's declaration rank all pass on their existing literals, which is
-the receipt the contract's S3 gate asks for.
+Two new files, 44 tests: `SubsystemsBoundsTiledTests` (the tile files, the
+router and the fixtures) and `SubsystemsBoundsTwinTests` (the npz reader,
+the kernels, the bank, the fold and the derived views). The sealed courts
+in the tree are unchanged — the kernels' residual fixture, the tiling and
+ticking three-way equalities and the mouth's declaration rank all pass on
+their existing literals, the evidence that no sealed number moved.
 ## 2026-09-12 — core durability: the log logs everything, and every refusal is by name
 
-Branch `dag/core-durability`. Gate contract:
-`docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`, frozen before any code
-from `docs/contracts/AUDIT_A_engine_core.md` (48 findings, every one
-public in shipped v0.2.0). Findings 1–2, 34–40 and 45 — the two known
-backup defects, the seven backup follow-ups, and the backup-test fixture
-that gates finding 1 — are the backup family and are repaired on their
-own branch. Ten findings, so the 38 that remain are this pass. (The
-frozen contract's preamble says "six backup follow-ups"; 34 through 40
-is seven. Counted, not quoted.)
+The checks were frozen before any code, from an internal audit of the
+engine core (48 findings, every one public in shipped v0.2.0). Ten of
+them — the two known backup defects, the seven backup follow-ups, and
+the backup-test fixture that gates the first defect — are the backup
+family and are repaired on their own pass, so the 38 that remain are
+this pass. (The checks' preamble says "six backup follow-ups"; there
+are seven. Counted, not quoted.)
 
 **The family, in one sentence.** Forty-odd independent-looking findings
 are three habits: a write that is not logged, a read that is not bounded,
-and a failure that is not named. The ruling applied throughout is the
-one the contract froze — **refuse or count, never silently; name the
+and a failure that is not named. The rule applied throughout is the
+one fixed before the work — **refuse or count, never silently; name the
 true extent.**
 
-### C1 · The WAL logs every mutation, and replay says what it skipped
-*(findings 28, 29, 30, 31, 32, 33)*
+### The WAL logs every mutation, and replay says what it skipped
 
 - **WAL version 1 → 2**, with five new opcodes for the writes that
   bypassed the log against the file's own header promise: `CONNECT`
@@ -658,8 +1352,8 @@ true extent.**
   now starts past the checkpoint record's own measured length instead of
   a hardcoded 8, so a short checkpoint can no longer swallow the record
   that follows it.
-- **`truncate` refuses while an `Appender` is open** — the decision, of
-  the two the contract allowed. It renames a fresh inode over the path
+- **`truncate` refuses while an `Appender` is open** — one of the two
+  outcomes the checks allowed. It renames a fresh inode over the path
   and a live appender holds an `O_APPEND` descriptor on the old one;
   reopening that descriptor would mean carrying an appender through a
   static function at every call site and would still race with a
@@ -672,7 +1366,7 @@ true extent.**
   rank 55 slots wrong, both LUT halves 63 wrong, the neighbour table 322
   slots wrong, six records applied out of thirteen writes.
 
-### C2 · A SAVE that returns success can be LOADed *(3, 4, 5, 8, 11)*
+### A SAVE that returns success can be LOADed
 
 - `zlibCompress` sized its destination at `input.count`; zlib expands
   incompressible input, the encode returned 0, and `save` wrote a header
@@ -691,7 +1385,7 @@ true extent.**
   the library API did not, so an embedder that loaded and then ticked
   dispatched the pre-load rank topology.
 
-### C3 · VALIDATE covers what the engine evaluates *(9, 10)*
+### VALIDATE covers what the engine evaluates
 
 Adds the register invariant `DagDBState`'s doc already claimed VALIDATE
 enforced (a BACK_EDGE destination with zero combinational fan-in), the
@@ -703,8 +1397,7 @@ reaches (computed — the stale-bound warning) with a rank at or above
 `effectiveRankCount` (computed by nobody). The coverage is now a printed
 number, not an inference.
 
-### C4 · Public engine APIs do not read or write past their buffers
-*(13, 14, 15, 16, 17, 18, 19)*
+### Public engine APIs do not read or write past their buffers
 
 `clearBackEdges(toNode:)` and `addBackEdgeUnchecked` throw
 `nodeIndexOutOfRange`; `isRegister(node:)` answers `false` for a node the
@@ -719,7 +1412,7 @@ trust the lists on every tick. **`dagdb_tick_rank` now takes
 and treats a neighbour index at or past it exactly as `-1` — the same
 guard `dagdb_reset_rank` and `dagdb_tick_sync` always had.
 
-### C5 · Grid files are versioned and length-checked *(21, 22, 23, 24)*
+### Grid files are versioned and length-checked
 
 `HexGrid.save` writes a `DAGG` magic and a version. `HexGrid.load`
 throws `GridError` instead of returning nil, and checks all six sections
@@ -730,7 +1423,7 @@ encode: `width ≤ 65536`, `height ≤ 32768`, `(width − 1) / 2 ≤ 32768`
 Int32.max`. See the deviation note at the end for why the refusal lives
 in `HexGrid.validated` beside the plain initializer rather than in it.
 
-### C6 · BFS is bounded and says what it excludes *(25, 26, 27)*
+### BFS is bounded and says what it excludes
 
 Both walks check every neighbour index against `nodeCount` — the same
 bound the fanout build ten lines above already applied; the asymmetry
@@ -750,7 +1443,7 @@ would silently change every number this API has returned since it
 shipped, for the protein contact-graph work it was built for. Naming the
 omission costs nothing and changes nothing.
 
-### C7 · Reader sessions see the whole graph *(41, 42, 43)*
+### Reader sessions see the whole graph
 
 `open` copies all ten persisted lanes and installs the back edges
 through the checked installer. It used to copy six, so every session saw
@@ -760,8 +1453,7 @@ first tick. The destination grid's node count must equal the primary's
 or the open is refused by name — it used to be a heap overwrite. The
 session id's time field is 64-bit.
 
-### C8 · Morton export/import carry all ten lanes and the back edges
-*(6, 7)*
+### Morton export/import carry all ten lanes and the back edges
 
 `EXPORT MORTON` keeps the six original files unchanged and adds
 `edge_weights.bin`, `activation.bin`, `node_value.bin`,
@@ -771,7 +1463,7 @@ topology dirty — it used to leave the previous graph's registers
 flagged, so every node at those indices was skipped by every rank tick.
 `OK EXPORT bytes=` reports what was written instead of `nodeCount × 42`.
 
-### C9 · `exportNeighborTable` refuses a seventh edge *(44)*
+### `exportNeighborTable` refuses a seventh edge
 
 By name. `connect` guards the six-slot bound and `validate` reports it,
 but the exporter is the path the engine's convenience init takes and that
@@ -779,7 +1471,7 @@ init never calls `validate`; a seventh entry wrote `nb[idx * 6 + 6]`,
 which is the next node's first slot. `exportState` gets the same guard
 for the same reason on the weight lane.
 
-### C10 · Fixtures that reach the edge *(46, 47, 48; 45 is the backup branch's)*
+### Fixtures that reach the edge
 
 Hand-built v1…v6 snapshot files, byte by byte from the layout in
 `DagDBSnapshot.swift`'s own header, load and reproduce a known graph —
@@ -790,16 +1482,16 @@ rank records of 5 and 8 bytes replay under version 1. A rank at or above
 left out of the dispatch, with `nodes_computed` one short on the wire.
 **Finding, stated rather than implied: the v1…v6 load paths were already
 correct.** These fixtures found no defect; what was missing was the
-fixtures, exactly as finding 46 said.
+fixtures, exactly as the audit said.
 
-### Documented rather than changed — the UNDEFINED collapse *(20)*
+### Documented rather than changed — the UNDEFINED collapse
 
 `eval_lut6` returns one bit, and every tick writes 0 or 1 into
 `truth_state`, while the truth state is tri-valued (`TRUTH_UNDEFINED =
 2`). An UNDEFINED node is therefore collapsed to FALSE by the next tick
 in both rank and sync mode; only `tickWithResonance` ever writes 2, at
-the micro-tick edge, and nothing preserves it afterwards. The frozen
-contract's "not promised" list rules tri-valued evaluation out of this
+the micro-tick edge, and nothing preserves it afterwards. The checks'
+"not promised" list rules tri-valued evaluation out of this
 pass, so this is **the kernel's semantics, now written down** in the
 shader beside `eval_lut6` and here — not a defect left unnamed. Changing
 it means a two-bit LUT result and a truth lattice for the LUT inputs,
@@ -809,8 +1501,8 @@ which is a design question and not a repair.
 
 Every existing reply line is unchanged except by appended fields:
 
-- `FAIL VALIDATE rank bound: …` — two clauses appended (see C3).
-- `OK EXPORT bytes=<b>` — same line, honest value (see C8).
+- `FAIL VALIDATE rank bound: …` — two clauses appended (see the VALIDATE section).
+- `OK EXPORT bytes=<b>` — same line, honest value (see the Morton section).
 - Startup: `WAL: replayed <n> records past epoch <e>` gains
   `(log v<v>, skipped=<n>)`, and a second line carries the histogram
   when anything was skipped.
@@ -818,31 +1510,31 @@ Every existing reply line is unchanged except by appended fields:
   `disclosure`; `ReplayResult` gains `recordsSkipped`, `skipReasons`,
   `fileVersion`.
 
-### Deviations from the contract, with reasons
+### Deviations from the checks, with reasons
 
-1. **C1b, the `LOAD` reply.** The contract asks for `recordsSkipped` on
+1. **The `LOAD` reply.** The checks ask for `recordsSkipped` on
    "the daemon's startup line and `LOAD` reply". There is no WAL replay
    on the `LOAD` path in this tree — the only replay is startup recovery
    — so the count is printed on the startup replay line only. Printing
    it on the snapshot `LOAD` reply would attribute a number to an
    operation that did not produce it.
-2. **C5, where the grid refusal lives.** `HexGrid.init(width:height:)`
+2. **Where the grid refusal lives.** `HexGrid.init(width:height:)`
    could not be made throwing: one of its call sites is in
-   `DagDBBackup.swift`, which this branch must not touch (it is being
-   repaired on another branch). The refusal is therefore
+   `DagDBBackup.swift`, which this pass must not touch (it is being
+   repaired in another pass). The refusal is therefore
    `HexGrid.validated(width:height:) throws` and
    `HexGrid.refusalReason(width:height:) -> String?`, with the plain
-   initializer trapping on the same named reason. When the backup branch
+   initializer trapping on the same named reason. When the backup pass
    lands, the initializer can be made throwing in one edit.
-3. **C6, the BFS daemon reply.** The contract asks that the daemon reply
+3. **The BFS daemon reply.** The checks ask that the daemon reply
    print `back_edges=excluded`. That is a change to
-   `DagDBCommandHandler.swift` beyond what C1 needs, and this branch was
-   instructed to change nothing else in that file — a concurrent builder
-   is working on the daemon's bounds in the same `case .bfsDepths`
-   block. The disclosure is on `DagDBBFS.Result` and gated there; adding
-   the field to the reply is one line whenever the two branches meet.
-4. **One compile-forced edit to the handler beyond C1.** Making
-   `DagDBEngine.clearBackEdges(toNode:)` throwing (C4) forces a
+   `DagDBCommandHandler.swift` beyond what the WAL logging needs, and this pass was
+   instructed to change nothing else in that file — the daemon-bounds
+   pass was changing the same `case .bfsDepths` block at the same
+   time. The disclosure is on `DagDBBFS.Result` and gated there; adding
+   the field to the reply is one line whenever the two passes meet.
+4. **One compile-forced edit to the handler beyond the WAL logging.** Making
+   `DagDBEngine.clearBackEdges(toNode:)` throwing forces a
    `do`/`catch` at its one daemon call site. The guard above it already
    covers the case; the catch is what the signature requires, not a
    second policy.
@@ -851,22 +1543,21 @@ Every existing reply line is unchanged except by appended fields:
    records its refusal in `lastRefusal` and on stderr while building over
    the engine's own count. Both are called from non-throwing predicates
    on the daemon's read path, and making either throw would mean editing
-   the handler beyond C1 (see 3). Both are gated.
-6. **C8 takes "carry", not "refuse".** The contract offers either;
-   its gate is a round-trip on a graph with registers and non-default
+   the handler beyond the WAL logging (see 3). Both are gated.
+6. **Morton export/import takes "carry", not "refuse".** The checks offer
+   either; their test is a round-trip on a graph with registers and non-default
    lanes, which a refusal cannot pass. `is_register.bin` is written for
    external readers but not read back — the register flags are rebuilt
    from `back_edges.bin`, so the two can never disagree.
-7. **C10 found no defect in the v1…v6 load paths.** The fixtures were
+7. **The fixtures found no defect in the v1…v6 load paths.** The fixtures were
    what was missing. Stated here rather than quietly filed as a pass.
 
-### C12 · the closing letter — three gates tightened after the blind verifier
+### Three checks tightened after an independent verifier
 
-The verifier passed the engine work and found three gates weaker than the
-letter. AMENDMENT 2 of the contract records its verdict; this is the pass
-that answers it.
+The verifier passed the engine work and found three checks weaker than the
+specification; this is the pass that answers its verdict.
 
-- **(i) C1's control compares against values the TEST set.** It used to
+- **(i) The WAL control compares against values the TEST set.** It used to
   compare a replayed engine against the live engine that produced the log
   — two objects sharing the buffer layout, the opcode table and the apply
   path, so one bug could cancel another. The expectation is now literals
@@ -879,7 +1570,7 @@ that answers it.
   can fail rather than zero against zero; the reason is in the assertion
   message. Falsified: dropping `COMPOSE`'s WAL append makes the control
   fail on the `lut` lane.
-- **(ii) Finding 20's collapse is tested, not only documented.** An
+- **(ii) The UNDEFINED collapse is tested, not only documented.** An
   UNDEFINED truth (2) becomes FALSE (0) at the next tick in rank mode and
   in sync mode, and an UNDEFINED input reads as bit 0 for a consumer's LUT
   index. The doc stays as written; it is now checked rather than trusted,
@@ -910,8 +1601,8 @@ that answers it.
   header forbids, in the same direction (iii) fixed. It is not fixed here
   because it was found while gating (iii) and the fix is the same surgery
   on a different path: validate, then log, then apply, with the order
-  gated by an appender that refuses. It is the first letter of the next
-  window.
+  gated by an appender that refuses. It is the first item for the next
+  pass.
 
 ### Tests changed rather than added
 
@@ -924,12 +1615,10 @@ suite moved.
 
 ---
 
-## 2026-09-12 — daemon bounds: refuse or count, never silently (audit B, gates D1–D10)
+## 2026-09-12 — daemon bounds: refuse or count, never silently
 
-Branch `dag/daemon-bounds`. Answers
-`docs/contracts/DAEMON_BOUNDS_GATES_FROZEN.md`, frozen before any code
-from `docs/contracts/AUDIT_B_daemon.md` — 27 findings, all in the
-shipped tree. Kind of run: INTERFACE throughout.
+The checks were frozen before any code, from an internal audit of the
+daemon: 27 findings, all in the shipped tree. Every check is an interface check.
 
 - **The family in one sentence.** Values taken from the wire were
   bounded above but not below, or not at all; the shared-memory READ
@@ -937,12 +1626,11 @@ shipped tree. Kind of run: INTERFACE throughout.
   the reader allowlist and mutated daemon-global state; one bulk
   installer skipped an invariant nothing could re-check; the socket
   parsed a truncated prefix as a complete command; four loops ran
-  unbounded on the single-threaded accept loop. The ruling applied
+  unbounded on the single-threaded accept loop. The rule applied
   everywhere: **refuse or count, never silently, and name the true
   extent in the refusal.**
 
-- **D1 · node ids, depths, counts and offsets bounded on BOTH sides (findings 2, 3, 4, 5,
-  21, 22).** `TRAVERSE FROM -1` reached `ranks[node]` and trapped; the
+- **Every wire integer bounded on BOTH sides.** `TRAVERSE FROM -1` reached `ranks[node]` and trapped; the
   five `SET` verbs, `CLEAR … EDGES` and `GET … TRUTH` reached raw
   pointer subscripts with no `>= 0` check at all — with the WAL off
   (the default) a negative id wrote BEFORE the Metal buffer and the
@@ -957,8 +1645,7 @@ shipped tree. Kind of run: INTERFACE throughout.
   format change, not a daemon one), so a tick that would carry it past
   `4294967295` is refused by name instead of trapping on the `+= 1`.
 
-- **D2 · every shared-memory write checks capacity (findings 6, 7, 8, 9,
-  10, 20).** `writeU64Vector`, `writeFloatVector`, `writeDoubleVector`,
+- **Every shared-memory write checks capacity.** `writeU64Vector`, `writeFloatVector`, `writeDoubleVector`,
   `writeResults`, `writeTiledBFSRows` and `writeCorruptionOutcomes` now
   refuse with `ERROR out_of_range: result needs <bytes> bytes, shm
   holds <capacity>` before writing a byte — the read side always did
@@ -971,7 +1658,7 @@ shipped tree. Kind of run: INTERFACE throughout.
   restatement of it — the same number for a default daemon, a different
   one whenever the mapping is sized independently.
 
-- **D3 · wire arithmetic cannot trap (finding 23).** Four byte-count
+- **Wire arithmetic cannot trap.** Four byte-count
   sites (`BUDGET OPEN`'s `nPockets × nTiers × 8`, `XCONV CHECK`'s
   `(nA+nB+kA+kB) × 4`, `XCONV SEALED`'s `2 × n × 8`, `HOOK LEDGER`'s
   `from + count`) computed products and sums of unbounded signed wire
@@ -979,7 +1666,7 @@ shipped tree. Kind of run: INTERFACE throughout.
   sitting right behind each of them never got to fire. All four now use
   overflow-reporting operations and refuse by name.
 
-- **D4 · framing (findings 1, 27).** The socket did ONE 4,095-byte
+- **Framing.** The socket did ONE 4,095-byte
   read, trimmed it, and parsed the result as a complete command: a
   5,000-byte `RINGS WRITE` was answered over the truncated prefix. The
   server now reads until the newline, completes a short read by reading
@@ -987,12 +1674,12 @@ shipped tree. Kind of run: INTERFACE throughout.
   `ERROR too_long: command exceeds 4095 bytes` — never parsing it. Both
   Python clients refuse an over-long line themselves, in the same
   wording. `SocketServer` moved from the daemon executable into
-  `DagDBDaemonKit` so the contract is driven over a real AF_UNIX socket
-  in the suite (the socket smoke the ticking contract also owed); the
+  `DagDBDaemonKit` so the framing is driven over a real AF_UNIX socket
+  in the suite (the socket smoke test the tiled-ticking work also owed); the
   accepted fd carries `SO_NOSIGPIPE`, so a client that hangs up
   mid-reply can no longer kill the daemon.
 
-- **D5 · the reader allowlist is true (findings 18, 19, 24, 25).**
+- **The reader allowlist is true.**
   `FOLD RUN` was marked read-only while it assigned the daemon-global
   last-fold result that `FOLD KEPT/SOURCE/TIER/INFO` read — a reader
   session overwrote what the primary saw, and the existing test could
@@ -1007,7 +1694,7 @@ shipped tree. Kind of run: INTERFACE throughout.
   a cache, not graph state — and `TILED STATUS`'s `loads=`/`evicts=`
   are documented as router-wide counters any session's query moves.
 
-- **D6 · the bulk installers (findings 12, 13, 15).**
+- **The bulk installers.**
   `SET_NEIGHBORS_BULK` read `nodeCount × 6 × 4` bytes without ever
   consulting the mapping's real size, and range-checked no element at
   all, so any `Int32` landed in `neighborsBuf` and was indexed by the
@@ -1016,7 +1703,7 @@ shipped tree. Kind of run: INTERFACE throughout.
   first offending slot. Both bulk installers now disclose the invariant
   they skip (`validation=skipped skipped=… recheck=VALIDATE`).
 
-- **D7 · replies say what they omitted (findings 11, 16, 17).** `EVAL`
+- **Replies say what they omitted.** `EVAL`
   carries `scope=roots` and the same `nodes_computed`/`ranks=`/`bound=`
   disclosure `TICK` prints — it ticks the whole graph and reports only
   rank-0 roots. `NODES` carries `omitted=<n>` for the rank-0/truth-0
@@ -1026,13 +1713,13 @@ shipped tree. Kind of run: INTERFACE throughout.
   count is 0 today — but the reply states it rather than leave it to be
   assumed.
 
-- **D8 · unbounded work refuses (finding 26).** `SIMILAR_DECISIONS`
+- **Unbounded work refuses.** `SIMILAR_DECISIONS`
   runs one backward BFS per candidate over every node, with no bound
   independent of `k`, on the single-threaded accept loop — and it sits
   on the web bridge's read-only allowlist. It now refuses above a
   stated 4,096-candidate pool and points at the `AMONG TRUTH` filter.
 
-- **D9 · the three checks that could not fail, rewritten.** The stream
+- **The three checks that could not fail, rewritten.** The stream
   test computed its "too many" from the same expression the handler
   used for its bound, so it compared the bound to itself; the fold test
   asserted only that a reader's replies began `OK`; the tiled test
@@ -1046,15 +1733,13 @@ shipped tree. Kind of run: INTERFACE throughout.
   per-session fold state (the reader is refused instead); reworking
   `NODES`'s default filter (disclosed, not changed). The register
   invariant in `VALIDATE` and the WAL opcodes for the new refusals
-  belong to the core branch and are not in this one.
+  belong to the core-durability pass and are not in this one.
 
 ---
 
 ## 2026-09-12 — the backup chain kept half the ranks and four whole buffers were never in it
 
-Branch `dag/backup-rank-width`. Answers
-`docs/contracts/BACKUP_RANK_WIDTH_GATES_FROZEN.md` and its
-`AMENDMENT 1`, both frozen before any code.
+The checks were frozen before any code.
 
 - **Defect one, as read from the source.** The engine's rank buffer has
   been 8 bytes per node since the u64 widening (`DagDBEngine.init`
@@ -1105,7 +1790,7 @@ Branch `dag/backup-rank-width`. Answers
   INFO both print `twin=not_covered`, because twin registries are not
   in the backup and saying so is cheaper than finding out. Existing
   fields and their order are unchanged.
-- **Order, identity, integrity (amendment 2).** Five more findings in
+- **Order, identity, integrity.** Five more findings in
   the same file, from an independent audit, fixed in the same pass:
   - `xor`/`xorInPlace` clamped with `min(a.count, b.count)` — the exact
     mechanism that let a 4-byte rank segment ride an 8-byte buffer
@@ -1119,7 +1804,7 @@ Branch `dag/backup-rank-width`. Answers
     is refused by name. APPEND writes the next number and refuses to
     overwrite a file already sitting on it.
   - Diffs carried no integrity check, while the base has had a sha256
-    manifest since G73. Every diff now writes a `.sha256` sidecar and
+    manifest. Every diff now writes a `.sha256` sidecar and
     is verified against it before anything in it is decoded; a missing
     sidecar is refused too (unlike the base's pre-manifest case, every
     format-2 diff is written with one).
@@ -1131,7 +1816,7 @@ Branch `dag/backup-rank-width`. Answers
     no longer takes an engine or a tick count.
   - Bases written by INIT and COMPACT pass `twin: nil` explicitly, to
     match what the wire says.
-- **After the blind verifier (amendment 4).** Every gate passed under an
+- **After the blind verifier.** Every check passed under an
   independent reader that re-narrowed the rank segment in the source and
   watched the fingerprint come back. It left one residual, closed here:
   the back-edge section was the only segment whose length was checked
@@ -1143,25 +1828,25 @@ Branch `dag/backup-rank-width`. Answers
   it: the coverage gate's registers moved into the upper half of the
   buffer, its un-restored twin is now built independently from the same
   values instead of memcpy'd from the buffers under test, and the
-  ordering gate renames to five and six digits as the letter says.
-- **Gates.** B1 (fingerprint) and B5 (coverage, including a rank-mode
-  tick that must match the un-restored engine bit for bit) recorded
-  failing first, then passing. B2 gates the refusal against a
+  ordering test renames to five and six digits as the checks say.
+- **Checks.** The fingerprint and the coverage check (including a
+  rank-mode tick that must match the un-restored engine bit for bit)
+  recorded failing first, then passing. The refusal is checked against a
   version-1 chain written by hand in the test — no old code was kept
-  to produce one. B3 repeats B1 over the DSL and pins every reply line.
-  B6 (short segment), B7 (order, gap, duplicate, occupied slot), B8
-  (corrupt diff, missing sidecar) and B9 (compaction source and tick
-  count) were likewise recorded failing first against the committed
-  code, where every one of them passed silently. B4: full suite green.
+  to produce one. The fingerprint is repeated over the DSL with every
+  reply line pinned. The short-segment, order (gap, duplicate, occupied
+  slot), corrupt-diff and missing-sidecar, and compaction source and
+  tick-count checks were likewise recorded failing first against the
+  committed code, where every one of them passed silently. Full suite
+  green.
 
 ---
 
-## 2026-09-11 — third pass: the strip's register byte becomes two bytes (ticking step two, amendment 8)
+## 2026-09-11 — third pass: the strip's register byte becomes two bytes (ticking step two)
 
-Branch `dag/ticking`. Answers `AMENDMENT 8` of
-`docs/contracts/TICKING_GATES_FROZEN.md`, which accepted the second pass
-and found a second instance of finding A — this time not in the ticker
-but in the FILE the ticker writes.
+This pass answers the review that accepted the second pass
+and found a second instance of the register latch-timing defect — this
+time not in the ticker but in the FILE the ticker writes.
 
 - **The defect in one sentence.** One file, `halo_lower.<parity>.bin`,
   serves two readers. A rank-mode reader at round `k` wants a register's
@@ -1181,14 +1866,14 @@ but in the FILE the ticker writes.
   (the kernel writes it during the pass; the latch never touches it) and
   differ only on registers. The entry is still **16 bytes** — the second
   truth byte came out of v1's six pad bytes — so `halo_bytes` at side 128
-  × 8 tiles stays 41,328. Amendment 8 expected the entry size to change;
+  × 8 tiles stays 41,328. The review expected the entry size to change;
   it did not, and the figure is printed, not predicted. The step-one
   `halo_upper.bin` / `halo_lower.bin` snapshots (written once at tiling
   time, read by the query path, never by the ticker) stay at v1.
 - **Who takes which byte.** Rank-mode ghosts take `truth_pre` from the
   source's strip at `k`; sync-mode ghosts take `truth_post` from the
   parity `k − 1` strip. The resident-buffer fast path and the
-  `ghostPopulationDisabled` path (W7b's switch) agree with those choices
+  `ghostPopulationDisabled` path (the ghost-deletion test's switch) agree with those choices
   byte for byte — the register pre-latch bytes are now recorded in BOTH
   modes, not rank only, so the file a sync reader opens one round later
   is correct whatever mode wrote it.
@@ -1203,7 +1888,7 @@ but in the FILE the ticker writes.
   out-of-reach for a rank-mode reader; it was not. `SAVE TILED` writes
   both bytes equal to the saved truth in both parity strips (at rest
   there is no round, so no latch to be before or after).
-- **Gate (i) — mode sequences** (`TiledModeSequenceTests`). The reference
+- **Check (i) — mode sequences** (`TiledModeSequenceTests`). The reference
   evaluator takes a mode SEQUENCE (`TiledReference.tick(_:mode:)` /
   `run(from:modes:)`). `rank, sync, rank, sync, …` and
   `sync, rank, rank, sync, …` over 12 rounds, three-way (tiled ==
@@ -1215,7 +1900,7 @@ but in the FILE the ticker writes.
   102, 116, 116, 66. Discrimination checked, not assumed: with the strip
   collapsed back to one byte, every sync round that follows a rank round
   moves 6 of 1936 nodes off the reference at side 44.
-- **Gate (ii) — case (ii) recovery then a rank-mode completion across a
+- **Check (ii) — case (ii) recovery then a rank-mode completion across a
   register.** Side 44 × 4 tiles: the register chosen from the object
   (node 25, owned by tile 3, read by node 52 in tile 2 — one reader
   below). Crash point (ii) forged on tile 3 at `k = 3` (body renamed,
@@ -1227,26 +1912,25 @@ but in the FILE the ticker writes.
   reference at `k` bit for bit, reader 52 included, at K = 1 and K = 2.
   Discrimination checked: with the old post-latch-only repair, 11 of 1936
   bytes differ and reader 52 is one of them.
-- **Gate (iii) — finding A's reproduction re-stated on the two-byte
-  format.** The committed strip's `truth_pre` is asserted to be the
+- **Check (iii) — the latch-timing defect's reproduction re-stated on the
+  two-byte format.** The committed strip's `truth_pre` is asserted to be the
   register's pre-latch byte AND `truth_post` its post-latch byte; forcing
   the rank-mode reader's byte to the post-latch value then moves 1 / 1 /
   22 nodes on sides 16 / 44 / 128, its top-rank readers among them.
-- **Suite: 830 tests, 45 fixture-gated skips, 0 failures, 820 s.** W6 at
-  side 128 × 8 tiles, K = 1: rank tick 5.502 ms per tile, sync 3.947;
+- **Suite: 830 tests, 45 fixture-gated skips, 0 failures, 820 s.** Printed
+  at side 128 × 8 tiles, K = 1: rank tick 5.502 ms per tile, sync 3.947;
   flush 46.414 ms rank / 42.477 ms sync per tile; halo_bytes 41,328;
   8 loads, 7 evicts per world tick, both modes.
 - Docs: `docs/tiled-streaming.md` gains §4.2.1 (the parity strips and
-  their two bytes, written for an independent parser) and an AMENDMENT 8
-  note in §7.2; `CAPABILITIES.md`'s ticking block says which reader takes
+  their two bytes, written for an independent parser) and a note on
+  them in §7.2; `CAPABILITIES.md`'s ticking block says which reader takes
   which byte.
 
 ---
 
-## 2026-09-11 — second pass: main merged, the reference put back on the letter, the register latch-timing defect fixed (ticking step two, amendment 7)
+## 2026-09-11 — second pass: the latest engine merged in, the reference put back on the specification, the register latch-timing defect fixed (ticking step two)
 
-Branch `dag/ticking`. Answers `AMENDMENT 7` of
-`docs/contracts/TICKING_GATES_FROZEN.md`, which accepted most of the
+This pass answers the review that accepted most of the
 first pass and rejected two things by name.
 
 - **`main` merged in (`git merge main`, no rebase).** Main carries the
@@ -1260,23 +1944,24 @@ first pass and rejected two things by name.
   `CAPABILITIES.md`, `docs/tiled-streaming.md`, `docs/wiki/dsl.md` and
   `DagDBCommandHandler.swift` auto-merged; the handler's STATUS line
   keeps main's `ranks=`/`rank_max=`/`bound=` fields.
-- **The reference carries the letter, not the engine's old bound
-  (finding B).** `TiledReference` swept from the engine's last
-  dispatched rank level in the first pass, because the engine on this
-  branch dropped side 128's outermost ring (rank 64 = its bucket
+- **The reference follows the specification, not the engine's old
+  bound.** `TiledReference` swept from the engine's last
+  dispatched rank level in the first pass, because the engine of that
+  pass dropped side 128's outermost ring (rank 64 = its bucket
   count). With `main` merged the engine computes that ring, so the
-  reference now sweeps from the HIGHEST RANK PRESENT as amendment 6
-  says, with no bound, and the three-way equality holds at side 128
+  reference now sweeps from the HIGHEST RANK PRESENT as the
+  specification says, with no bound, and the three-way equality holds at side 128
   with rank 64 computed on both sides. Side 128's first rank-mode tick
   moves 11,053 of 16,384 bytes now (10,726 with the ring frozen).
-- **Finding A — the register latch-timing defect, fixed instead of
-  designed around.** The untiled engine evaluates every rank and THEN
+- **The register latch-timing defect, fixed instead of designed
+  around.** The untiled engine evaluates every rank and THEN
   latches, so a node reading a register sees its PRE-latch byte. The
   tiled ticker latches each tile at the end of that tile's own tick and
   flushes, so a reader in a lower tile was taking the POST-latch byte
   out of the strip. The first pass removed every cross-tile slot
-  pointing at a register, which made W1 pass on an object that could
-  not exhibit the defect; amendment 7 rejected that. Now:
+  pointing at a register, which made the rank-mode equality check pass on
+  an object that could not exhibit the defect; the review rejected that.
+  Now:
   - the generator KEEPS those readers, and **chooses** which node at a
     usable rank level becomes the register by how many of the three
     frozen tilings its ALREADY-DRAWN incoming edges cross (ties by
@@ -1298,11 +1983,11 @@ first pass and rejected two things by name.
   - the same byte overrides the resident-buffer fast path. At K >= 2 a
     reader can find its source tile still resident and read the live
     buffer instead of the strip; that buffer is already past the latch.
-    W1 failed at side 16, tiles 4, K = 2, rank mode on exactly this
+    The rank-mode equality check failed at side 16, tiles 4, K = 2, on exactly this
     before the fast path was covered — the strip fix alone was not
     enough.
   - a register is therefore ALREADY "the previous world tick's value"
-    in rank mode, so W7b's ghost-population switch leaves it alone (it
+    in rank mode, so the ghost-deletion test's switch leaves it alone (it
     carries no fresh information across a boundary to delete), and
     `TiledReference.oddInputChangeSet` skips register sources: both
     runs read the same byte for them.
@@ -1311,8 +1996,9 @@ first pass and rejected two things by name.
     rebuild a strip from a body that is already AT the epoch, where the
     register's earlier value is gone. Both feed only sync's reader,
     which wants the post-latch byte they write.
-  - **Gated.** (a) W1/W2 hold three-way with the readers present, and
-    the count is printed beside the gate
+  - **Gated.** (a) The rank-mode and sync-mode equality checks hold
+    three-way with the readers present, and the count is printed beside
+    them
     (`W1W2-REGISTER-CROSSINGS`), asserted per side in
     `testFindingACrossTileRegisterReadersExist`. (b)
     `testFindingAReproduction_*` parses the committed rank-mode strip
@@ -1321,13 +2007,13 @@ first pass and rejected two things by name.
     POST-latch byte and asserts the world tick differs from the
     reference: 1 node at side 16 × 4, 1 at side 44 × 4, 22 at side
     128 × 8. The defect is reproducible on demand.
-- **Kept as built, adopted by amendment 7:** the corrections to letters
-  3 and 4 (the node-local odd-input derivation asserted by equality;
-  `Δ_e ⊇ readers(e)` asserted in sync mode only, with the
+- **Kept as built, adopted by the review:** the corrections to two of
+  the written rules (the node-local odd-input derivation asserted by
+  equality; `Δ_e ⊇ readers(e)` asserted in sync mode only, with the
   top-reader-rank theorem in rank mode), the register placement rule,
-  the rank-mode perturbation hook, the symlinked reference, W7b at two
-  points of the trajectory.
-- **W6 (printed, not gated)**, side 128 × 8 tiles, K = 1, this run:
+  the rank-mode perturbation hook, the symlinked reference, the
+  ghost-deletion test at two points of the trajectory.
+- **Printed, not checked:** side 128 × 8 tiles, K = 1, this run:
   rank `tick_ms_per_tile(max)=5.688 flush_ms_per_tile(max)=42.394
   halo_bytes=41328 loads=8 evicts=7`; sync
   `tick_ms_per_tile(max)=4.095 flush_ms_per_tile(max)=43.868
@@ -1348,19 +2034,17 @@ first pass and rejected two things by name.
 
 ---
 
-## 2026-09-11 — the repaired objects, the reference evaluator, W7 (ticking step two, amendments 4–6)
+## 2026-09-11 — the repaired objects, the reference evaluator, the discrimination tests (ticking step two)
 
-Branch `dag/ticking`. Repairs the two findings of the blind verifier's
-2026-09-10 verdict (`docs/contracts/VERIFIER_TICKING_2026-09-10.md`)
-and builds amendments 4, 5 and 6 of
-`docs/contracts/TICKING_GATES_FROZEN.md`. Kind of run: CONTROL /
-RE-DERIVATION throughout — this is the session that makes the
-control able to fail.
+This pass repairs the two findings of an independent verifier's
+2026-09-10 verdict and builds the follow-up items it required.
+Every check compares against an independent computation — this is the
+session that makes that comparison able to fail.
 
-- **The repaired objects (amendment 6, letter 1).** `TiledFixture`
+- **The repaired objects.** `TiledFixture`
   used to leave every LUT6 at its constructed zero — the constant-0
   function — so after one tick the world was all zeros and static, and
-  every equality gate in the contract was true of a world where
+  every equality check was true of a world where
   nothing depended on anything. The generator now, AFTER its frozen
   rank/truth/edge draws (those three streams are bit-identical to
   before): draws one `next64() & 1` per node from a new
@@ -1374,13 +2058,14 @@ control able to fail.
   usable when `r >= 2` and `r` is a boundary of NONE of the frozen
   2/4/8 tilings — a pair straddling a boundary would be a cross-tile
   back edge, which `SAVE TILED` refuses, and rank 0 holds the single
-  centre node that the tiling contract's own query seeds start from.
+  centre node that the tiling checks' own query seeds start from.
   Registers per side: 1 (side 16), 14 (44), 56 (128). Every other slot
   pointing at an `R` is cleared, so a register's only reader is its
   own `S`, in its own tile: the tiled ticker latches at the end of
   each tile's tick and then flushes, so a cross-tile reader of a
   register would see the POST-latch value where the untiled engine
-  shows it the PRE-latch one, and W1 would fail on a correct engine.
+  shows it the PRE-latch one, and the rank-mode equality check would
+  fail on a correct engine.
 - **Tile bodies carry their registers.** `TiledGraphFiles.write` now
   re-registers each tile's intra-tile back edges on the tile-local
   engine before saving (the v7 snapshot section already had the
@@ -1389,16 +2074,17 @@ control able to fail.
   Without all three a ticked tile silently loses its registers one
   flush in. Gated by `testTileBodiesCarryRegisters` (sides 16/44 ×
   tilings 2/4/8, query path and ticker path).
-- **The reference evaluator (amendment 6, letter 2).**
+- **The reference evaluator.**
   `Tests/DagDBTests/TiledReference.swift` — a test-side evaluator of
   the same graph, built from the raw buffers (ranks, slots, LUTs,
-  register flags, back edges) and written from the contract's
+  register flags, back edges) and written from the specification's
   paragraph plus the kernel's bit rule, which never calls
-  `DagDBEngine`. W1 and W2 are now three-way: **tiled == untiled ==
+  `DagDBEngine`. The rank-mode and sync-mode equality checks are now
+  three-way: **tiled == untiled ==
   reference**, bit for bit, at N ∈ {1, 2, 5, 12} on every side ×
   tiling × K. It is gated against the untiled engine first
   (`testReferenceMatchesUntiledEngine_rank/_sync`, 12 ticks, exact).
-  One correction the first run forced: the letter says "ranks
+  One correction the first run forced: the specification says "ranks
   evaluated from the highest present down to 0", but `DagDBEngine.tick`
   dispatches `maxRank − 1 … 0` and `rebuildCompaction` drops any node
   whose rank is `>= maxRank`, so at side 128 — whose top rank is
@@ -1407,7 +2093,7 @@ control able to fail.
   engine on 4165 of 16384 bytes at every tick; the reference now
   carries the engine's dispatch bound. `dagdb_tick_sync` has no such
   bound and needed none.
-- **`SAVE TILED` writes one epoch everywhere (amendment 4, letter 1).**
+- **`SAVE TILED` writes one epoch everywhere.**
   It used to stamp the saved tick count on the manifest entry alone
   and hard-code 0 into `meta.json`, the body header and the single
   parity strip — so sync's first world tick at `k + 1` looked for a
@@ -1419,9 +2105,9 @@ control able to fail.
   `{rank, sync} × {saved 0, saved 4} × {library worldTick, daemon
   TILED TICK}` — eight cells, each compared against the reference
   after the same number of ticks, none by implication.
-- **W7 · discrimination (amendments 5 and 6, letters 3–6)**, new file
+- **Discrimination**, new file
   `Tests/DagDBTests/TiledW7Tests.swift`:
-  - **W7a** perturbs one committed strip entry at a time and asserts
+  - **Perturbation** of one committed strip entry at a time and asserts
     the engine's change set EQUALS the reference's `Δ_e`: side 44 × 4
     tiles, K = 1, all 367 strip entries in both modes; side 128 × 8, a
     seeded sample of 64. |Δ_e| at side 44 rank: min 1, median 25, max
@@ -1432,25 +2118,25 @@ control able to fail.
     pre-tick file edit is provably overwritten before any reader sees
     it and the same perturbation is delivered through a test-only
     router hook at the reader's input.
-  - **W7b** runs the engine with its ghosts held at the previous world
+  - **Ghost deletion** runs the engine with its ghosts held at the previous world
     tick (test-only `ghostPopulationDisabled`) and asserts it equals
     the reference's `stale`, while the ordinary run equals `fresh`.
-  - **W7c** asserts the per-tick change count equals the reference's,
+  - **Staticity** asserts the per-tick change count equals the reference's,
     printed, 12 ticks, both modes, all three sides. Rank mode settles
     to 3 / 69 / 377 changed bytes per tick (sides 16 / 44 / 128) — the
     line that read 1308 then 0, 0, 0 before this session.
-  - **W7d** asserts a varying register per tile, from the reference's
+  - **Registers hold state** asserts a varying register per tile, from the reference's
     vectors, for every tiling of every side, with the one structural
     exception named and asserted rather than passed over (see below).
-- **Two of the reserve tier's own numbers were wrong, the same way it
-  warned about.** Amendment 6 named two arithmetic traps in amendment
-  5 and then reproduced the family twice more. (i) Letter 4's `|D| >=
+- **Two of the review's own numbers were wrong, the same way it
+  warned about.** The review named two arithmetic traps in its earlier
+  items and then reproduced the family twice more. (i) The rule `|D| >=
   (crossings whose source changed)` counts EDGES against a set of
   NODES: side 16, tick 1, 105 crossings moved and `|D| = 68`, because
   several crossings land on one reader and an even number of them
   cancels under parity. Replaced by an exact node-local derivation
   (`TiledReference.oddInputChangeSet`) that `D` is asserted EQUAL to.
-  (ii) Letter 3's `Δ_e ⊇ readers(e)` holds in sync mode (one hop) but
+  (ii) The rule `Δ_e ⊇ readers(e)` holds in sync mode (one hop) but
   not in rank mode, which propagates through every rank inside one
   tick: a reader can have a second input that is itself downstream of
   the same perturbation, and two flipped inputs cancel. 32 of side
@@ -1458,7 +2144,7 @@ control able to fail.
   instead is a theorem: every reader at the MAXIMUM reader rank flips
   (nothing the perturbation reaches lies above that rank), hence
   `|Δ_e| >= 1` always.
-- **One gate the object cannot satisfy, stated as a derived fact.**
+- **One check the object cannot satisfy, stated as a derived fact.**
   "Every tile holds at least one register" is unreachable for side 16:
   an oscillator needs `rank(R) = rank(S) + 1` (the snapshot validator
   requires `src rank > dst rank` on every combinational edge) with
@@ -1466,10 +2152,10 @@ control able to fail.
   rank range is 0…8 while the union of its 2/4/8 boundaries is
   {1…7} — rank 8 is the only usable level, so only the top tile of
   each tiling carries one. Side 44's 8-tiling has the same hole in
-  tile 0 (span {0, 1}, and rank 0 is the reserved query seed). W7d
-  asserts that every register-less tile is exactly one of these, by
+  tile 0 (span {0, 1}, and rank 0 is the reserved query seed). The
+  register test asserts that every register-less tile is exactly one of these, by
   recomputing the usable levels.
-- **W6 (printed, not gated)**, side 128 × 8 tiles, K = 1, this run:
+- **Printed, not checked:** side 128 × 8 tiles, K = 1, this run:
   rank `tick_ms_per_tile(max)=5.340 flush_ms_per_tile(max)=45.420
   halo_bytes=41328 loads=8 evicts=7`; sync
   `tick_ms_per_tile(max)=4.121 flush_ms_per_tile(max)=43.917
@@ -1477,7 +2163,7 @@ control able to fail.
   to 41,328 because the registers' cleared fan-out removes a few
   crossings.
 - **Full suite: 810 Swift XCTest cases, 45 skipped (unchanged), 0
-  failures, 743.951 s.** Amendment 1's recorded "761 tests / flush
+  failures, 743.951 s.** The earlier recorded "761 tests / flush
   <= 30 ms" and the verifier's "782 tests" are both superseded by this
   line.
 
@@ -1485,17 +2171,16 @@ control able to fail.
 
 ## 2026-09-10 — ticking across tiles (tiling step two)
 
-Branch `dag/ticking`. Roadmap item 8, step two of
-`docs/tiled-streaming.md`'s build order (spec step 5, minus the
-optional pre-fetch thread). Gate contract:
-`docs/contracts/TICKING_GATES_FROZEN.md` (W1–W6, amendments 1–3).
-Kind of run: CONTROL / RE-DERIVATION for W1 (rank-mode world ticks
-equal the untiled engine, bit for bit), W2 (sync-mode, likewise), and
-W5 (daemon ticks equal router ticks, bit for bit); INTERFACE for the
-daemon verbs (`TILED TICK`/`TILED GET`) and the manifest/recovery
-machinery; MEASUREMENT for W6 (printed, not gated).
+Roadmap item 8, step two of
+`docs/tiled-streaming.md`'s build order (its build step 5, minus the
+optional pre-fetch thread).
+Checked against an independent computation: rank-mode world ticks
+equal the untiled engine, bit for bit; sync-mode likewise; daemon ticks
+equal router ticks, bit for bit. Interface checks for the daemon verbs
+(`TILED TICK`/`TILED GET`) and the manifest/recovery machinery.
+Measurements printed, not checked.
 
-- **Library work already in the tree at session start (K-S1, prior
+- **Library work already in the tree at session start (an earlier
   build)**: ghost registers as a parallel resident type
   (`TickResidentTile`, independent of the query path's `ResidentTile`
   so a ghosted engine's rewritten `-2` slots never leak into BFS/
@@ -1508,7 +2193,7 @@ machinery; MEASUREMENT for W6 (printed, not gated).
   `flush.wal`; crash recovery at both crash points (body behind the
   BEGIN's epoch, or body already there but strip/meta/manifest not yet
   rewritten).
-- **This session — the manifest rule (contract amendment 1).** A
+- **This session — the manifest rule.** A
   ticked tile's body changes every world tick, so the manifest's
   `bodySHA256` snapshotted at tiling time can't stay the authority for
   it. Every tile flush now rewrites that tile's manifest entry
@@ -1518,22 +2203,21 @@ machinery; MEASUREMENT for W6 (printed, not gated).
   manifest entry → COMMIT. The ticker's old bypass of the hash check
   is gone: `loadTileWithGhosts` now checks the manifest-recorded
   `bodySHA256` exactly as the query path's `loadTile` does — one
-  authority for both paths (amendment 2, letter 1). Recovery precedes
+  authority for both paths. Recovery precedes
   that check: a tile whose `flush.wal` ends in an unmatched
   `TILE_FLUSH_BEGIN` is fixed FIRST (case i re-ticks with the
   interrupted tick's own ghost inputs; case ii regenerates the strip,
   meta and manifest entry from the already-committed body), and the
   hash check only ever runs on a tile whose `flush.wal` is clean.
-- **Per-tile epochs, no router-global counter (amendment 2, letter
-  2).** The K-S1 manifest carried one graph-level `tickCount`; that's
+- **Per-tile epochs, no router-global counter.** The earlier manifest
+  carried one graph-level `tickCount`; that's
   gone. Each `TileEntry` now carries its OWN `tickEpoch`, written at
   `SAVE TILED` time (the daemon's tickCount) and rewritten by every
   flush. The router holds no global tick counter — its notion of "the
   world's epoch" is the (min, max) over every tile's `tickEpoch`.
   `TILED STATUS` prints `epoch=<min>/<max>`; `TILED TICK` prints the
   max after; `WorldTickReport.epoch` is that same max.
-- **The partial round, and roles at open (amendment 2's consequence,
-  refined by amendment 3).** A crash BETWEEN two tiles' flushes (not
+- **The partial round, and roles at open.** A crash BETWEEN two tiles' flushes (not
   mid-flush) leaves every `flush.wal` clean but the tiles' epochs
   mixed — some at k, the rest still at k−1. A mixed-epoch world must
   never answer a query, so `TiledGraphRouter.init` now takes a `role`:
@@ -1553,7 +2237,7 @@ machinery; MEASUREMENT for W6 (printed, not gated).
   record now carries `TILE_FLUSH_BEGIN <tile> <epoch> <rank|sync>`) —
   never a caller-supplied mode; disagreement among them is refused by
   name (`RouterError.partialRoundModeMismatch`) with nothing rewritten.
-- **W5 (daemon verbs).** `TILED TICK <id> [<n>] [SYNC]` → `OK TILED
+- **Daemon verbs.** `TILED TICK <id> [<n>] [SYNC]` → `OK TILED
   TICK id=<id> ticks=<epoch after> tiles_ticked=<n> loads=<n>
   evicts=<n> flushes=<n> halo_bytes=<n>` (n defaults 1, checked
   1...10000; SYNC selects sync mode); `TILED GET <id> <globalId>
@@ -1569,15 +2253,15 @@ machinery; MEASUREMENT for W6 (printed, not gated).
   catalog's TILED block updated (ticking is built; pre-fetch and the
   cold tier remain). bridge.py's read-only allowlist gained `TILED
   GET`.
-- **W6 (printed, not gated)**, side 128 × 8 tiles, K = 1 — this run's
+- **Printed, not checked:** side 128 × 8 tiles, K = 1 — this run's
   numbers: rank mode tick_ms_per_tile(max)=5.210 flush_ms_per_tile(max)=42.923
   halo_bytes=41440 loads=8 evicts=7 tiles_ticked=8; sync mode
   tick_ms_per_tile(max)=3.819 flush_ms_per_tile(max)=42.250
-  halo_bytes=41440 loads=8 evicts=7 tiles_ticked=8. (K-S1's own run
-  printed tick ≤5.4 ms, flush ≤30 ms per tile — this session's flush
+  halo_bytes=41440 loads=8 evicts=7 tiles_ticked=8. (The earlier build's
+  own run printed tick ≤5.4 ms, flush ≤30 ms per tile — this session's flush
   numbers run higher, likely disk-state/thermal variance between runs
-  on the same machine, not a regression in the mechanism; the gate is
-  printed, not asserted, precisely because these numbers move run to
+  on the same machine, not a regression in the mechanism; the numbers
+  are printed, not asserted, precisely because these numbers move run to
   run.)
 - **Tests**: `Tests/DagDBTests/TiledWorldTickTests.swift` gained the
   manifest-refresh pair (rank/sync, decoding `manifest.json` off disk
@@ -1586,7 +2270,7 @@ machinery; MEASUREMENT for W6 (printed, not gated).
   identical after the refusal), and the partial-round suite (reader-
   before/writer-completes/reader-after sequencing, the mode-mismatch
   refusal with nothing rewritten) — `Tests/DagDBDaemonKitTests/
-  TiledCommandTests.swift` gained the W5 daemon-vs-router tick parity
+  TiledCommandTests.swift` gained the daemon-vs-router tick parity
   tests (rank and sync, 5 ticks then 3 more, 64 seeded `TILED GET`
   checks against the daemon's own truth buffer), the saved-tickCount-
   nonzero case, the cross-tile-BACK_EDGE refusal, the daemon-side
@@ -1602,18 +2286,16 @@ machinery; MEASUREMENT for W6 (printed, not gated).
   (810 cases, 45 skipped, 0 failures), which also rebuilt the objects
   these numbers were measured on.
 
-**Not done** (the contract's "Not promised" list): the pre-fetch
-thread (optional — the letters say it changes no result if added),
+**Not done** (the "not promised" list): the pre-fetch
+thread (optional — the specification says it changes no result if added),
 the cold tier, thermal pauses, the 10¹¹-node run, `TILED BACKUP`.
 ---
 
 ## 2026-09-10 — correction: the rank bound stopped bounding the computation
 
-Branch `dag/rank-bound`, built on `main`. Gate contract:
-`docs/contracts/RANK_BOUND_GATES_FROZEN.md` (R1–R5, amendments 1–2).
-Kind of run: CONTROL / RE-DERIVATION for R1 (both tick modes must
-agree, and both must equal an expectation computed on the CPU outside
-the engine), INTERFACE for R2–R4.
+The checks: both tick modes must agree, and both must equal an
+expectation computed on the CPU outside the engine; the rest are
+interface checks.
 
 **The defect.** `DagDBEngine.rebuildCompaction()` put a node in its
 (rank, colour) dispatch bucket only when its rank was below the
@@ -1627,14 +2309,14 @@ answered `TICK` with `OK` and a rising tick count while part of the
 graph stood still. Present in the engine as shipped, including public
 v0.2.0.
 
-**The path that reaches it in the field** (the hole named by an independent hostile read, adopted as R1):
+**The path that reaches it in the field** (the hole named by an independent adversarial review, adopted as the first check):
 not a hand-injected rank, but a restore. A graph saved from a daemon
 configured with a large bound and loaded into one configured with a
 small one carries ranks above the running bound without touching any
 refused verb — and moving a graph between configurations is exactly
 what SAVE/LOAD is for.
 
-**Ruled: compute, do not refuse.** The bound is an allocation hint,
+**Decided: compute, do not refuse.** The bound is an allocation hint,
 not a property of the graph — the field's own comment calls it
 "Number of ranks in the DAG" and defaults it to 16 — and nothing in
 Metal is sized by it. The segment table and the rank loop are
@@ -1643,7 +2325,7 @@ mostly-empty segments and nothing else. Refusing instead would leave
 a graph restored under a smaller bound dead in rank mode until the
 operator restarted the daemon.
 
-- **R1 (the fix).** `rebuildCompaction()` now scans `rankBuf` for the
+- **The fix.** `rebuildCompaction()` now scans `rankBuf` for the
   highest rank actually present and sizes the buckets and the segment
   table to `effectiveRankCount = max(maxRank, highestRankPresent + 1)`;
   both rank-mode loops (`tick`, `tickLegacy`) stride over
@@ -1652,7 +2334,7 @@ operator restarted the daemon.
   `highestRankPresent` are public read-only on the engine. The scan is
   clamped at `nodeCount`, so a corrupt buffer carrying an absurd rank
   cannot turn the table allocation into a denial of service.
-- **R2 (the operation says how much it did).** `OK TICK` and
+- **The operation says how much it did.** `OK TICK` and
   `OK TICK_SYNC` now carry ` nodes_computed=<n>` always — the whole
   command's node-evaluations, per-tick slots times the tick count —
   and, when the graph reaches past the configured bound, also the
@@ -1663,13 +2345,13 @@ operator restarted the daemon.
   would imply a bounded dispatch it never performed. A
   restored-under-a-smaller-bound graph announces itself on the wire at
   the first tick either way.
-- **R3 (the door).** `SET <node> RANK <v>` with `v >= nodeCount` is
+- **A rank no DAG can hold is refused.** `SET <node> RANK <v>` with `v >= nodeCount` is
   refused with `ERROR out_of_range: rank <v> not in 0..<<nodeCount>`
   and the rank buffer is untouched; no valid DAG on N nodes holds a
   rank of N or more. `SET_RANKS_BULK` checks the whole vector before
   writing anything and names the first offending node. A rank in
   `[maxRank, nodeCount)` is accepted and computed — that is the point.
-- **R4 (pre-existing state, catchable without ticking).** `VALIDATE`
+- **Pre-existing state, catchable without ticking.** `VALIDATE`
   adds a rank-bound line naming the count of nodes at or above the
   running bound, the first of them, and the highest rank found —
   reported after the edge checks, so a genuine edge violation still
@@ -1679,25 +2361,25 @@ operator restarted the daemon.
   health check compares two printed numbers instead of doing
   arithmetic on one. Every field STATUS printed before is still
   printed, in the same relative order.
-- **R5 (no regression).** Full suite green: 761 tests, 45 skipped, 0
+- **No regression.** Full suite green: 761 tests, 45 skipped, 0
   failures.
 
 New: `dagdb/Sources/DagDB/RankBoundFixture.swift` (the 22-level object,
 one edge crossing rank 8), `dagdb/Tests/DagDBTests/RankBoundTests.swift`
-(R1 control, expectation re-derived in the test from the LUT6 tables
+(the control, expectation re-derived in the test from the LUT6 tables
 and the neighbour slots), and
-`dagdb/Tests/DagDBDaemonKitTests/RankBoundDaemonTests.swift` (R2–R4 on
-the wire — the contract names `HandlerFixture`, which lives in that
-target).
+`dagdb/Tests/DagDBDaemonKitTests/RankBoundDaemonTests.swift` (the
+replies, the refusal and VALIDATE/STATUS on the wire, through
+`HandlerFixture`, which lives in that target).
 
 The third rank-mode loop, fixed with the other two:
 `DagDBEngine+Graph.tickWithResonance` — a public method with no caller
 in the tree — strode over `maxRank` and carried the identical defect.
-The builder named it rather than touching it, correctly, since it sits
-outside the contract's scope. It is fixed here anyway by the same
+It was first named rather than touched, correctly, since it sits
+outside the checks' scope. It is fixed here anyway by the same
 mechanism (`ensureRankTopology()` then `effectiveRankCount`), because
 shipping a correction for one instance of a defect while a second
-instance of it stands in the same file is the very shape this contract
+instance of it stands in the same file is the very shape this correction
 was written against. It is NOT separately gated — nothing calls it —
 and that is stated rather than implied.
 
@@ -1705,19 +2387,18 @@ and that is stated rather than implied.
 
 ## 2026-09-10 — tiling, step one: tile files, router load/evict, cross-tile BFS/select
 
-Branch `dag/tiling`, built on `main`. Roadmap item 8, step one of
-`docs/tiled-streaming.md`'s build order (spec steps 3–4). Gate
-contract: `docs/contracts/TILING_GATES_FROZEN.md` (T1–T6, amendments
-1–2). Kind of run: CONTROL / RE-DERIVATION for the cross-tile queries
-(tiled == untiled, exactly), INTERFACE for the files and daemon verbs,
-MEASUREMENT for load/evict cost — no new number, the single engine's
+Roadmap item 8, step one of
+`docs/tiled-streaming.md`'s build order (its build steps 3–4). The
+cross-tile queries are checked against the single engine (tiled ==
+untiled, exactly), the files and daemon verbs by interface checks, and
+the load/evict cost is measured — no new number, the single engine's
 own answers are the truth.
 
-- **T1 (tile files).** `TiledGraphFiles.write` splits a DAG by rank
+- **Tile files.** `TiledGraphFiles.write` splits a DAG by rank
   range into `tile_<lo>_<hi>/{body.dags, halo_lower.bin, halo_upper.bin,
   meta.json}` plus a graph `manifest.json` (tile list, crossings,
   per-tile body sha256). `body.dags` is the CURRENT snapshot format
-  (v7), not a frozen v3 — the contract's one amendment to the spec's
+  (v7), not a frozen v3 — the one change to the spec's
   wording. This session added a second entry point,
   `TiledGraphFiles.write(engine:grid:dataRoot:name:boundaries:)`,
   splitting the DAEMON'S OWN live engine directly (`SAVE TILED`'s
@@ -1730,16 +2411,16 @@ own answers are the truth.
   split out of `TiledFixture.generate` so a caller that already owns
   an engine (a daemon test fixture) can write the frozen object into
   it directly; `generate` is now a thin wrapper around it.
-- **T2 (tiled == untiled).** Cross-tile `runBFS` (undirected/backward,
+- **Tiled == untiled.** Cross-tile `runBFS` (undirected/backward,
   level-synchronous across tiles, minimum depth over all paths),
   `runAncestry`, `runSelect` on `TiledGraphRouter` match the single
   engine's `DagDBBFS.bfsDepthsUndirected`/`bfsDepthsBackward` and the
   truth/rank secondary index exactly, independent of K.
-- **T3/T4 (router).** LRU load/evict bounded by K; a torn tile body
+- **Router.** LRU load/evict bounded by K; a torn tile body
   (sha256 mismatch against the manifest) is refused, never loaded
   silently, and the refusal is recorded (`TILED STATUS`'s
   `refused=<n> last=<error>`).
-- **T5 (daemon, this session's main build).** `SAVE TILED <dir>
+- **Daemon (this session's main build).** `SAVE TILED <dir>
   <b1,b2,...>` → `OK SAVE TILED dir=<dir> tiles=<n> nodes=<N>
   crossings=<c>`; `TILED OPEN <dir> [<K>]` → `OK TILED OPEN
   id=x%08x tiles=<n> nodes=<N> resident_max=<K>`; `TILED BFS <id>
@@ -1769,13 +2450,13 @@ own answers are the truth.
   cases — DSL grammar, SAVE TILED/TILED OPEN summary lines checked
   against an independently computed `WriteReport` rather than
   hardcoded numbers, TILED BFS/SELECT cross-checked row-for-row
-  against the daemon's own `BFS_DEPTHS`/`SELECT` verbs, the T4 torn-
+  against the daemon's own `BFS_DEPTHS`/`SELECT` verbs, the torn-
   body refusal end to end over the socket, the reader-session split,
   `TILED CLOSE` → `LIST count=0`). Full suite: **752 Swift XCTest
   cases, 45 skipped (unchanged from baseline), 0 failures.**
 
-**Not done** (explicitly out of this contract's scope, per its "Not
-promised" list — steps 5–6 of the spec's build order): pre-fetch,
+**Not done** (explicitly out of scope — steps 5–6 of the spec's build
+order): pre-fetch,
 ticking across tiles, the cold tier, thermal pauses, the 10¹¹-node
 run, `TILED BACKUP`.
 
@@ -1783,7 +2464,7 @@ run, `TILED BACKUP`.
 
 ## 2026-09-10 — attention hook: the sealed allocator as a ticked process (roadmap item 7)
 
-Branch `dag/hook`, built on `main`. Roadmap item 7: the sealed
+Roadmap item 7: the sealed
 allocator court as a daemon-global ticked engine process. Instead of
 one batch `AllocatorCourt.run` call, an attention "hook" is bound to
 an alarm set, a budget layout (the tariff; sealed by default), a
@@ -1797,18 +2478,17 @@ deepest affordable tier in the source alarm's pocket for greedy,
 nothing decided for uniform beyond its flat frame cost), books the
 purchase, and appends one line to its ledger. Bound to a clock, one
 CLOCK ADVANCE tick is exactly one hook step, applied after the gears —
-attention is spent on the engine's clock, not by a batch call. Kind of
-run: CONTROL / RE-DERIVATION against the sealed allocator court (P4
-gate 1) — no new number.
+attention is spent on the engine's clock, not by a batch call. Checked
+against the sealed allocator court (gate 1 of the shipped P4
+contract) — no new number.
 
-Gate contract: `docs/contracts/HOOK_GATES_FROZEN.md` (H1–H6, amendment
-1 fixing the ledger row layout at 40 bytes aligned and the
-countsTowardCost-on-a-judged-non-quiet-miss letter).
+The checks below; the ledger row layout is fixed at 40 bytes aligned, and a
+judged non-quiet miss counts toward cost.
 
-- H1 (ledger equals the court, control): `hook.result ==
+- Ledger equals the court (control): `hook.result ==
   AllocatorCourt.run(records:budget:)[policy]` — Swift `Equatable`, no
   tolerance — held at all 5 sealed grid points × 3 policies.
-- H2 (per-frame ledger, interface): one row per step — t, src, judged,
+- Per-frame ledger (interface): one row per step — t, src, judged,
   outcome ∈ {hit, miss, none}, class, ear, pocket, tierBought, spend,
   countsTowardCost, cumulativeCost. A judged frame whose source is
   quiet is `none`: allocator/greedy buy and book nothing, uniform pays
@@ -1819,25 +2499,25 @@ countsTowardCost-on-a-judged-non-quiet-miss letter).
   `cumulativeCost` is judged spend only. Identities held over the 203
   sealed rows. The ledger is DERIVED, never stored — rebuilt by
   re-stepping.
-- H3 (persistence and replay): WAL opcode 0x2F (`hookOpen`) / 0x30
+- Persistence and replay: WAL opcode 0x2F (`hookOpen`) / 0x30
   (`hookStep`); snapshot v7's `hooks` field persists parameters plus
   the frame counter t only, the ledger rebuilt by re-stepping on
   restore. Closing an alarm set or budget layout a hook depends on
   refuses: `ERROR forbidden: hook <h> depends on <id>`.
-- H4 (clock binding, ruled): a hook bound to a clock has one driver —
+- Clock binding: a hook bound to a clock has one driver —
   `HOOK STEP` refuses `ERROR forbidden: bound to clock <c>`; `CLOCK
   ADVANCE` steps every bound hook once per tick, after the gears;
   `CLOCK CLOSE` cascades to bound hooks (`hooks_closed=<n>` beside
   `gears_closed=<n>`), same shape as a gear. Bound and unbound hooks
   gave equal results at one grid point, asserted both ways.
-- H5 (daemon): `HOOK OPEN/STEP/STATE/LEDGER/INFO/LIST/CLOSE` over the
+- Daemon: `HOOK OPEN/STEP/STATE/LEDGER/INFO/LIST/CLOSE` over the
   socket, DSL, MCP, and the web bridge; reader sessions may run
   STATE/LEDGER/INFO/LIST, never OPEN/STEP/CLOSE. The ledger's shm row
   is 40 bytes fixed-width, 8-byte aligned. Over the socket, `HOOK
   STATE` after 203 steps at the richest sealed grid point prints
   `served=150 misses=0 cost=819218.0` for the allocator policy (the P4
   line) and `served=50 misses=100 cost=94400.0` for uniform.
-- H6 (printed, not gated): ≈0.9 µs per step (allocator policy, sealed
+- Printed, not checked: ≈0.9 µs per step (allocator policy, sealed
   layout, debug build); cumulative cost 0 / 501710 / 538024 / 819218
   at t = 50/100/150/203 at the richest sealed grid point.
 
@@ -1852,79 +2532,80 @@ as `HOOK OPEN/STEP/STATE/LEDGER/INFO/LIST/CLOSE`
 (`dagdb/Sources/DagDBDaemonKit/DagDBCommandHandler+TwinHook.swift`,
 `DSLParser+Twin.swift` `parseHook`).
 
-Results: H1 `==` at all 5 grid points × 3 policies; H4 bound vs
-unbound equal; H5 lines exact over the socket; H6 ≈ 0.9 µs/step,
+Results: the ledger `==` the court at all 5 grid points × 3 policies;
+bound vs unbound equal; the daemon lines exact over the socket;
+≈ 0.9 µs/step,
 cumulative cost 0/501710/538024/819218 at t = 50/100/150/203.
 
 Suite: 710 tests. 45 skips with neither fixture env set (30 with the
 `DAGDB_W2_FIXTURE` fixture alone — the sealed hook tests are gated on
-the same W2 fixture as the allocator court, no new fixture). 0
+the same sealed alarm fixture as the allocator court, no new fixture). 0
 failures.
 
-Not done: not merged to main (Haruth merges); the hook does not yet
+Not done: the hook does not yet
 consume the derived-views feed (roadmap item 7's own note on that);
-no `HOOK BUDGET` re-declaration (ruled out — a different B is a
+no `HOOK BUDGET` re-declaration (left out — a different B is a
 different hook).
 
 ---
 
-## 2026-09-10 — kernels: per-path storage and the sealed cross-convolution residual (spec line 6)
+## 2026-09-10 — kernels: per-path storage and the sealed cross-convolution residual
 
-Branch `dag/kernels`. The second half of spec line 6: per-path
+Per-path
 kernels (impulse responses root→ear, 2048 taps at fs = 3000 Hz)
 stored in the engine by reference and by id, a per-pair warmup
 declared or derived, and the cross-convolution identity
-kB ⋆ a = kA ⋆ b judged by the W1 court's own frozen residual R —
+kB ⋆ a = kA ⋆ b judged by the sealed court's own frozen residual R —
 not the engine's pre-existing `CrossConvolutionCheck.check` ("XCONV
 CHECK", the standing patrol check from the summer's twin-primitives
-pass). Kind of run: CONTROL / RE-DERIVATION against the sealed W1
-court (PASS: G0 bridge, G1 court 50/50, G2 fakes 50/50, G3 perturbed
-50/50).
+pass). Checked against the sealed court (which passed: the bridge
+trial, court trials 50/50, fakes 50/50, perturbed 50/50).
 
-One finding, stated up front by the contract itself: `XCONV CHECK`
+One finding, stated up front: `XCONV CHECK`
 is NOT the court's R. It compares over the full convolution length
 (n + m − 1 samples) instead of the record window, divides by a
 symmetric denominator `max(|kB⋆a|, |kA⋆b|)` instead of the one-sided
 `max|kB⋆a| + 1e-300`, and takes Float32 records and taps instead of
-Float64 end to end. On the 190 sealed W1 trials the patrol check
-flips 50 of 190 court gates — every one of them a TRUE court
-recording — because it compares past where the identity actually
+Float64 end to end. On the 190 sealed trials the patrol check
+reaches the opposite pass/fail verdict to the sealed check on 50 —
+every one of them a TRUE court recording — because it compares past where the identity actually
 holds. `XCONV CHECK` stays wired, documented as a compatibility
-patrol check, not a court check; `XCONV SEALED` is now spec line 6's
+patrol check, not a court check; `XCONV SEALED` is now the
 standing cheap check.
 
-Gate contract: `docs/contracts/KERNELS_GATES_FROZEN.md` (K1–K5, 3
-amendments — the trial count corrected to 190, K1's absolute bound
+The checks below, with three corrections: the trial count corrected to 190,
+the absolute per-trial bound
 recorded as an expected FAIL at the float64 floor and replaced as
-the standing gate by a relative bound K1', and XCONV CHECK formally
-deprecated in favor of XCONV SEALED).
+the standing check by a relative bound, and XCONV CHECK formally
+deprecated in favor of XCONV SEALED.
 
-- K1 (absolute, frozen, recorded as a floor finding): FAIL on 2 of
+- Per-trial residual, absolute bound (frozen, recorded as a finding at
+  the float64 floor): FAIL on 2 of
   190 trials — fake_34 (R 16.44) and fake_48 (R 24.70) miss the
   2.533e-14 absolute control tolerance by 3.9e-14 / 6.4e-14, relative
   2.4e-15 / 2.6e-15 — the float64 summation-order floor of two
-  different convolution orders, not the identity. K1' (amendment 3,
-  the standing gate): |R_engine − R_python| ≤ 3e-15·max(1, R_python)
+  different convolution orders, not the identity. The relative bound
+  (the standing check): |R_engine − R_python| ≤ 3e-15·max(1, R_python)
   holds on all 190.
-- K2 every court line re-derived: G0 6.151e-15 vs the court's
+- Every court line re-derived: the bridge trial 6.151e-15 vs the court's
   4.101e-15 (both ≤ 2.533e-14, the printed digits are summation-order
-  noise at the floor); worst court trial 5.415e-03, 50/50 within
+  noise at the float64 floor); worst court trial 5.415e-03, 50/50 within
   tolerance; fakes 50/50 over 10×tolerance; perturbed 50/50 over
   tolerance, quartiles 1.019e-01 / 1.032e-01 / 1.052e-01; cal
   reference max 3.348e-03 (not gated).
-- K3 storage and reach: `KERNEL LOAD`/`INFO`/`LIST`/`CLOSE` and
+- Storage and reach: `KERNEL LOAD`/`INFO`/`LIST`/`CLOSE` and
   `XCONV SEALED` over the socket, DSL, and MCP; kernels persist BY
   REFERENCE (path + sha256), never their taps — registry prefix `k`,
   WAL opcode 0x2E, snapshot v7's `kernels` field (tolerant decode); a
   missing or hash-changed file on restore drops that entry with a
   WARN, same rule as ALARM/VIEW/BANK.
-- K4 warmup = ceil((|τ_A − τ_B| + 3·σ_source)·fs), 185 for W1,
+- Warmup = ceil((|τ_A − τ_B| + 3·σ_source)·fs), 185 for the sealed kernels,
   derived from τ_A/τ_B/σ_source DECLARED on `KERNEL LOAD` (never read
   from the kernels file); an explicit warmup on `XCONV SEALED`
   overrides and prints "declared, not derived"; a pair loaded without
   TAU/SIGMA has no default and `XCONV SEALED` then requires one
   explicitly.
-- K5 printed, not gated: wall ms per sealed check; the patrol
+- Printed, not checked: wall ms per sealed check; the patrol
   check's residual beside the sealed R, attributed to its three
   formula differences separately (full-length window, symmetric
   denominator, float32 inputs) — each attributed variant matches its
@@ -1932,8 +2613,8 @@ deprecated in favor of XCONV SEALED).
   fake_48.
 
 New engine surface: `KernelPair` (load-by-path with sha check, the
-K4 derived-warmup rule) and `SealedCrossConvolution` (the frozen
-formula plus the K5 attribution breakdown) in `dagdb/Sources/DagDB/`;
+derived-warmup rule) and `SealedCrossConvolution` (the frozen
+formula plus the patrol-check attribution breakdown) in `dagdb/Sources/DagDB/`;
 wired over the daemon socket/DSL/MCP as `KERNEL LOAD/INFO/LIST/CLOSE`
 + `XCONV SEALED`
 (`dagdb/Sources/DagDBDaemonKit/DagDBCommandHandler+TwinKernel.swift`,
@@ -1942,9 +2623,9 @@ wired over the daemon socket/DSL/MCP as `KERNEL LOAD/INFO/LIST/CLOSE`
 
 Fixtures: `dagdb/Tests/Fixtures/w1_kernels.json` (in repo, 144,554
 bytes, sha256 pinned) and `w1_residuals_v1.json` (in repo, ≈34 KB,
-the frozen-formula reference per trial plus the court's gate lines,
+the frozen-formula reference per trial plus the court's pass/fail lines,
 sha256 pinned, produced by `dagdb/scripts/w1_residuals.py`); the 190
-W1 records themselves (18,580,321 bytes) stay out of repo, env
+sealed records themselves (18,580,321 bytes) stay out of repo, env
 `DAGDB_W1_RECORDS`, sha256 pinned — absent skips the sealed tests,
 present with the wrong hash FAILs, never a silent load of a
 different fixture. The sealed run takes ≈10 minutes in a debug
@@ -1952,42 +2633,40 @@ build.
 
 Suite: 655 tests, 39 skips without `DAGDB_W1_RECORDS` set (5 new
 kernel skips: 3 in `SealedCrossConvolutionTests`, 2 in
-`TwinKernelCommandTests`, on top of the prior branch's skips), 0
+`TwinKernelCommandTests`, on top of the earlier skips), 0
 failures.
 
-Not done: not merged to main (Haruth merges); kernels do not yet feed
+Not done: kernels do not yet feed
 the allocator court or the derived views.
 
 ---
 
-## 2026-09-10 — derived views (spec line 4, second view family)
+## 2026-09-10 — derived views (a second view family over the alarm sets)
 
-Branch `dag/derived-views`. A second view family over the alarm-set
-world, sitting beside the allocator court that already covers spec
-line 4: three views the twin's cortex lane needs, each judged against
+A second view family over the alarm-set
+world, sitting beside the allocator court: three views the twin's
+cortex lane needs, each judged against
 numbers its own reference hand sealed the same day — front-aligned
-energy features and a geometry-then-energy rung, the amended-letter
+energy features and a geometry-then-energy rung, the
 reflex with its tied sets and oracle-tie count, and the
-arrival-geometry ceiling from τ alone. Kind of run: CONTROL /
-RE-DERIVATION — every pin already exists, no learner number is asked
-of the engine.
+arrival-geometry ceiling from τ alone. Every check compares against a
+number already sealed — no learner number is asked of the engine.
 
-Gate contract: `docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md` (1
-amendment, letter e3's 3·S pair count; no gate bound moved). All gates
+One correction (the 3·S pair count); no bound moved. All checks
 held exactly at S = 2/4/6/8:
 
-- V1 Reflex hits: 3 / 11 / 15 / 18.
-- V2 Oracle-tie hits: 233 / 72 / 76 / 65.
-- V3 Tied sets: size min/median/max 52/77.0/129 · 1/5.0/129 ·
+- Reflex hits: 3 / 11 / 15 / 18.
+- Oracle-tie hits: 233 / 72 / 76 / 65.
+- Tied sets: size min/median/max 52/77.0/129 · 1/5.0/129 ·
   1/4.0/129 · 1/2.0/23; frames with a tie (size > 1) = 300/253/242/231.
-- V4 Geometry-then-energy hits (centroids from the 6966 train frames):
+- Geometry-then-energy hits (centroids from the 6966 train frames):
   38 / 28 / 29 / 39.
-- V5 Ceiling: 0.069767 / 0.147287 / 0.209302 / 0.271318 (identifiable
+- Ceiling: 0.069767 / 0.147287 / 0.209302 / 0.271318 (identifiable
   9/19/27/35 = unique 3/8/12/15 + groups 6/11/15/20; exact-twin pairs
   2495/1015/711/467).
-- V6 daemon interface (VIEW LOAD/REFLEX/RUNG/CEILING/FEATURES/INFO/
+- The daemon interface (VIEW LOAD/REFLEX/RUNG/CEILING/FEATURES/INFO/
   LIST/CLOSE, exact reply shapes) holds.
-- V7 printed, not gated: wall time per view; near-edge candidate
+- Printed, not checked: wall time per view; near-edge candidate
   counts 22048/3814/2640/1017; rung margin (second − best distance,
   min over tied frames) 7.1e-4/1.6e-3/8.1e-4/2.1e-4.
 
@@ -2008,12 +2687,12 @@ INFO/LIST/CLOSE), registry prefix `v`, WAL opcode 0x2D, snapshot
 a WARN, same rule as ALARM. Read-only for reader sessions: REFLEX,
 RUNG, CEILING, FEATURES, INFO, LIST.
 
-Tasks: V-S1 built `NpzReader` + `CortexFixture` and surfaced the
-label/shape assertions. V-S2 built `DerivedViews` (arrivals, the
-amended reflex with tied sets and the printed near-edge floor,
+Steps: `NpzReader` + `CortexFixture` first, with the
+label/shape assertions; then `DerivedViews` (arrivals, the
+reflex with tied sets and the printed near-edge count,
 front-aligned energy features with 3·S per-(station, channel)
 standardization, the centroid rung, and the ceiling under both
-relations) — V1–V5 exact at every S. V-S3 wired the daemon `VIEW` verb
+relations) — every number exact at every S; then the daemon `VIEW` verb
 family, MCP tools, and the bridge's read-only allowlist.
 
 Suite: 570 tests. 32 skips with neither fixture env set (the 9
@@ -2023,15 +2702,14 @@ in `CortexFixtureTests`, 3 in `DerivedViewsTests`); 9 skips with
 `DAGDB_CORTEX_V4_FIXTURE` set (the pre-existing `DAGDB_W2_FIXTURE`
 skips only — unrelated fixture, still unset). 0 failures.
 
-Not done: not merged to main (Haruth merges); the views registry does
-not yet feed the allocator court (spec line 4's first family) or the
-tick loop.
+Not done: the views registry does not yet feed the allocator court or
+the tick loop.
 
 ---
 
 ## 2026-09-10 — fold API (roadmap item 3)
 
-Branch `dag/fold-api`. The E3 tier ladder — Kron/Schur fold of a rank
+The `E3Ladder` tier ladder — Kron/Schur fold of a rank
 ring into the kept set, operator stored to Float32 between folds,
 solves in Float64 via LAPACK `dgesv` — moved out of the sealed runner
 (`E3Ladder/main.swift`, last arithmetic change 2026-08-26) into a
@@ -2045,18 +2723,17 @@ reading them back, so a fresh daemon (neighbor table wiped, edges come
 from `CONNECT`) folds whatever graph the lanes currently hold, hex
 adjacency only if it was written there.
 
-Gate contract: `docs/contracts/FOLD_API_GATES_FROZEN.md` (F1–F5). All
-gates held:
+All checks held:
 
-- F1 control (in repo, `dagdb/Tests/Fixtures/e3_control_engine.json`,
+- Control (in repo, `dagdb/Tests/Fixtures/e3_control_engine.json`,
   sha pinned): `kept_nodes`, `final_operator`, `folded_f1` bit-for-bit.
-- F2 court ladders (out of repo, `DAGDB_E3_RUNS`; skip if absent, FAIL
-  on hash mismatch): G1/G2 bit-for-bit against the sealed run files —
-  G1 19 folds, ~153 s in a debug build (the court's ~1.6 s/profile was
+- Court ladders (out of repo, `DAGDB_E3_RUNS`; skip if absent, FAIL
+  on hash mismatch): the unit-weight and the seeded-weight ladder
+  bit-for-bit against the sealed run files — the unit-weight one 19 folds, ~153 s in a debug build (the court's ~1.6 s/profile was
   a release build).
-- F3 the rebuilt `e3-ladder control` CLI's output sha equals the
+- The rebuilt `e3-ladder control` CLI's output sha equals the
   control fixture's pin.
-- F4 daemon verbs — `FOLD RUN <maxRank> <keepRank> <f1> <f2> [<f3>]
+- Daemon verbs — `FOLD RUN <maxRank> <keepRank> <f1> <f2> [<f3>]
   [CHECK l1,l2,...]`, `FOLD KEPT`, `FOLD SOURCE <1|2|3>`, `FOLD TIER
   <level|final> <1|2|3>`, `FOLD INFO` — bit-identical to the library
   call over the socket; all read-only, nothing persisted (the last
@@ -2064,24 +2741,24 @@ gates held:
   verb before any RUN is `ERROR not_found`. A FOLD RUN whose predicted
   kept-set size would overflow shm is rejected before any O(k³) work
   runs, via a configurable `shmBytes` capacity on the handler.
-- F5 price, printed not gated: per fold, ring/eliminated/kept/wall ms;
+- Price, printed, not checked: per fold, ring/eliminated/kept/wall ms;
   per tier, bytes = k²·4 + k·3·4.
 
 Test suite: 544 Swift XCTest cases, 10 fixture-gated skips without
 `DAGDB_E3_RUNS` set (9 with it). New: `LadderFoldTests.swift` (5,
-library-level F1/F2/F3) and `TwinFoldCommandTests.swift` (17,
-daemon-level F4), plus new `parseFold` grammar cases in
+library-level: the control, the court ladders, the CLI) and
+`TwinFoldCommandTests.swift` (17, the daemon verbs), plus new `parseFold` grammar cases in
 `DSLParserTwinTests.swift`.
 
-Tasks: F-S1 built `LadderFold` against the frozen contract, moved the
-runner's arithmetic verbatim, closed F1–F3. F-S2 wired the `FOLD` verb
-family over the daemon socket, DSL grammar, and MCP, closed F4/F5.
+Steps: `LadderFold` built against the frozen checks, the runner's
+arithmetic moved verbatim; then the `FOLD` verb family wired over the
+daemon socket, DSL grammar, and MCP.
 
 ---
 
-## 2026-09-10 — spec 8 waveform mouth
+## 2026-09-10 — the waveform mouth
 
-Branch `dag/spec8-mouth`. Spec 8 of the twin's nine-line list: a frozen
+The twin's waveform mouth: a frozen
 bank Φ of T×K atoms (harmonic cos/sin columns plus Gabor atoms on a
 center/frequency grid, each column unit-normalized), hosted by the
 engine as `WaveBank`. Generating M waveforms is one matrix product
@@ -2093,23 +2770,22 @@ eight-verb `BANK` family (OPEN/GENERATE/FIT/NOISE/BENCH/INFO/LIST/
 CLOSE), WAL opcode 0x2C, snapshot v7's `banks` field, following the same
 log-first pattern as the other twin verb families.
 
-Gate contract: `docs/contracts/SPEC8_MOUTH_GATES_FROZEN.md` (3
-amendments, no gate bound moved). All gates held:
+Three corrections, no bound moved. All checks held:
 
-- G1 Φ bridge (control): max diff 0.0 against the numpy mouth (tol 2e-6).
-- G2 W bridge (control): max diff 0.0, Frobenius relative error 2.1e-7.
-- G3 out-of-bank noise law (claim, control bank): engine mean
+- Φ bridge (control): max diff 0.0 against the numpy mouth (tol 2e-6).
+- W bridge (control): max diff 0.0, Frobenius relative error 2.1e-7.
+- Out-of-bank noise law (claim, control bank): engine mean
   0.9816015 vs. law √(1−160/4096) = 0.9802742 (per-seed range
   0.9750986–0.9855909, bands 0.035 per seed / 0.008 mean); numpy mean
   0.9823351 printed beside it.
-- G4 probe bridge (control): engine residual 0.9989332144 vs. the
+- Probe bridge (control): engine residual 0.9989332144 vs. the
   fixture's numpy residual 0.9989332557 (tol 1e-3).
-- G5 in-bank sanity: residual ~1e-7 (bound 1e-5).
-- G6 throughput (measured, not gated): 2.46e9 samples/s at K=160,
+- In-bank sanity: residual ~1e-7 (bound 1e-5).
+- Throughput (measured, not checked): 2.46e9 samples/s at K=160,
   2.83e9 at K=144, M=10000, best-of-3 — beside the numpy mouth's
   2.23e9 (control) / 1.95e9 (repair, one timing).
-- G7 daemon round trips (WAL replay, snapshot v7 save/load) hold.
-- G8 declaration: control bank rank 146 of K=160 (cond 5.6e15
+- Daemon round trips (WAL replay, snapshot v7 save/load) hold.
+- Declaration: control bank rank 146 of K=160 (cond 5.6e15
   printed); repaired bank K=144, rank 144, cond 2.666132 (tol 0.01);
   aliasing message names harmonic 26 at 1560 Hz against Nyquist
   1500 Hz (fs 3000); repaired-bank probe residual 0.998949, noise
@@ -2122,16 +2798,16 @@ harmonics 24..18, so fourteen of its atoms are linearly dependent
 artifact). The twin lane diagnosed and repaired it: H=24 keeps every
 harmonic below Nyquist, giving K=144, full rank 144, condition number
 2.666. The engine keeps the 160-atom bank as the sealed CONTROL object
-for G1–G5 and adopts the repaired bank (K=144) as the default the
+for the bridge, noise-law and sanity checks and adopts the repaired bank (K=144) as the default the
 daemon opens; a spec whose top harmonic reaches Nyquist is refused
 unless the caller writes `ALIASED` on the OPEN line.
 
-Tasks: S1 built the library (`WaveBank.swift`) against the frozen spec
-and surfaced the rank-deficiency finding. S2 wired the daemon/DSL/MCP
-`BANK` verb family and the WAL/snapshot persistence. S3 ran G1–G7
-against the fixture and the live socket. S3b re-derived amendment 2's
-noise-law literal, caught a second author arithmetic slip (amendment
-3), and closed out G8.
+Steps: the library (`WaveBank.swift`) built against the frozen spec,
+which surfaced the rank-deficiency finding; the daemon/DSL/MCP `BANK`
+verb family and the WAL/snapshot persistence; the checks run against
+the fixture and the live socket; then the corrected noise-law literal
+re-derived, which caught a second arithmetic slip in the specification,
+and the declaration check closed.
 
 Suite: 506 tests, 9 fixture-gated skips (unchanged set), 0 failures.
 
@@ -2142,8 +2818,8 @@ Not done: the bank is not fused into the tick loop; no Metal path
 
 ## 2026-09-09 — startup recovery (roadmap item 4)
 
-Branch `dag/startup-recovery` off main. One gap, found by the socket
-smoke on 2026-09-06: a daemon restart after `SAVE` came up empty because
+One gap, found by the interface phase's socket smoke test on
+2026-09-06: a daemon restart after `SAVE` came up empty because
 `SAVE` checkpoints the WAL, startup replays only records past the last
 checkpoint, and nothing loaded the snapshot.
 
@@ -2179,20 +2855,20 @@ checkpoint, and nothing loaded the snapshot.
   then hard kill (exactly 2 replayed); corrupt and out-of-root snapshots
   exit 2. Refuses to run while any daemon is alive (shared shm file).
 - Not done: the prod launchd plist still lacks `DAGDB_STARTUP_LOAD`;
-  adding `…/prod/auto.dags` there is a config change for the operator to make.
+  adding `…/prod/auto.dags` there is a configuration change for the operator.
 
 ---
 
 ## 2026-09-06 — interface phase
 
-Branch `dag/p4-interface`, off main at the 2026-09-05 twin-primitives
+Built on main at the 2026-09-05 twin-primitives
 merge (baseline 249/249). One goal: make the seven twin-spec primitives
 restorable (state-bearing inits + Codable) and reachable over the
-daemon (DSL + MCP), and add the spec-4 alarm-stream type whose engine
+daemon (DSL + MCP), and add the alarm-stream type whose engine
 implementation reproduces the sealed allocator court and successor
 lattice bit-for-bit. Full suite at the end of the phase: **439 tests,
 9 skipped (fixture-gated), 0 failures** (`swift test`, 2026-09-06).
-Merged to main 2026-09-06 (rollback tag `pre-merge-p4-20260906`).
+Merged to main 2026-09-06.
 
 **Contract, frozen before any gate code:**
 `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md` commits the two gate tables as the
@@ -2201,7 +2877,7 @@ frozen criterion — prior work the two Python courts
 `market/build_pregate_successor.py` / `pregate_successor_v1.json`),
 delta = engine (Swift) re-implementation, run kind **control /
 re-derivation**, never a claim. **AMENDMENT 1** (2026-09-06, an independent
-hostile read, applied before any gate code existed, no number moved):
+adversarial review, applied before any gate code existed, no number moved):
 restore path keeps drop-with-WARN on a missing/mismatched alarm file,
 but the **gate path is different — fixture absent → `XCTSkip` with a
 printed reason; fixture present with hash ≠ pinned → the test FAILS,
@@ -2217,8 +2893,8 @@ Python loop order is still mirrored, harmlessly); the gate-2 diagonal
 column is **retention scoring** (a coincidental rescue counts; a
 phantom is never itself a judged alarm).
 
-**§0 conventions (17, resolved sealed-record ambiguities, sent out
-for an independent hostile read), in brief:** file order reconstructed from
+**§0 conventions (17, resolved sealed-record ambiguities, sent for
+an independent adversarial review before any gate code), in brief:** file order reconstructed from
 `(block rank quiet<liar<deep<drift, numeric suffix)`, 1-based `idx`;
 `cal0_1` kept as `AlarmFixture.control`, never an `AlarmRecord`
 (`records.count == 200`); quiet culprits carry `claim == nil` (buy
@@ -2246,7 +2922,7 @@ missing/mismatched file on **restore** drops that entry with a stderr
 wrong-hash-FAILS rule (above) is stricter and does not apply to
 restore.
 
-**Gate numbers reproduced bit-for-bit (T4, `SealedGateTests`, run
+**Gate numbers reproduced bit-for-bit (`SealedGateTests`, run
 against the real 29 MB fixture, `DAGDB_W2_FIXTURE` set):**
 - **Gate 1** (allocator-court replay): 5 budget-grid points × 4 arms
   (allocator, uniform, greedy, oracle), every field exact — misses,
@@ -2261,58 +2937,58 @@ against the real 29 MB fixture, `DAGDB_W2_FIXTURE` set):**
   points under both policies; `max |1 − weightSum| == 0.0` over the
   full 65-point lattice.
 
-**Per-task entries (each is one commit on `dag/p4-interface`):**
-- **Contract first** — `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md` committed before any
-  gate code exists; the §0 conventions list sent out for an independent hostile
-  read, applied as AMENDMENT 1 the same day.
-- **T1a** — `NamedStream`/`StreamHeader`/`StreamRecord` gain
+**Per-task entries (each was one commit):**
+- **The contract** — `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md` committed before any
+  gate code exists; the §0 conventions sent for an independent adversarial
+  review, applied as AMENDMENT 1 the same day.
+- **Streams and records** — `NamedStream`/`StreamHeader`/`StreamRecord` gain
   state-bearing inits and `Codable` (public `Slice` init), so a
   daemon-held stream/record survives a restart in O(1) rather than
   redrawing.
-- **T1b** — `BudgetLayout`/`CrossConvolutionCheck`/`GearedRings`/
+- **The other primitives** — `BudgetLayout`/`CrossConvolutionCheck`/`GearedRings`/
   `MasterClock`+`GearRatio`+`PhaseGear` gain state-bearing inits,
   `Codable`, public output-struct inits, and throwing shape guards
   (`validationError`, `shapeViolation`) so a daemon front door can
   reject a bad shape with `ERROR bad_value` instead of trapping.
-- **T2** — `AlarmRecord` + `SealedCourt` (sealed pocket/tier/tariff
+- **The alarm vocabulary** — `AlarmRecord` + `SealedCourt` (sealed pocket/tier/tariff
   mapping) + `AlarmFixture` (SHA-pinned loader, env
-  `DAGDB_W2_FIXTURE`, skip-if-absent) — twin spec line 4's fixed
+  `DAGDB_W2_FIXTURE`, skip-if-absent) — the alarm stream's fixed
   vocabulary, reconstructing file order from the sealed keys.
-- **T3** — `CorruptionModel` (εm/εs/εn exact-enumeration weights,
+- **The corruption model and the successor court** — `CorruptionModel` (εm/εs/εn exact-enumeration weights,
   phantoms as `SealedClaim` values, never as `AlarmRecord`s) +
   `SuccessorCourt` (the counting hand: `allocatorDecide`,
   `greedyDecide`, `classStats`, `frameTotals`).
-- **T4** — `AllocatorCourt` (mirrors `run_point` bit-for-bit) + the
+- **The allocator court and the sealed gates** — `AllocatorCourt` (mirrors `run_point` bit-for-bit) + the
   two sealed gates in `SealedGateTests`, against
   `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md`; wrong-hash-fails rule applied.
-- **T5** — `TwinRegistry<Entry>` (the generalized reader-session
+- **The registries** — `TwinRegistry<Entry>` (the generalized reader-session
   pattern) + `TwinState` (one daemon-global instance of all seven
   registries, `TwinOp` apply, `Codable` `Snapshot`, `export`/`restore`).
-- **T6** — WAL opcodes `0x20`–`0x2B`, `TwinWALCodec` (encode/decode,
+- **WAL opcodes** — `0x20`–`0x2B`, `TwinWALCodec` (encode/decode,
   little-endian, malformed payload skipped not fatal),
   `DagDBWAL.replay(twin:)`.
-- **T7** — Snapshot **v7**: `TWIN` section (magic `"TWIN"` + u32
+- **Snapshot v7** — `TWIN` section (magic `"TWIN"` + u32
   length + sorted-keys JSON) between the WGTS lane section and the
   ENVS trailer; loads v1..v7; a v≤6 file resets the twin state.
-- **T8.1** — `TwinCommand` grammar (47 verb-lines), `DSLParser+Twin`,
+- **The twin grammar** — `TwinCommand` grammar (47 verb-lines), `DSLParser+Twin`,
   handler dispatch skeleton + the `READER` read-only allowlist, and
-  the shared `HandlerFixture` test helper. Stub replies until T8.2–T8.5.
-- **T8.2** — real STREAM/HEADER/RECORD handlers (log-first WAL
+  the shared `HandlerFixture` test helper. Stub replies until the handlers below landed.
+- **STREAM/HEADER/RECORD** — real handlers (log-first WAL
   pattern); `twinState` wired into the daemon's replay and save paths.
-- **T8.3** — real RINGS/CLOCK/GEAR handlers; found and fixed a gear-
+- **RINGS/CLOCK/GEAR** — real handlers; found and fixed a gear-
   close bug the same session: closing a `GEAR` left its id inside the
   owning `CLOCK`'s `gearIds`, so a later `CLOCK ADVANCE` would trip on
   a stale gear id — `TwinState.apply(.close)` on a `g` id now prunes
   the gear from its clock's `gearIds` before closing it.
-- **T8.4** — real XCONV CHECK (reads two records + two path kernels
-  out of shm, runs the sealed W1 identity, never touches the WAL) and
+- **XCONV CHECK and BUDGET** — real XCONV CHECK (reads two records + two path kernels
+  out of shm, runs the sealed cross-convolution identity, never touches the WAL) and
   BUDGET OPEN/SEALED/ALLOCATE/INFO/CLOSE/LIST handlers.
-- **T8.5** — real ALARM handlers: LOAD (guardPath first, then
+- **ALARM** — real handlers: LOAD (guardPath first, then
   SHA-pinned load — any `AlarmFixture.FixtureError`, including a
   hash mismatch, becomes `ERROR io:` containing the literal phrase
   "sha256 mismatch"), INFO/FRAME/COURT/SUCCESSOR/CORRUPT as pure reads
   over `AllocatorCourt`/`SuccessorCourt`/`CorruptionModel`.
-- **T9** — MCP wrappers (26 twin verb tools) in `mcp_server.py`, the
+- **MCP and the bridge** — MCP wrappers (26 twin verb tools) in `mcp_server.py`, the
   `dagdb_query` catalog's `Twin:` block + id-prefix map, the
   `dagdb_reader_query` allowed-list update; `web/bridge.py` gains
   `READ_ONLY_TWIN` (a set of `(verb, subverb)` pairs mirroring
@@ -2339,11 +3015,11 @@ load step either); tracked as a new roadmap item, not an interface-phase defect.
 ## 2026-05-13 → 2026-09-05 — bulk verbs to twin-spec primitives
 
 Ten sessions, May to September: bulk DSL
-install verbs, a full Fable source-review sweep and its fixes,
+install verbs, a full source-review sweep and its fixes,
 nested-LUT microcircuits sanitized for the public tree, tick-
-performance compaction, G73 durability hardening, weight-lane
-persistence (E1) and its raw-throughput riders (E2/E3), a roadmap
-draft, and seven twin-spec primitives merged to main. Full Swift
+performance compaction, durability hardening, weight-lane
+persistence and its raw-throughput riders (the `E2Runner` and
+`E3Ladder` targets), a roadmap draft, and seven twin-spec primitives merged to main. Full Swift
 suite: **165 → 191** (June) → **218** (Aug 22) → **249** (Aug 30,
 holds through the Sep 5 merge).
 
@@ -2364,36 +3040,36 @@ walks the recipe end to end — compile-time vs. eval-time speed, LUT
 input packing, `BACK_EDGE` for recurrence instead of growing rank
 depth, a worked x² example, and an anti-pattern list.
 
-### Fable review fixes (June)
+### Source-review fixes (June)
 
-A full Fable source-review pass (engine, persistence, daemon, tile
+A full source-review pass (engine, persistence, daemon, tile
 layer, Python surface, tests) produced a findings report with one
 live correctness bug, two crash/corruption hazards, Python contract
 bugs, a security hole, and a structural test gap. All fixed in one
 06-09 session bar one deferred item:
 
-- **C1** — the reader-session snapshot copied `n*4` bytes of the
+- **The reader-session rank copy** — the reader-session snapshot copied `n*4` bytes of the
   rank buffer, but rank is u64 (`n*8`); every `OPEN_READER` session
   returned correct ranks for the lower half of the graph and
   zero/garbage for the upper half — silently wrong data on the
   shipped MVCC path. Fixed the copy width and strengthened four
   other tests that only checked the lower half and would have
   passed on this bug class.
-- **H1** — a corrupt/crafted snapshot's back-edge trailer could
+- **A snapshot's back-edge trailer** — a corrupt/crafted snapshot's back-edge trailer could
   carry a `dst` past `nodeCount`, corrupting the heap via an
   unchecked `isRegisterBuf` write; now bounds-checked and throws,
   matching what the WAL replay path already did.
-- **H2** — a snapshot truncated mid-write (the crash-during-write
+- **A truncated snapshot** — a snapshot truncated mid-write (the crash-during-write
   case) trapped on an out-of-range `subdata` slice and killed the
   daemon instead of throwing; added length guards before both
   subdata calls.
-- **P1-P3** — Python docstrings and helpers still claimed u32 for
+- **Python contract bugs** — Python docstrings and helpers still claimed u32 for
   the bulk-rank vector after the daemon moved to u64; the two new
   bulk verbs were invisible to MCP clients; the "unbounded" rank cap
-  used for hive queries was still 2^32-1 on a u64 axis. All
+  of the `dagdb_hive_query` tool was still 2^32-1 on a u64 axis. All
   corrected; the MCP query catalog regenerated from the actual
   parser surface (~20 missing verbs restored).
-- **S1/S2/S3/B4** — the WebSocket browser bridge relayed any
+- **The browser bridge** — the WebSocket browser bridge relayed any
   received string to the daemon's full write surface with no
   allowlist or Origin check; now read-only by default with an
   opt-in write flag, an Origin allowlist, control-char rejection
@@ -2401,12 +3077,12 @@ bugs, a security hole, and a structural test gap. All fixed in one
   stalled daemon can't wedge an executor thread forever.
   `mcp_server.py`'s auto-`pip install` on import was deleted in
   favor of a printed instruction.
-- **T1** — the DSL parser and command handler lived inside the
+- **A testable handler** — the DSL parser and command handler lived inside the
   daemon's executable target, untestable by the suite (the same
-  drift hazard that hid C1 one layer up); extracted into a new
+  drift hazard that hid the reader-session bug one layer up); extracted into a new
   `DagDBDaemonKit` library target with a testable
   `DagDBCommandHandler`.
-- **T2-T4** — regression coverage for the fixes above, plus
+- **Regression coverage** for the fixes above, plus
   invariant-locking tests (GPU-vs-reference LUT6 equivalence,
   race-free 7-coloring, colour-group partition, chained `BACK_EDGE`
   one-tick latch), plus per-test temp directories so concurrent
@@ -2414,7 +3090,7 @@ bugs, a security hole, and a structural test gap. All fixed in one
   several checkouts share one dagdb working directory).
 
 Full suite climbed **165 → 191** across the sweep (README corrected
-06-24 after an adversarial read of the deck claims caught the stale
+06-24 after an adversarial read of the deck's claims caught the stale
 figure).
 
 ### Nested-LUT microcircuit + public-tree sanitization (July 1-2)
@@ -2429,13 +3105,13 @@ the single-LUT6 ceiling and the build idioms.
 Same window, a honesty and public-tree sanitization pass:
 
 - The 14 GCUPS figure quoted on the site and in doc comments
-  belonged to the Savanna engine, not DagDB (DagDB's own
+  belonged to Savanna, a separate engine, not DagDB (DagDB's own
   measured number is 0.71 GCUPS at 1M nodes) — corrected across the
   slide deck, site HTML, and source doc comments.
 - Deployment names, internal task lists, and inter-agent work-order
   prose were genericized or removed from the AC-3 example and
   troubleshooting docs ahead of the public push, matching the
-  public-release sanitization pass.
+  sanitization pass.
 - License/NOTICE aligned to Apache 2.0 at both repo levels (stops
   the GPL drift recurring from dev); the AC-3 Australia example was
   actually run against a scratch daemon (exit 0, converges in 2
@@ -2476,9 +3152,9 @@ Same window, a honesty and public-tree sanitization pass:
 
 (Same window, 07-15, unrelated: `image_mcp.py` prepends `/usr/sbin`
 to `PATH` so the mflux `system_profiler` probe survives MCP's
-PATH-stripping — battle-tested.)
+PATH-stripping.)
 
-### G73 durability (July 31)
+### Durability hardening (July 31)
 
 Four-step durability hardening plus a stress probe:
 
@@ -2514,7 +3190,7 @@ Separately, a 16-rank / N=5 cell run confirmed the July "unstable"
 compaction reading from the tick-perf benchmark was thermal, not a
 correctness issue: stable, ~1.75x compaction speedup every run.
 
-### E1 — weight-lane persistence (Aug 22)
+### Weight-lane persistence (Aug 22)
 
 The engine has carried Float edge weights and a weighted GPU tick
 kernel since birth, but neither lane survived save/load and the WAL
@@ -2532,12 +3208,12 @@ compressed path, WAL replay incl. rejection) — suite **217**. Daemon
 bounds-checked, finite-only values); `CURRENT_STATE.md` refreshed —
 suite **218/218**.
 
-### E2 runner (Aug 22)
+### `E2Runner` (Aug 22)
 
 `E2Runner`, a new executable target: a frozen-schedule smoother
 built directly on the engine. Maps a row-major reference contract
 onto the engine's own Morton wiring (`grid.mortonRank`/
-`mortonToNode`, no rule duplication); G2 conductances from a frozen
+`mortonToNode`, no rule duplication); seeded conductances from a frozen
 LCG in lexicographic edge order written into the engine's edge-weight
 lane; Float64 accumulation over the Float32 `nodeValue` storage lane;
 per-cell fresh schedule stream (seed 77, slot-order consumption,
@@ -2547,64 +3223,63 @@ and merges in the Python reference trace for comparison — E2Runner
 builds raw outputs only, a separate judge owns the pass/fail ratios.
 A second pass added per-profile tolerance and output naming.
 
-### E3 ladder (Aug 26)
+### `E3Ladder` (Aug 26)
 
 `E3Ladder`, another new executable target: an exact tier ladder run
 on the same engine lanes (ranks/leaks/weights fabric-resident,
 fp32-per-rung storage, Accelerate-backed folds), producing tier
 answers alongside their folded sources. A second pass moved the
 third injection (f3) to rank 20 so it folds first — the worst
-rolling case. A third pass parameterized the G2 seed and injection
+rolling case. A third pass parameterized the conductance seed and injection
 nodes so different runs can compare as calibration twins rather than
 one-off scripts.
 
 ### Roadmap draft + seven twin-spec primitives (Aug 30)
 
-A roadmap draft (`ROADMAP_DRAFT.md`) distilled from the sealed E1-E3
-record, refined against a "twin spec" list of primitives a
+A roadmap draft (`ROADMAP_DRAFT.md`) distilled from the sealed record
+of that work, refined against a "twin spec" list of primitives a
 drift-twin engine needs. Seven of those lines shipped the same day,
 each a small sealed engine primitive with its own test file:
 
-- **`NamedStream`** (twin spec line 3 foundation) — PCG64 XSL-RR
+- **`NamedStream`** — PCG64 XSL-RR
   128/64 generator with a numpy state-bridge and pinned test vectors.
-- **`StreamHeader`** (line 7) — the "t-zero law" as an engine
+- **`StreamHeader`** — the "t-zero law" as an engine
   admission check: seven declared quantities, arithmetic refusals
   for inadmissible headers.
-- **`StreamRecord`** (line 3) — slice replay bit-for-bit from
+- **`StreamRecord`** — slice replay bit-for-bit from
   boundary states; inadmissible headers refused at birth.
-- **`BudgetLayout`** (line 5) — twice-sealed decision letters
+- **`BudgetLayout`** — twice-sealed decision rules
   encoded as engine logic: merge, min-cost tie-break, lexicographic
   residual.
-- **`CrossConvolutionCheck`** (line 6) — the sealed W1 identity as a
+- **`CrossConvolutionCheck`** — the sealed cross-convolution identity as a
   standing engine check (pass / scream / flash states).
-- **`GearedRings`** (line 1, memory half) — a sealed odometer as a
+- **`GearedRings`** — a sealed odometer as a
   recording primitive: signed extremum recall across orders of lag.
-- **`MasterClock` + `PhaseGear`** (line 2) — one tick, rational
+- **`MasterClock` + `PhaseGear`** — one tick, rational
   gears, drift-free by integer arithmetic, with a latch.
 
 Suite reaches **249**.
 
 ### Merge to main (2026-09-05)
 
-`dag/twin-r3-replay` merged to main: twin spec lines 1, 2, 3, 5, 6,
-7 — named streams, t-zero header, slice replay, budget layout,
-cross-convolution check, geared rings, master clock. **249 tests**,
-no regressions from the Aug 30 branch tip.
+The twin primitives merged to main — named streams, t-zero header,
+slice replay, budget layout, cross-convolution check, geared rings,
+master clock. **249 tests**, no regressions from Aug 30.
 
 ---
 
 ## 2026-05-11 — u64 scar fix + docs current-state pass
 
-### u64 scar fix (`dag/u64-scar-fix`)
+### u64 scar fix
 
-Codex flagged 2026-05-09: the daemon's `NODES AT RANK` filter still
+A review flagged on 2026-05-09: the daemon's `NODES AT RANK` filter still
 narrowed rank queries to `UInt32`, hiding any node whose rank
 exceeded 2^32 − 1. Both call sites (writer + reader-session mirror)
 now compare against `UInt64(r)`. Rank storage was widened to u64
-in T1b; the filter expression had not caught up.
+on 2026-04-21; the filter expression had not caught up.
 
 Acceptance test `DagDBU64RankTests` (three cases) exercises the
-engine rank buffer and the filter expression at 2^32 + 4. Codex's
+engine rank buffer and the filter expression at 2^32 + 4. The review's
 explicit pattern — `SET 0 RANK 4294967300; NODES AT RANK 4294967300`
 returns node 0 — is covered. Full Swift suite **162 → 165 green,
 zero failures.**
@@ -2614,9 +3289,9 @@ the same day. Live daemon's `NODES AT RANK 4294967300` now returns
 `OK NODES rows=0` cleanly; the old binary would have trapped on
 the same input.
 
-### Docs current-state pass (`dag/docs-current-state`)
+### Docs current-state pass
 
-Codex's priority #3. New `CURRENT_STATE.md` at repo root: canonical
+The review's third priority. New `CURRENT_STATE.md` at repo root: canonical
 pointer for snapshot version, test count, daemon supervision, DSL
 drift, per-node footprints. Inline drift fixed in:
 
@@ -2636,21 +3311,21 @@ drift, per-node footprints. Inline drift fixed in:
   back-edge-landing snapshot; current count cross-referenced.
 - `docs/wiki/quick-start.md`, `docs/bfs_usage.md` — Swift count
   and Python collection-error caveat; bulk example widened to u64.
-- `docs/wiki/README.md` — T3 description widened to u64.
+- `docs/wiki/README.md` — the `SET_RANKS_BULK` description widened to u64.
 
 Surfaces left alone: `dev-test-prod-memo-2026-05-01.md` keeps its
-"a separate supervisor will own prod" framing as a forward-looking plan the
-launchctl-current state has not flipped to; `tiled-streaming.md`
+forward-looking plan for who owns prod, which the launchctl-current
+state has not flipped to; `tiled-streaming.md`
 and the 04-29 memo keep their landing-time numbers with a pointer
 to `CURRENT_STATE.md` where needed.
 
 ---
 
-## 2026-04-21 (pm) — T1b u64 rank widen + tiled-streaming spec
+## 2026-04-21 (pm) — u64 rank widen + tiled-streaming spec
 
-### T1b — u32 → u64 rank refactor
+### u32 → u64 rank refactor
 
-Follow-on to T1. Rank field widens from 32-bit to 64-bit across
+Follow-on to the u32 rank refactor of 2026-04-20. Rank field widens from 32-bit to 64-bit across
 the full stack to support the 10¹¹-on-laptop stretch target (via
 tiled streaming, spec below).
 
@@ -2671,15 +3346,14 @@ tiled streaming, spec below).
 - **Secondary index** (`TruthRankIndex`) keys UInt64.
 - **Distance module** rank-profile histogram keys UInt64.
 
-Acceptance criterion (per coordination call): `rank=300` (u8-impossible) and
+Acceptance criterion: `rank=300` (u8-impossible) and
 `rank=4_294_967_300` (u32-impossible) both round-trip through
 SAVE/LOAD. Green: `testU64RankRoundTrip` in
 `Tests/DagDBTests/DagDBSnapshotTests.swift`.
 
 Full test suite: **98 Swift + 16 Python = 114 green, no skips**.
 
-Phase 2b (neighbor i32 → i64 widening) **deferred** per the coordination
-call: doubling the neighbor buffer drops the single-engine
+The neighbor i32 → i64 widening is **deferred**: doubling the neighbor buffer drops the single-engine
 ceiling ~40 % on M5 UMA without unlocking addressing we could
 physically allocate. Will revisit if/when a single tile
 approaches 2 × 10⁹ distinct node IDs.
@@ -2697,10 +3371,10 @@ thermal discipline, open questions.
 
 Internal only. No code yet. Build follows spec after it matures.
 
-### Daemon bounce #2
+### Daemon restart onto the u64 binary
 
-the launchd daemon was bounced onto the u64 binary. Verify
-pass: all five gates green (u64 rank surface accepts 2⁶³-1 and
+The launchd daemon was restarted onto the u64 binary. The verification
+pass: all five checks green (u64 rank surface accepts 2⁶³-1 and
 > 2⁶³, BFS_DEPTHS callable, shm + socket 0600, DATA_ROOT
 enforcement, SAVE file size byte-exact match for v3 format —
 44 040 224 bytes = 32 header + 42 × 1 048 576 body). MVCC,
@@ -2724,7 +3398,7 @@ ANCESTRY, SET_RANKS_BULK all still surface-exposed.
 
 - `ARCHIVE/1_Active_Doing_Graph_Database/` — tree 2 (the original
   `dagdb-engine` staging repo) moved into
-  an archive directory outside this repository alongside other deprecated
+  a local archive alongside other deprecated
   projects. The DagDB codebase under 004 is now unambiguously
   canonical.
 - `dagdb/mcpo_config.json` — mcpo config relocated into 004. `dagdb`
@@ -2743,9 +3417,9 @@ ANCESTRY, SET_RANKS_BULK all still surface-exposed.
 
 ## 2026-04-20 — rank-widening sprint
 
-Seven tickets shipped against the rank-widening + MVCC sprint:
+Seven changes shipped in the rank-widening + MVCC sprint:
 
-### T1 — u32 rank refactor (commit `7d49476`)
+### u32 rank refactor (commit `7d49476`)
 
 Rank `UInt8` → `UInt32` across the whole stack. Caps per-instance
 rank at 4.3 billion; unblocks Loom's insert-counter and
@@ -2765,7 +3439,7 @@ full-protein biology ingestion (> 255 residues).
 - Daemon: shm result row layout 8 → 12 bytes (rank field widened);
   `Predicate.evaluate` takes `UInt32`; DSL parser widened.
 
-### T2 — rankPolicy protocol + three defaults (commit `c73b824`)
+### rankPolicy protocol + three defaults (commit `c73b824`)
 
 Python module `dagdb/plugins/biology/rank_policies.py`:
 
@@ -2778,14 +3452,14 @@ Python module `dagdb/plugins/biology/rank_policies.py`:
 - Self-test covers monotonicity, inter-chain ordering, and a
   4-node cycle with BFS from root-0.
 
-### T3 — SET_RANKS_BULK DSL (commit `579ff1d`)
+### SET_RANKS_BULK DSL (commit `579ff1d`)
 
 New DSL command + MCP tool. Plugin writes a precomputed u32 rank
 vector of length `nodeCount` to shm offset 8, calls
 `SET_RANKS_BULK`, daemon commits to `rankBuf` in one round-trip. No
 per-insert validation — pair with `VALIDATE` if paranoid.
 
-### T7 — MVCC snapshot-on-read (commit `d4b008d`)
+### MVCC snapshot-on-read (commit `d4b008d`)
 
 Reader sessions:
 
@@ -2800,7 +3474,7 @@ Reader sessions:
   independence, u32 rank fidelity in the snapshot, neighbours-buffer
   copy integrity, unique ids across 10 opens.
 
-### T15 — secondary index (truth, rank-range) (commit `8876feb`)
+### Secondary index (truth, rank-range) (commit `8876feb`)
 
 `TruthRankIndex`:
 
@@ -2815,9 +3489,9 @@ Reader sessions:
 - 11 tests including a Loom-specific "last-N dialogue_turn events"
   scenario under insert-counter rank.
 
-### T8 — ANCESTRY / SIMILAR_DECISIONS / HIVE_QUERY (commit `1e5c410`)
+### ANCESTRY / SIMILAR_DECISIONS / HIVE_QUERY (commit `1e5c410`)
 
-Three agent-friendly hive-query primitives:
+Three agent-friendly query primitives:
 
 - **`ANCESTRY FROM <node> DEPTH <d>`** — reverse BFS bounded by
   depth. Output: `(Int32 node, Int32 depth) × count`.
@@ -2846,8 +3520,7 @@ existing payload preserved after the prefix.
 - Caught and corrected a dual-node encoding bug in the same
   session: under bipartite B→A edges, BFS shortcut collapses
   contact-graph geodesics. Switched to single-node-per-residue
-  encoding with `rank = maxRank - seqIndex`. Amendment drop
-  captured the fix; tests updated.
+  encoding with `rank = maxRank - seqIndex`; tests updated.
 
 ### Rename `legacy/` → `dagdb/` (commit `c184721`)
 

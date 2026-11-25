@@ -1,14 +1,14 @@
 import Foundation
 @testable import DagDB
 
-/// TiledReference — Room A of the ticking contract (`AMENDMENT 6, letter
-/// 2`): a test-side evaluator of the SAME graph, written from the
-/// contract's own paragraph and from the kernel's bit rule, which never
-/// calls `DagDBEngine`. Every equality the ticking gates assert is
+/// TiledReference — Room A of the ticking checks: a test-side evaluator of
+/// the SAME graph, written from the specification's own paragraph and from
+/// the kernel's bit rule, which never
+/// calls `DagDBEngine`. Every equality the tiled-tick tests assert is
 /// compared against this, so "tiled == untiled" can no longer be true by
 /// both sides being wrong in the same way.
 ///
-/// The rule, verbatim from the letter and from `Shaders/dagdb.metal`:
+/// The rule, verbatim from the specification and from `Shaders/dagdb.metal`:
 ///
 /// - a node's six slots are its inputs; an absent slot (`-1`) contributes
 ///   nothing, and input bit `d` is 1 **iff the source's truth byte is
@@ -25,12 +25,12 @@ import Foundation
 ///   previous tick's vector.
 ///
 /// The sweep starts at the HIGHEST RANK PRESENT, with no engine bound —
-/// amendment 6's letter, and (since `main`'s rank-bound correction, merged
-/// into this branch) the engine's own behaviour too: `DagDBEngine` now
+/// the specified rule, and (since the rank-bound correction) the engine's
+/// own behaviour too: `DagDBEngine` now
 /// derives `effectiveRankCount = max(maxRank, highestRankPresent + 1)` and
 /// dispatches every level that carries a node. The earlier build of this
-/// file carried the engine's old bound instead; AMENDMENT 7, finding B
-/// rejected that — Room A carries the letter, not the defect.
+/// file carried the engine's old bound instead, which was wrong: this
+/// reference carries the specified rule, not the defect.
 struct TiledReference {
 
     let nodeCount: Int
@@ -128,7 +128,7 @@ struct TiledReference {
         return out
     }
 
-    /// One untiled tick in `mode` — AMENDMENT 8, gate (i): the mode of a
+    /// One untiled tick in `mode`: the mode of a
     /// round is read from disk and may differ between consecutive rounds,
     /// so the reference takes a MODE SEQUENCE, not one mode for a whole
     /// run. `run(from:modes:)` is that sequence applied in order.
@@ -149,7 +149,7 @@ struct TiledReference {
         return out
     }
 
-    // MARK: - Tiled evaluation (W7)
+    // MARK: - Tiled evaluation
 
     /// How a CROSS-TILE input is valued during one world tick.
     enum GhostPolicy {
@@ -157,10 +157,10 @@ struct TiledReference {
         /// tick (rank mode, descending tile order) or the previous tick's
         /// vector is the only vector there is (sync mode).
         case fresh
-        /// W7b, "ghosts deleted": every cross-tile input holds its value
+        /// "Ghosts deleted": every cross-tile input holds its value
         /// from the PREVIOUS world tick.
         case stale
-        /// W7a: cross-tile readers of these source nodes see the given bit
+        /// Cross-tile readers of these source nodes see the given bit
         /// instead of the true one — the perturbed strip entry.
         case forced([Int: UInt8])
     }
@@ -216,7 +216,7 @@ struct TiledReference {
         return out
     }
 
-    // MARK: - Derived sets the gates assert against
+    // MARK: - Derived sets the tests assert against
 
     /// Tile of every node under `boundaries`, the same `tileOf(rank:)`
     /// rule `TiledGraphFiles.write` splits by.
@@ -276,9 +276,9 @@ struct TiledReference {
     /// `stale`. A register's post-tick value is its back-edge source's, so
     /// it differs exactly when that source does.
     ///
-    /// This is the number W7b asserts `differing(stale, fresh)` against —
+    /// This is the number the deletion test asserts `differing(stale, fresh)` against —
     /// a statement about the object's sensitivity, not about the evaluator
-    /// agreeing with itself. It replaces AMENDMENT 6 letter 4's
+    /// agreeing with itself. It replaces the first-stated inequality
     /// `|D| >= (crossings whose source changed)`, which counts EDGES
     /// against a set of NODES and is false on a correct engine: side 16,
     /// tick 1, 137 crossings moved and |D| = 68, because several crossings
@@ -296,7 +296,7 @@ struct TiledReference {
                 // A register holds through the combinational pass, so both
                 // runs read the SAME byte for it — the value it had before
                 // this tick's latch — whether the edge is intra- or
-                // cross-tile (AMENDMENT 7, finding A). It can never be a
+                // cross-tile. It can never be a
                 // source of difference.
                 if isRegister[s] { continue }
                 let inStale: UInt8 = (tileOf[s] == tileOf[node]) ? stale[s] : prev[s]

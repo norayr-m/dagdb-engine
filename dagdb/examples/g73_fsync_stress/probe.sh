@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# G73 fsync/durability kill-9 stress probe.
+# fsync/durability kill-9 stress probe.
 #
 # Builds the daemon (release) and runs the kill-9 recovery driver for 10
 # iterations against a SCRATCH daemon on its own unix socket. Never touches

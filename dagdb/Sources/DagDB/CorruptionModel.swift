@@ -1,12 +1,12 @@
 import Foundation
 
-/// Corruption model — twin spec line 4's successor pre-gate. Three knobs
+/// Corruption model for the successor pre-gate. Three knobs
 /// (εm liar-swap, εs drift-softening, εn noise) act on the READ of an
 /// alarm, before the decision map; the true world and the miss-court are
 /// untouched (served = the bought tier holds the TRUE culprit in the true
 /// pocket — coincidental rescue counts). Probabilities are weights of
-/// exact enumeration, never a die roll (corruption-model specification of 2026-08-26, quoted
-/// verbatim in `market/build_pregate_successor.py`'s
+/// exact enumeration, never a die roll (the model is quoted verbatim in
+/// `market/build_pregate_successor.py`'s
 /// `CORRUPTION_MODEL_VERBATIM`); this type is a bit-for-bit mirror of
 /// that script's `true_branches` / `phantom_subsets` / `enumerate_outcomes`.
 public struct CorruptionModel: Equatable, Codable {
@@ -32,7 +32,7 @@ public struct CorruptionModel: Equatable, Codable {
     /// One branch of a culprit's TRUE-claim read: how it shows up (or
     /// doesn't) in the frame for decision-making. Not filtered by weight
     /// — a home branch at εm=1 keeps its zero-weight entry here; callers
-    /// (`enumerateOutcomes`) skip zero weight, exactly as the Python hand
+    /// (`enumerateOutcomes`) skip zero weight, exactly as the Python reference
     /// does in `enumerate_outcomes` (not in `true_branches`).
     public struct Branch: Equatable {
         public let weight: Double
@@ -117,7 +117,7 @@ public struct CorruptionModel: Equatable, Codable {
     /// bit i of the mask selects `SealedCourt.pockets[i]`; weight is the
     /// product over the four bits of (q if set else 1-q), q = εn/4.
     public func phantomSubsets() -> [PhantomSubset] {
-        // Finding 53: the mask width is the sealed pocket list's own
+        // The mask width is the sealed pocket list's own
         // length, not the literal 4/16 — a fifth pocket gets its phantom,
         // a shorter list cannot index out of bounds.
         let pockets = SealedCourt.pockets
@@ -140,7 +140,7 @@ public struct CorruptionModel: Equatable, Codable {
     /// Full enumeration for one culprit class: outer `trueBranches`, inner
     /// `phantomSubsets`, weight = w_true * w_phantom, zero-weight outcomes
     /// skipped (mirrors `enumerate_outcomes`). Loop order is preserved
-    /// (harmless on the sealed dyadic five, per contract amendment 1 §10).
+    /// (harmless on the sealed dyadic five).
     public func enumerateOutcomes(for culprit: CulpritClass) -> [Outcome] {
         var out: [Outcome] = []
         for branch in trueBranches(for: culprit) {

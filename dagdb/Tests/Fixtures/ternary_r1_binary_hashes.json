@@ -1,0 +1,59 @@
+{
+  "contract" : "docs\/contracts\/TERNARY_GATES_FROZEN.md R1",
+  "generator" : "TernaryR1BinaryControlTests.makeGraph (SplitMix64; ranks 0..<16; LUT low\/high, truth 0...255, register 1-in-64 per node; 6 slots, empty 1-in-4, else a node of strictly higher rank; one back edge per register from a random node)",
+  "graphs" : [
+    {
+      "hashes" : {
+        "rank" : {
+          "1" : "644f0d52368072fbaa13c6aae7f4986e470e192172f4c194557c93ab5914fc7f",
+          "5" : "6d16c8599ad9d3811ba671bf22d400bcbc6a1051012a5847ee9f9b6cc4faa0e0",
+          "20" : "6d16c8599ad9d3811ba671bf22d400bcbc6a1051012a5847ee9f9b6cc4faa0e0"
+        },
+        "sync" : {
+          "1" : "4f9cf0d5e19164d975b173ace7cd5eae7152f9d60c0387ed9976e48f3f9432b1",
+          "5" : "91dbeac95c561dcc775e21feff23c0ae798ba730020bfdf74979bfb2276aec6f",
+          "20" : "ea0c85890c8e1f9158802a7d9751bbd9ec5dee9c090acfe10c9c0c905bac79bb"
+        }
+      },
+      "nodes" : 4096,
+      "seed" : "0x7e120001",
+      "side" : 64
+    },
+    {
+      "hashes" : {
+        "rank" : {
+          "1" : "eacb5ea5853ac3403e4abfdb004b5e551f6817b36ab30e651db57f67c84c666a",
+          "5" : "d19f709c38a6bb43038a37bc6ee481e5f349cce2583ef405dca05c2509b9eecf",
+          "20" : "e96b9c6797f813db7716a596e176fcf947d773532a6502075d955f7d3d92a46c"
+        },
+        "sync" : {
+          "1" : "aa7a054f916bc28755bb03faf6e7af6e27abcc7846ed29959feacb3d9b0bee43",
+          "5" : "89356ba525afd0821ae7825de6f3a74b0b4aec9e20e8bf648e22a2353699662f",
+          "20" : "fb72692fa29e84bed410f43fc5548a19d78174153dbad2eb317a07e27f944d4c"
+        }
+      },
+      "nodes" : 65536,
+      "seed" : "0x7e120002",
+      "side" : 256
+    },
+    {
+      "hashes" : {
+        "rank" : {
+          "1" : "4a879b71f786431a3215dbfb1136824477f5c1cc2e7c4ea2d55c7128a447754e",
+          "5" : "3d541423bf883d9191f5fd1a33c0bb18fbceba074394008092e445c6c6d61170",
+          "20" : "3cb07e2f096f848d2d8e8c2aa22b937191e961b5a8105c17df61c6e874ac74a9"
+        },
+        "sync" : {
+          "1" : "e22021fb61da27b122467c1fed9edb50ca8f2c554495b3179f26816b19a1eafe",
+          "5" : "f63efd9f2a2816380bf45fce7edd7491b896837f16992a93d34624f48ec59e71",
+          "20" : "50411a5bcc30aec46e8eec22cb13f08cc9e170aaa71db278d806aa0a99eee01a"
+        }
+      },
+      "nodes" : 1048576,
+      "seed" : "0x7e120003",
+      "side" : 1024
+    }
+  ],
+  "recorded_by" : "main build, ticket T0, before any engine change",
+  "tick_numbers" : "0, 1, 2, ... (fresh daemon tickCount)"
+}

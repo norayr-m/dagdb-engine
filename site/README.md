@@ -48,7 +48,7 @@ Specification, architecture, and resolved design questions. Press Space to narra
 
 ## Status
 
-Engine landing: [`../README.md`](../README.md), which carries the current test counts and measurements. See [`../CURRENT_STATE.md`](../CURRENT_STATE.md) for the live picture. The decks and podcasts here are earlier snapshots: their figures are as of when each was made, and the README is current.
+Engine landing: [`../README.md`](../README.md), which carries the current test counts and measurements. See [`../CURRENT_STATE.md`](../CURRENT_STATE.md) for the live picture. The decks and podcasts here are records of the day each was made; their figures are as of that day.
 
 This subdirectory is curation + narration; the engine lives in [`../dagdb/`](../dagdb/).
 

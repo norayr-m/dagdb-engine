@@ -1,15 +1,15 @@
 import XCTest
 @testable import DagDB
 
-/// Audit C, scope α — the tile-file / router / fixture half.
-/// `docs/contracts/SUBSYSTEMS_BOUNDS_GATES_FROZEN.md`, findings 1-19 and
-/// test items 75, 76, 78, 81, 82.
+/// Bounds of the newer subsystems, first half: the tile files, the router and
+/// the fixtures, one edge test per finding of an internal audit of the newer
+/// subsystems.
 ///
 /// Every failing input below is built BY HAND — a hand-written header, a
 /// corrupted JSON field, an out-of-range argument — never something the
-/// writer under test produced. That is the contract's general letter: a
+/// writer under test produced. That is the rule throughout: a
 /// test that reads back what the writer just wrote can only observe the
-/// writer's own constant (item 75's complaint).
+/// writer's own constant.
 ///
 /// Amateur engineering project, no competitive claims, errors likely.
 final class SubsystemsBoundsTiledTests: XCTestCase {
@@ -79,7 +79,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         return data
     }
 
-    // MARK: - 1 · rank-halo reader refuses a version that is not its own
+    // MARK: - Rank-halo reader refuses a version that is not its own
 
     func testF1RankHaloVersionRefusedByName() throws {
         let path = scratchDir("f1") + "/halo_upper.bin"
@@ -101,7 +101,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         XCTAssertEqual(try TiledGraphFiles.readRankHalo(path: path).entries.count, 3)
     }
 
-    // MARK: - 2 · manifest decode refuses a version / format that is not its own
+    // MARK: - Manifest decode refuses a version / format that is not its own
 
     func testF2ManifestFormatAndVersionRefusedByName() throws {
         let t = try writeTiling("f2")
@@ -134,7 +134,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 3 · lower strip refuses a kind other than 0
+    // MARK: - Lower strip refuses a kind other than 0
 
     func testF3LowerStripKindRefused() throws {
         let dir = scratchDir("f3")
@@ -155,7 +155,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         XCTAssertEqual(try TiledGraphFiles.readLowerStripFile(path: path).entries.count, 2)
     }
 
-    // MARK: - 75 / 78 · the strip version test reads a DELIBERATELY overwritten field
+    // MARK: - The strip version test reads a DELIBERATELY overwritten field
 
     func testItem75StripVersionReadFromAnOverwrittenField() throws {
         let t = try writeTiling("item75")
@@ -164,7 +164,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         let path = tilePath(t.dir, entry, "halo_lower.0.bin")
 
         // The writer's own strip opens at the writer's own version — the
-        // only thing the pre-audit test could observe.
+        // only thing the earlier test could observe.
         XCTAssertEqual(try TiledGraphFiles.readLowerStripFile(path: path).version,
                        TiledGraphFiles.lowerStripFormatVersion)
 
@@ -184,7 +184,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 4 · a manifest claiming more nodes than the graph holds is refused
+    // MARK: - A manifest claiming more nodes than the graph holds is refused
     //            BEFORE any engine is allocated
 
     func testF4ManifestNodeCountRefusedBeforeAllocation() throws {
@@ -192,7 +192,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         defer { removeScratch(t.dir) }
         let victim = t.manifest.tiles[0]
 
-        // 2^40 nodes claimed for a tile of a few — the pre-audit code ran
+        // 2^40 nodes claimed for a tile of a few — the code before the fix ran
         // `Int(entry.nodeCount)` and then sized a HexGrid + engine of that
         // width before a single file byte was read.
         let huge: UInt64 = 1 << 40
@@ -223,7 +223,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 5.0)
     }
 
-    // MARK: - 5 / 81 · meta.json's node count one larger than the manifest's
+    // MARK: - meta.json's node count one larger than the manifest's
 
     func testF5MetaNodeCountDisagreementRefused() throws {
         let t = try writeTiling("f5")
@@ -251,7 +251,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 6 · a crossing naming a local at the tile's own node count
+    // MARK: - A crossing naming a local at the tile's own node count
 
     func testF6CrossingLocalAtNodeCountRefused() throws {
         let t = try writeTiling("f6")
@@ -290,7 +290,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 7 / 81 · the body's `-2` slots and meta's crossings must agree
+    // MARK: - The body's `-2` slots and meta's crossings must agree
 
     func testF7SlotCountVersusCrossingsRefused() throws {
         let t = try writeTiling("f7")
@@ -308,7 +308,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         let before = meta.crossingsOut.filter { $0.localNode == victimLocal }.count
 
         // FEWER crossings than `-2` slots: drop one for that local. The
-        // pre-audit loader wired the surplus slot to nothing and left the
+        // loader before the fix wired the surplus slot to nothing and left the
         // sentinel in place, silently.
         var fewer = meta.crossingsOut
         if let idx = fewer.firstIndex(where: { $0.localNode == victimLocal }) { fewer.remove(at: idx) }
@@ -327,7 +327,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
             XCTAssertEqual(crossings, before - 1)
         }
 
-        // MORE crossings than `-2` slots: the pre-audit loader TRAPPED here
+        // MORE crossings than `-2` slots: the loader before the fix TRAPPED here
         // (`list[cursor]` out of range).
         var more = meta.crossingsOut
         if let sample = more.first(where: { $0.localNode == victimLocal }) { more.append(sample) }
@@ -347,7 +347,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 8 · a crossing naming a foreign local past the source tile's node count
+    // MARK: - A crossing naming a foreign local past the source tile's node count
 
     func testF8ForeignLocalBeyondSourceTileRefused() async throws {
         let t = try writeTiling("f8", side: 16, tiles: 2)
@@ -366,7 +366,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
 
         // Repoint every crossing of that one local at a local id the SOURCE
         // tile does not have. The slot count is untouched, so this is
-        // exactly the out-of-range read finding 8 describes.
+        // exactly the out-of-range read under test.
         let beyond = source.nodeCount + 7
         let rewritten = try meta.crossingsOut.map { c -> Crossing in
             guard c.localNode == sample.localNode else { return c }
@@ -389,7 +389,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 9 / 82 · an epoch that does not fit the body header's 32-bit tick field
+    // MARK: - An epoch that does not fit the body header's 32-bit tick field
 
     func testF9EpochAboveUInt32RefusedAtFlush() async throws {
         let t = try writeTiling("f9", side: 16, tiles: 2)
@@ -438,7 +438,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 10 · a hand-written BEGIN at epoch 0
+    // MARK: - A hand-written BEGIN at epoch 0
 
     func testF10FlushWALBeginAtEpochZeroRefused() async throws {
         let t = try writeTiling("f10")
@@ -464,7 +464,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 11 · a torn flush.wal is never "clean"
+    // MARK: - A torn flush.wal is never "clean"
 
     func testF11TornFlushWALRefused() throws {
         let t = try writeTiling("f11")
@@ -503,7 +503,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         XCTAssertEqual(TiledGraphFiles.flushState(dir: dir), .pending(epoch: 5, mode: .sync))
     }
 
-    // MARK: - 12 · engineIndexOf validated at router init
+    // MARK: - engineIndexOf validated at router init
 
     func testF12EngineIndexOfValidatedAtInit() async throws {
         let t = try writeTiling("f12")
@@ -548,7 +548,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 13 · crossings that skip a tile are counted, not lost
+    // MARK: - Crossings that skip a tile are counted, not lost
 
     func testF13TileSkippingCrossingsCounted() throws {
         var sawSkipping = false
@@ -556,7 +556,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
             let t = try writeTiling("f13-\(tiles)", side: 16, tiles: tiles)
             defer { removeScratch(t.dir) }
             let adjacentUp = t.report.perBoundary.reduce(0) { $0 + $1.up }
-            // S5 (iii): the identity `adjacent + skipping == crossings` was
+            // The identity `adjacent + skipping == crossings` was
             // asserted against the writer's own subtraction
             // (`skipping = crossings − adjacentUp`), so it could not fail.
             // Both counts are now walked out of the manifest's crossings
@@ -589,7 +589,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
                       + "undercount finding 13 describes would be unreachable")
     }
 
-    // MARK: - 14 · the halo's source_tile_id is the MODAL foreign tile
+    // MARK: - The halo's source_tile_id is the MODAL foreign tile
 
     func testF14HaloSourceTileIsModal() throws {
         var checkedMultiForeign = 0
@@ -615,7 +615,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
                              + "divergence would be unreachable")
     }
 
-    // MARK: - 15 · a residency budget below 1
+    // MARK: - A residency budget below 1
 
     func testF15MaxResidentTilesBelowOneRefused() async throws {
         let t = try writeTiling("f15")
@@ -632,7 +632,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         _ = try await TiledGraphRouter(dataRoot: t.dir, graphName: "g", maxResidentTiles: 1)
     }
 
-    // MARK: - 16 · status() sees the ticking path
+    // MARK: - status() sees the ticking path
 
     func testF16StatusCountsTheTickingPath() async throws {
         let t = try writeTiling("f16", side: 16, tiles: 4)
@@ -652,7 +652,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(s.loads, 4)
     }
 
-    // MARK: - 17 · a negative world-tick count
+    // MARK: - A negative world-tick count
 
     func testF17WorldTickNegativeCountRefused() async throws {
         let t = try writeTiling("f17")
@@ -666,11 +666,11 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         }
     }
 
-    // MARK: - 18 · populate against a mismatched engine
+    // MARK: - populate against a mismatched engine
 
     func testF18PopulateSizeMismatchThrows() throws {
         // An engine sized for side 16, a grid sized for side 20: the
-        // pre-audit `populate` bound every Metal buffer at the GRID's size
+        // `populate` before the fix bound every Metal buffer at the GRID's size
         // and wrote past the engine's.
         let smallGrid = try HexGrid(width: 16, height: 16)
         let engine = try DagDBEngine(
@@ -688,7 +688,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         try TiledFixture.populate(engine: engine, grid: smallGrid, side: 16)
     }
 
-    // MARK: - 19 · seeds over an object whose centre it cannot address
+    // MARK: - Seeds over an object whose centre it cannot address
 
     func testF19SeedsRefusesAnObjectItCannotAddress() throws {
         let real = try TiledFixture.generate(side: 16)
@@ -706,7 +706,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         XCTAssertEqual(TiledFixture.seeds(for: real).count, 5)
     }
 
-    // MARK: - 76 · the depth cap, driven past its edge
+    // MARK: - The depth cap, driven past its edge
 
     func testItem76DepthCapRefused() async throws {
         let t = try writeTiling("item76")
@@ -714,7 +714,7 @@ final class SubsystemsBoundsTiledTests: XCTestCase {
         let router = try await TiledGraphRouter(dataRoot: t.dir, graphName: "g", role: .writer)
         let seed = try GlobalNodeID(tileId: 0, localNodeId: 0)
 
-        // 12 is the cap; every pre-audit BFS test stopped exactly AT it.
+        // 12 is the cap; every earlier BFS test stopped exactly AT it.
         _ = try await router.runBFS(seed: seed, depth: 12)
         do {
             _ = try await router.runBFS(seed: seed, depth: 13)

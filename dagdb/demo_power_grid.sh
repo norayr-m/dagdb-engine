@@ -7,7 +7,7 @@
 #   Rank 1: 1 grid controller (AND — all zones must be healthy)
 #   Rank 0: 1 final decision (IDENTITY — pass-through)
 #
-# Daemon must be running: .build/debug/dagdb-daemon --grid 256
+# Daemon must be running: .build/debug/dagdb-daemon --grid 256 --shm-file "$HOME/.dagdb/dagdb_shm"
 
 SOCK="/tmp/dagdb.sock"
 cmd() { echo "$1" | nc -U "$SOCK" 2>/dev/null; }

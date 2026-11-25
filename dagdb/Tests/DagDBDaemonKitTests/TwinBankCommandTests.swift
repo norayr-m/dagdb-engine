@@ -2,8 +2,8 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// the interface phase — daemon-level tests for the real BANK verbs
-/// (DagDBCommandHandler+TwinBank.swift), spec 8's waveform mouth. Every
+/// Daemon-level tests for the real BANK verbs
+/// (DagDBCommandHandler+TwinBank.swift), the waveform bank. Every
 /// fixture uses `HandlerFixture(side: 64)` — shm capacity 8 + 4096·24 =
 /// 98,312 bytes, enough to hold the reference bank's K=160 GENERATE M=5
 /// output (20,480 f32 samples = 81,920 bytes) but not its M=7 output
@@ -13,9 +13,10 @@ final class TwinBankCommandTests: XCTestCase {
 
     // MARK: - shm pokes / reads (mirroring TwinBudgetCommandTests)
 
-    private func writeFloats(_ v: [Float], at byteOffset: Int, into f: HandlerFixture) {
+    private func writeFloats(_ v: [Float], at byteOffset: Int, into f: HandlerFixture, verb: SHM1Verb) {
         let ptr = f.shm.advanced(by: byteOffset).bindMemory(to: Float.self, capacity: max(1, v.count))
         for (i, x) in v.enumerated() { ptr[i] = x }
+        shm1Header(f.shm, count: v.count, verb: verb)   // every caller writes at 8
     }
 
     /// Reads the f32 vector shm layout `writeFloatVector` produces:
@@ -58,22 +59,22 @@ final class TwinBankCommandTests: XCTestCase {
 
     // MARK: - BANK OPEN
 
-    /// The daemon default is now the repaired bank (K=144) — AMENDMENT 2 (d)
-    /// amends the earlier K=160 default. This is the same assertion as the
-    /// spec-8-mandated `testOpenDefaultIsRepairedBank` below; kept here too
+    /// The daemon default is now the repaired bank (K=144), in place of the
+    /// earlier K=160 default. This is the same assertion as the
+    /// `testOpenDefaultIsRepairedBank` below; kept here too
     /// since this test predates that name and exercised the same line.
     func testBankOpenReferenceSpec() throws {
         let f = try HandlerFixture(side: 64)
         let reply = f.handler.handle("BANK OPEN mouth")
         XCTAssertTrue(
-            reply.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=144 atoms_bytes=2359296 rank=144 cond="),
+            reply.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=144 atoms_bytes=2359296 rank=144 cond="),
             reply
         )
     }
 
     /// The control (K=160) bank, needed by several tests below that compare
     /// against `WaveBank(spec: .reference)` directly, must now be opened
-    /// with its seven numbers plus ALIASED (AMENDMENT 2 (c)/(d)) — the
+    /// with its seven numbers plus ALIASED — the
     /// default over the socket opens the repaired K=144 bank instead.
     private func openControlBank(_ f: HandlerFixture) -> String {
         f.handler.handle("BANK OPEN mouth 4096 3000 60 32 8 6 0.02 ALIASED")
@@ -83,7 +84,7 @@ final class TwinBankCommandTests: XCTestCase {
         let f = try HandlerFixture(side: 64)
         let reply = f.handler.handle("BANK OPEN mouth")
         XCTAssertTrue(
-            reply.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=144 atoms_bytes=2359296 rank=144 cond="),
+            reply.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=144 atoms_bytes=2359296 rank=144 cond="),
             reply
         )
     }
@@ -131,7 +132,7 @@ final class TwinBankCommandTests: XCTestCase {
         _ = openControlBank(f)
 
         let coefficients = referenceGaussians(160 * 5)
-        writeFloats(coefficients, at: 8, into: f)
+        writeFloats(coefficients, at: 8, into: f, verb: .bankGenerate)
 
         let reply = f.handler.handle("BANK GENERATE w00000001 5")
         XCTAssertTrue(reply.hasPrefix("OK BANK GENERATE"), reply)
@@ -148,7 +149,7 @@ final class TwinBankCommandTests: XCTestCase {
         let f = try HandlerFixture(side: 64)
         _ = openControlBank(f)
         let coefficients = referenceGaussians(160 * 7)
-        writeFloats(coefficients, at: 8, into: f)
+        writeFloats(coefficients, at: 8, into: f, verb: .bankGenerate)
 
         let reply = f.handler.handle("BANK GENERATE w00000001 7")
         XCTAssertTrue(reply.hasPrefix("ERROR out_of_range"), reply)
@@ -157,7 +158,7 @@ final class TwinBankCommandTests: XCTestCase {
     func testBankGenerateUnknownIdIsNotFound() throws {
         let f = try HandlerFixture(side: 64)
         let reply = f.handler.handle("BANK GENERATE w09999999 1")
-        XCTAssertTrue(reply.hasPrefix("ERROR not_found: w09999999"), reply)
+        XCTAssertTrue(reply.hasPrefix("ERROR not_found: \"w09999999\""), reply)
     }
 
     // MARK: - BANK FIT
@@ -167,7 +168,7 @@ final class TwinBankCommandTests: XCTestCase {
         _ = openControlBank(f)
 
         let probe = WaveBank.referenceProbe(spec: .reference)
-        writeFloats(probe, at: 8, into: f)
+        writeFloats(probe, at: 8, into: f, verb: .bankFit)
 
         let reply = f.handler.handle("BANK FIT w00000001")
         XCTAssertTrue(reply.hasPrefix("OK BANK FIT"), reply)
@@ -181,15 +182,15 @@ final class TwinBankCommandTests: XCTestCase {
         XCTAssertEqual(shmCoefficients, fit.coefficients)
     }
 
-    /// AMENDMENT 2: G7's residual string-equality refers to the REPAIRED
-    /// (default) bank; the control bank's fit is G4's, in the library tests.
+    /// The daemon's residual equals the library's as a string on the REPAIRED
+    /// (default) bank; the control bank's fit is checked in the library tests.
     func testBankFitOnDefaultRepairedBankMatchesLibraryStringEqual() throws {
         let f = try HandlerFixture(side: 64)
         let open = f.handler.handle("BANK OPEN mouth")
-        XCTAssertTrue(open.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=144"), open)
+        XCTAssertTrue(open.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=144"), open)
 
         let probe = WaveBank.referenceProbe(spec: .referenceNyquistSafe)
-        writeFloats(probe, at: 8, into: f)
+        writeFloats(probe, at: 8, into: f, verb: .bankFit)
         let reply = f.handler.handle("BANK FIT w00000001")
         XCTAssertTrue(reply.hasPrefix("OK BANK FIT"), reply)
 
@@ -203,7 +204,7 @@ final class TwinBankCommandTests: XCTestCase {
     func testBankFitUnknownIdIsNotFound() throws {
         let f = try HandlerFixture(side: 64)
         let reply = f.handler.handle("BANK FIT w09999999")
-        XCTAssertTrue(reply.hasPrefix("ERROR not_found: w09999999"), reply)
+        XCTAssertTrue(reply.hasPrefix("ERROR not_found: \"w09999999\""), reply)
     }
 
     // MARK: - BANK NOISE
@@ -251,7 +252,7 @@ final class TwinBankCommandTests: XCTestCase {
         _ = openControlBank(f)
         let reply = f.handler.handle("BANK INFO w00000001")
         XCTAssertTrue(reply.hasPrefix("OK BANK INFO"), reply)
-        XCTAssertEqual(parseField(reply, "name"), "mouth", reply)
+        XCTAssertEqual(parseField(reply, "name"), "\"mouth\"", reply)
         XCTAssertEqual(parseField(reply, "T"), "4096", reply)
         XCTAssertEqual(parseField(reply, "H"), "32", reply)
         XCTAssertEqual(parseField(reply, "centers"), "8", reply)
@@ -262,7 +263,7 @@ final class TwinBankCommandTests: XCTestCase {
 
     func testBankInfoUnknownIdIsNotFound() throws {
         let f = try HandlerFixture(side: 64)
-        XCTAssertTrue(f.handler.handle("BANK INFO w09999999").hasPrefix("ERROR not_found: w09999999"))
+        XCTAssertTrue(f.handler.handle("BANK INFO w09999999").hasPrefix("ERROR not_found: \"w09999999\""))
     }
 
     func testBankListCountOne() throws {
@@ -303,7 +304,7 @@ final class TwinBankCommandTests: XCTestCase {
         let rid = try openReaderId(f)
 
         let probe = WaveBank.referenceProbe(spec: .reference)
-        writeFloats(probe, at: 8, into: f)
+        writeFloats(probe, at: 8, into: f, verb: .bankFit)
         let fitReply = f.handler.handle("READER \(rid) BANK FIT w00000001")
         XCTAssertTrue(fitReply.hasPrefix("OK BANK FIT session=\(rid)"), fitReply)
 
@@ -325,14 +326,14 @@ final class TwinBankCommandTests: XCTestCase {
         let f = try HandlerFixture(side: 64, wal: appender)
 
         // Opened via the control-bank ALIASED grammar — the WAL op that was
-        // recorded is a plain spec (AMENDMENT 2's aliasing gate is a
+        // recorded is a plain spec (the aliasing check is a
         // write-time-only check, per the comment at the OPEN handler);
         // replay must restore it without re-checking aliasing.
         let openReply = openControlBank(f)
-        XCTAssertTrue(openReply.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=160 atoms_bytes=2621440"), openReply)
+        XCTAssertTrue(openReply.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=160 atoms_bytes=2621440"), openReply)
 
         let probe = WaveBank.referenceProbe(spec: .reference)
-        writeFloats(probe, at: 8, into: f)
+        writeFloats(probe, at: 8, into: f, verb: .bankFit)
         let beforeFit = f.handler.handle("BANK FIT w00000001")
         XCTAssertTrue(beforeFit.hasPrefix("OK BANK FIT"), beforeFit)
 
@@ -348,7 +349,7 @@ final class TwinBankCommandTests: XCTestCase {
         XCTAssertEqual(restored.bank.K, 160)
 
         let f2 = try HandlerFixture(side: 64, twin: fresh)
-        writeFloats(probe, at: 8, into: f2)
+        writeFloats(probe, at: 8, into: f2, verb: .bankFit)
         let afterFit = f2.handler.handle("BANK FIT w00000001")
         XCTAssertTrue(afterFit.hasPrefix("OK BANK FIT"), afterFit)
 
@@ -364,7 +365,7 @@ final class TwinBankCommandTests: XCTestCase {
         let path = tmpDir + "snap.dags"
         let f1 = try HandlerFixture(side: 64)
         let openReply = openControlBank(f1)
-        XCTAssertTrue(openReply.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=160 atoms_bytes=2621440"), openReply)
+        XCTAssertTrue(openReply.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=160 atoms_bytes=2621440"), openReply)
 
         let saveReply = f1.handler.handle("SAVE \(path)")
         XCTAssertTrue(saveReply.hasPrefix("OK SAVE"), saveReply)
@@ -375,7 +376,7 @@ final class TwinBankCommandTests: XCTestCase {
 
         let infoReply = f2.handler.handle("BANK INFO w00000001")
         XCTAssertTrue(infoReply.hasPrefix("OK BANK INFO"), infoReply)
-        XCTAssertEqual(parseField(infoReply, "name"), "mouth", infoReply)
+        XCTAssertEqual(parseField(infoReply, "name"), "\"mouth\"", infoReply)
         XCTAssertEqual(parseField(infoReply, "K"), "160", infoReply)
     }
 }

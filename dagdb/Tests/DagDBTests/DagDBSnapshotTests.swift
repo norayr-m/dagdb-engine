@@ -3,8 +3,8 @@ import XCTest
 
 final class DagDBSnapshotTests: XCTestCase {
 
-    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when several checkouts run swift test concurrently in one shared dir).
+    /// Per-test unique temp dir (fixed /tmp names race when several
+    /// checkouts run swift test concurrently in one shared dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {
@@ -172,8 +172,8 @@ final class DagDBSnapshotTests: XCTestCase {
                       "legacy snapshot loaded correctly")
     }
 
-    /// Acceptance test for u64 rank widening (T1b, 2026-04-21).
-    /// Queen's criterion: rank values impossible on u8 (300) and u32
+    /// Acceptance test for u64 rank widening (2026-04-21).
+    /// The criterion: rank values impossible on u8 (300) and u32
     /// (4 294 967 300) must both survive a SAVE/LOAD round-trip.
     func testU64RankRoundTrip() throws {
         let (eng1, gw, gh) = try makeEngine(side: 8)
@@ -483,11 +483,11 @@ final class DagDBSnapshotTests: XCTestCase {
         XCTAssertFalse(eng2.isRegister(node: 60))
     }
 
-    // MARK: - Malformed snapshot hardening (Fable review H1/H2)
+    // MARK: - Malformed snapshot hardening
 
     /// A v4/v5 back-edge trailer whose dst is out of range must be rejected,
     /// not written past the isRegisterBuf. Crafted/corrupt .dags files must
-    /// not corrupt heap memory. Regression guard for finding H1.
+    /// not corrupt heap memory (a regression guard).
     func testCorruptBackEdgeDstIsRejected() throws {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
@@ -535,7 +535,7 @@ final class DagDBSnapshotTests: XCTestCase {
     /// A snapshot whose header is valid but whose body is physically
     /// truncated must throw, not trap on an out-of-range subdata slice.
     /// Dying on a half-written file is the wrong failure mode for a
-    /// crash-recovery database. Regression guard for finding H2.
+    /// crash-recovery database (a regression guard).
     func testTruncatedBodyThrowsNotCrash() throws {
         let (eng1, gw, gh) = try makeEngine(side: 8)
         seed(eng1)
@@ -573,7 +573,7 @@ final class DagDBSnapshotTests: XCTestCase {
         }
     }
 
-    // MARK: - v5 env-origin trailer (Phase 3 of dev/test/prod env split)
+    // MARK: - v5 env-origin trailer (the dev/test/prod env split)
 
     func testV5EnvStampRoundTripUnspecified() throws {
         let (eng1, gw, gh) = try makeEngine(side: 8)

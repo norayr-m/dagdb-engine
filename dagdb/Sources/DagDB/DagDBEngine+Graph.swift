@@ -34,10 +34,10 @@ extension DagDBEngine {
         // Seed BACK_EDGEs from the exported state. The FAN-IN rule is still
         // bypassed here — the graph enforced it when the entry was added via
         // `connectBack` — but the index RANGE is not.
-        // C4 · through the checked installer, not straight into `regPtr`:
+        // Through the checked installer, not straight into `regPtr`:
         // this was the one back-edge path with no range check at all, and
         // `latchBackEdges` then indexes the truth buffer by whatever it
-        // seeded, on every tick (audit A, findings 16 and 17).
+        // seeded, on every tick.
         for i in 0..<state.backEdgeSrcs.count {
             try addBackEdgeUnchecked(src: state.backEdgeSrcs[i],
                                      dst: state.backEdgeDsts[i])
@@ -47,8 +47,18 @@ extension DagDBEngine {
     /// Execute one tick with micro-time resonance within each rank.
     /// Each rank iterates until convergence or MAX_MICRO_TICKS.
     /// Returns: (microTicksPerRank: [Int], converged: [Bool])
+    ///
+    /// This path's 2 means
+    /// "did not converge", which is a different thing from a ternary node's
+    /// UNDEFINED; a graph with any non-binary node is refused by name, before
+    /// anything is dispatched. Binary behaviour is unchanged.
     @discardableResult
-    public func tickWithResonance(tickNumber: UInt32, maxMicroTicks: Int = 100) -> (microTicks: [Int], converged: [Bool]) {
+    public func tickWithResonance(tickNumber: UInt32, maxMicroTicks: Int = 100) throws -> (microTicks: [Int], converged: [Bool]) {
+        if let first = firstNonBinaryNode() {
+            throw EngineError.ternary(
+                "tickWithResonance refuses a graph with a non-binary node (first: node \(first), " +
+                "mode \(modeByte(first))); its 2 means non-converged, not a trit")
+        }
         var microTicksPerRank: [Int] = []
         var convergedPerRank: [Bool] = []
 
@@ -63,10 +73,9 @@ extension DagDBEngine {
 
         // Leaves-up: iterate rank from max down to 0. Bounded by
         // `effectiveRankCount`, not by `maxRank` — the third rank-mode loop
-        // in the engine, carrying the same defect as `tick`/`tickLegacy`
-        // (docs/contracts/RANK_BOUND_GATES_FROZEN.md). Fixed by the same
-        // mechanism; not separately gated, since nothing in the tree calls
-        // this path.
+        // in the engine, carrying the same defect as `tick`/`tickLegacy`.
+        // Fixed by the same mechanism; not separately tested, since nothing
+        // in the tree calls this path.
         ensureRankTopology()
         for rankLevel in stride(from: effectiveRankCount - 1, through: 0, by: -1) {
             // Snapshot truth states before this rank's micro-time
@@ -76,7 +85,7 @@ extension DagDBEngine {
             var rankConverged = false
 
             for _ in 0..<maxMicroTicks {
-                guard let cmdBuf = queue.makeCommandBuffer() else { break }
+                guard let cmdBuf = makeGPUCommandBuffer() else { break }
 
                 for colorIdx in colorOrder {
                     guard let enc = cmdBuf.makeComputeCommandEncoder() else { continue }
@@ -94,6 +103,7 @@ extension DagDBEngine {
                     enc.setBuffer(isRegisterBuf, offset: 0, index: 8)
                     var kernelNodeCount = UInt32(nodeCount)
                     enc.setBytes(&kernelNodeCount, length: 4, index: 9)
+                    bindTernaryLanes(enc, firstIndex: 10)
 
                     let tpg = tickPipeline.maxTotalThreadsPerThreadgroup
                     enc.dispatchThreadgroups(
@@ -146,10 +156,10 @@ extension DagDBEngine {
 
     /// Write a complete truth state snapshot (for save/restore).
     ///
-    /// C4 · "complete" is now enforced. The old clamp accepted a short array
+    /// "Complete" is enforced. An older clamp accepted a short array
     /// and left the tail at its previous values, so a caller restoring a
     /// snapshot got a graph that was part old and part new, with no sign of
-    /// it anywhere (audit A, finding 18).
+    /// it anywhere.
     public func writeTruthStates(_ states: [UInt8]) throws {
         guard states.count == nodeCount else {
             throw EngineError.shortBuffer(what: "writeTruthStates",

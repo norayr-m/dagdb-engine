@@ -1,6 +1,6 @@
 import Foundation
 
-/// Cross-convolution self-test — twin spec line 6, the sealed W1 identity.
+/// Cross-convolution self-test — the sealed cross-convolution identity.
 ///
 /// For two ears A and B with per-path kernels from a common source, any true
 /// source-born signal obeys kB ⋆ a == kA ⋆ b: one recording pushed through
@@ -24,8 +24,7 @@ public struct CrossConvolutionCheck {
         /// divided by the max |reference| on that window (0 if both silent).
         public let residual: Double
         public let comparedSamples: Int
-        /// Audit C finding 30 (contract ruling, cross-convolution): a
-        /// `warmup` at or past the record is REFUSED BY NAME, not clamped.
+        /// A `warmup` at or past the record is REFUSED BY NAME, not clamped.
         /// Non-nil iff `check` refused; the residual is then `.infinity`
         /// and `comparedSamples` is 0. An appended field — decoding a
         /// record written before it yields `nil`.
@@ -35,7 +34,7 @@ public struct CrossConvolutionCheck {
             self.comparedSamples = comparedSamples
             self.refusal = refusal
         }
-        /// Finding 30: a check that compared NOTHING does not pass, for any
+        /// A check that compared NOTHING does not pass, for any
         /// tolerance — previously `residual == 0 <= tolerance` returned
         /// true after an empty window.
         public func passes(tolerance: Double) -> Bool {
@@ -62,15 +61,14 @@ public struct CrossConvolutionCheck {
     /// The identity check: kB ⋆ a versus kA ⋆ b, compared after `warmup`
     /// samples and over the overlap of both RECORDS.
     ///
-    /// Audit C finding 29 (contract ruling, cross-convolution): the
-    /// compared window stops at the record's end — `min(a.count, b.count)`
+    /// The compared window stops at the record's end — `min(a.count, b.count)`
     /// — never `min(lhs.count, rhs.count)`, which ran `taps − 1` samples
     /// into the convolution tail, past any sample either recording
     /// actually contains. (The window is additionally clipped to the
     /// convolution outputs' own length, which only binds when a kernel is
     /// empty and `convolve` returns nothing.)
     ///
-    /// Finding 30: `warmup` at or past that window is refused by name in
+    /// A `warmup` at or past that window is refused by name in
     /// the returned `Result` — never clamped into an empty comparison that
     /// reported residual 0 and passed every tolerance.
     public static func check(recordA a: [Float], recordB b: [Float],

@@ -3,8 +3,8 @@ import XCTest
 
 final class DagDBTests: XCTestCase {
 
-    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when several checkouts run swift test concurrently in one shared dir).
+    /// Per-test unique temp dir (fixed /tmp names race when several
+    /// checkouts run swift test concurrently in one shared dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {
@@ -590,7 +590,7 @@ final class DagDBTests: XCTestCase {
         print("  GCUPS: \(String(format: "%.2f", gcups))")
         print("  ═══════════════════════════════════════")
 
-        // Gate G6: 1M nodes < 10ms/tick
+        // Target: 1M nodes < 10ms/tick (the assertion allows 100 ms)
         XCTAssertLessThan(msPerTick, 100, "1M nodes should complete in < 100ms/tick")
 
         // Read back and verify something computed
@@ -625,7 +625,7 @@ final class DagDBTests: XCTestCase {
         XCTAssertEqual(g.nodeId(labeled: "MyNode"), 0)
     }
 
-    // MARK: - BACK_EDGE primitive (Phase 1: CPU storage + CPU latch)
+    // MARK: - BACK_EDGE primitive: CPU storage + CPU latch
 
     func testBackEdgeAddAndCount() {
         var state = DagDBState(width: 4, height: 4)
@@ -704,7 +704,7 @@ final class DagDBTests: XCTestCase {
         }
     }
 
-    // MARK: - BACK_EDGE primitive (Phase 2: full GPU engine integration)
+    // MARK: - BACK_EDGE primitive: full GPU engine integration
 
     func testEngineBackEdge1BitToggle() throws {
         // Same toggle as above, but driven through the full DagDBEngine
@@ -819,7 +819,7 @@ final class DagDBTests: XCTestCase {
                        "register flag must NOT be set after a rejected addBackEdge")
     }
 
-    // MARK: - BACK_EDGE primitive (Phase 3: graph-level VALIDATE)
+    // MARK: - BACK_EDGE primitive: graph-level VALIDATE
 
     func testGraphConnectBack() throws {
         let g = DagDBGraph()
@@ -889,7 +889,7 @@ final class DagDBTests: XCTestCase {
         XCTAssertNoThrow(try g.connect(from: extra, to: reg))
     }
 
-    // MARK: - BACK_EDGE primitive (Phase 8: 4-bit ripple counter integration)
+    // MARK: - BACK_EDGE primitive: 4-bit ripple counter integration
 
     /// Compute a 64-bit LUT6 truth table from a Boolean function of an input
     /// vector encoded as the low bits of `i` (bit 0 = slot 0, bit 1 = slot 1, …).

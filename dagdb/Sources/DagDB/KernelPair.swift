@@ -1,10 +1,8 @@
 import Foundation
 
 /// A per-path kernel pair (root→A, root→B) with the metadata declared at
-/// load time — twin spec line 6, second half. See
-/// docs/contracts/KERNELS_GATES_FROZEN.md. Storage is by reference (path +
-/// sha); this type is the in-memory pair once loaded, plus the derived-
-/// warmup rule from K4.
+/// load time. Storage is by reference (path + sha); this type is the
+/// in-memory pair once loaded, plus the derived-warmup rule.
 public struct KernelPair: Equatable, Codable {
     public struct Meta: Equatable, Codable {
         public let fs: Double
@@ -34,10 +32,10 @@ public struct KernelPair: Equatable, Codable {
     public let kB: [Double]
     public let meta: Meta
 
-    /// The sealed W1 kernels file's own sha256 — the same constant
-    /// `Tests/Fixtures/w1_kernels.sha256` carries. Audit C finding 23
-    /// (ruling: "the sha pin defaults to the sealed constant"): `load`
-    /// defaults `expectedSHA256` to this, so a caller who says nothing
+    /// The sealed kernels file's own sha256 — the same constant
+    /// `Tests/Fixtures/w1_kernels.sha256` carries. The sha pin defaults to
+    /// the sealed constant: `load` defaults `expectedSHA256` to this, so a
+    /// caller who says nothing
     /// gets the pin the type's doc promises rather than an unverified read.
     public static let sealedSHA256 =
         "2523d3a8a4de44b56268ee31a703b6bcc6522c7c66a305651f8ec7c03e5c56b8"
@@ -61,7 +59,7 @@ public struct KernelPair: Equatable, Codable {
         guard kA.allSatisfy({ $0.isFinite }), kB.allSatisfy({ $0.isFinite }) else {
             throw KernelError.badKernel("kernel taps must all be finite")
         }
-        // Audit C finding 26: `Meta.init` checks nothing, so a non-finite
+        // `Meta.init` checks nothing, so a non-finite
         // tau/sigma/fs reached `derivedWarmup`, where `Int(inf)` /
         // `Int(nan)` TRAPPED, and a negative sigma produced a negative
         // warmup silently. Every declared Double is refused by name here —
@@ -97,15 +95,15 @@ public struct KernelPair: Equatable, Codable {
 
     public var taps: Int { kA.count }
 
-    /// K4: warmup = ceil((|τ_A − τ_B| + 3·σ_source)·fs), only when τ_A, τ_B,
-    /// σ_source are all present and fs > 0. For W1: 185.
+    /// Warmup = ceil((|τ_A − τ_B| + 3·σ_source)·fs), only when τ_A, τ_B,
+    /// σ_source are all present and fs > 0. For the sealed pair: 185.
     public var derivedWarmup: Int? {
         guard let tauA = meta.tauA, let tauB = meta.tauB,
               let sigmaSource = meta.sigmaSource, meta.fs > 0 else {
             return nil
         }
         let value = (abs(tauA - tauB) + 3.0 * sigmaSource) * meta.fs
-        // Finding 26: `KernelPair.init` already refuses non-finite inputs;
+        // `KernelPair.init` already refuses non-finite inputs;
         // this belt keeps the `Int(...)` conversion itself total for any
         // product that still lands outside Int (a huge but finite fs).
         let rounded = value.rounded(.up)
@@ -113,7 +111,7 @@ public struct KernelPair: Equatable, Codable {
         return exact
     }
 
-    /// Audit C finding 28: a resolved warmup was never compared against
+    /// Earlier, a resolved warmup was never compared against
     /// anything — the mismatch only surfaced as a silent clamp downstream
     /// in `CrossConvolutionCheck`. `nil` iff `value` leaves a non-empty
     /// comparison window against the declared `window_samples`; otherwise
@@ -129,7 +127,7 @@ public struct KernelPair: Equatable, Codable {
         return nil
     }
 
-    /// `warmup(override:)`, but refusing by name (finding 28) instead of
+    /// `warmup(override:)`, but refusing by name instead of
     /// handing back a warmup that cannot leave a non-empty window.
     public func checkedWarmup(override: Int?) throws -> (value: Int, derived: Bool)? {
         guard let resolved = warmup(override: override) else { return nil }
@@ -140,7 +138,7 @@ public struct KernelPair: Equatable, Codable {
     }
 
     /// Resolution order: explicit override > derived (from τ/σ) > declared
-    /// (from the load line) > nil ("no derived warmup" per K4).
+    /// (from the load line) > nil ("no derived warmup").
     public func warmup(override: Int?) -> (value: Int, derived: Bool)? {
         if let override = override {
             return (override, false)
@@ -160,15 +158,19 @@ public struct KernelPair: Equatable, Codable {
     /// ignored). SHA-256 is always computed over the whole file and
     /// returned; when `expectedSHA256` is given it must match or the load
     /// throws `shaMismatch`. τ/σ/declaredWarmup are declared by the caller
-    /// (K4: not read from the kernels file).
+    /// (not read from the kernels file).
     public static func load(path: String, expectedSHA256: String? = sealedSHA256,
                              tauA: Double? = nil, tauB: Double? = nil,
                              sigmaSource: Double? = nil,
-                             declaredWarmup: Int? = nil) throws -> (pair: KernelPair, sha256: String) {
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw KernelError.fileNotFound(path)
-        }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+                             declaredWarmup: Int? = nil,
+                             admit: ((Int) -> String?)? = nil,
+                             admitParse: ((Data) -> String?)? = nil) throws -> (pair: KernelPair, sha256: String) {
+        // Read once through `DaemonFile` (see AlarmFixture.load).
+        let data: Data
+        do { data = try DaemonFile.read(path, admit: admit) }
+        catch DaemonFile.Refusal.missing { throw KernelError.fileNotFound(path) }
+        // The parse is admitted on the bytes read, before JSONSerialization.
+        if let a = admitParse, let line = a(data) { throw DaemonFile.Refusal.admission(line) }
         let actualSHA = DagDBSnapshot.sha256Hex(data)
         if let expected = expectedSHA256 {
             if expected != actualSHA {
@@ -202,8 +204,8 @@ public struct KernelPair: Equatable, Codable {
             }
             return n.doubleValue
         }
-        /// Finding 27: `NSNumber.intValue` silently truncated any JSON
-        /// number — `2.7` became 2 and `1e20` became garbage. The value
+        /// `NSNumber.intValue` silently truncates any JSON
+        /// number — `2.7` becomes 2 and `1e20` becomes garbage. The value
         /// must be integral and representable as an Int, named otherwise.
         func intField(_ key: String) throws -> Int {
             guard let n = top[key] as? NSNumber else {
@@ -234,7 +236,7 @@ public struct KernelPair: Equatable, Codable {
                          declaredWarmup: declaredWarmup)
         do {
             let pair = try KernelPair(kA: kA, kB: kB, meta: meta)
-            // Finding 28: a declared/derived warmup that cannot leave a
+            // A declared/derived warmup that cannot leave a
             // non-empty comparison window is refused HERE, at the load, not
             // clamped silently by the check that later applies it.
             _ = try pair.checkedWarmup(override: nil)

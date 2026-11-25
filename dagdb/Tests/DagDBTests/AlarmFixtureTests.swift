@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — AlarmFixture loader. The synthetic-fixture tests exercise the
+/// AlarmFixture loader. The synthetic-fixture tests exercise the
 /// loader without the sealed file; the sealed-fixture tests replay the
 /// real 201-entry `w2_records.json` and skip (XCTSkip) when
 /// `DAGDB_W2_FIXTURE` is unset — precedent `DagDBTickPerfTests.swift:206`.

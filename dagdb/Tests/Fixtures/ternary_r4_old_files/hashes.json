@@ -1,0 +1,145 @@
+{
+  "contract" : "docs\/contracts\/TERNARY_GATES_FROZEN.md R4 (old files load identically)",
+  "files" : {
+    "chain\/00001.diff" : "afa136a66922d2959b6bbbca3534878024e23cbcd04982ca546244e570bcda6a",
+    "chain\/00001.diff.sha256" : "f43e09892efd705e9b45aed04a0619a0a0d9bcefeff00144ed2caf559a71106a",
+    "chain\/00002.diff" : "b1f9fcdb08eb3e1b2a6064da00094d2d736254784a7c18fbbeee6ce4d2904748",
+    "chain\/00002.diff.sha256" : "ace02f96bb543b480b955e5da1344bd9c45f83259c7d890407a9da791b87d812",
+    "chain\/base.dags" : "f2e7af7b37a715ae43eee855b53462f5e67001aaa6ca6d77904f85baf78e2ae1",
+    "chain\/base.dags.sha256" : "4da31b13e151b4151ca2b3e750dc84a4234e8da0946cac260156a67d9cadca86",
+    "csv_v1\/edges.csv" : "2e1545108c12ed8991b7d6b243aa4c9e75d72db2b744dd9edc9826956394e91c",
+    "csv_v1\/nodes.csv" : "6c0ce57aec8186b5e2f2c66bf7ccf82f33248cd3ea3d85fecfa63691c2986e3f",
+    "morton\/activation.bin" : "ef6620ac34204f7e9d0ee0d39235b07e4011f48ad6db98199985e6c4e8b960bd",
+    "morton\/back_edges.bin" : "ffebe5ad3150ed9b533adc6df0eecda0085550b6cb09363bbfd03d9548c7438c",
+    "morton\/edge_weights.bin" : "95ba68f0ebbef18f87682458a561eba53f0be93db3cfc7a81ad344db5313dae7",
+    "morton\/is_register.bin" : "128074db5bd63ea56ecf9eb1bbc26775ecd55d9c9421d020e359bd5d86aafedb",
+    "morton\/lut_high.bin" : "64e2c411be66f7d3190a027c2cb0c3fbc6fb82bc8b26f7e49008e97cb2d354e7",
+    "morton\/lut_low.bin" : "1912e0bdb38ade0adfe83991380c77063bfd4b0895913d6b69afa9293c5ad755",
+    "morton\/neighbors.bin" : "dce15eda538dc921b5e2b8b2be913472695277161bb8459781894da7208a98dd",
+    "morton\/node_value.bin" : "5bcf7742e4f95c97a01f36143e4fef9c782a7e336ba60188e8d4cd9f2b6877da",
+    "morton\/nodeType.bin" : "28b4393989134e160017ecb5ed3661cce22f5af80c224649a1fbd30ef0ed7109",
+    "morton\/rank.bin" : "6a5b6163ec5200a96b690ddc5839786c0c584109afb3964171b4979264c45238",
+    "morton\/truth.bin" : "21920f0149e2fe700bd69f41adade65b5f754beb6e3198093a392a8e135bf0ca",
+    "v1.dags" : "37376bb395df4c6571b447706817172afaba3949f0742f80d162c122c84414e8",
+    "v1.json" : "5d0841fe7b704bb5a6bba8575d4859fe8d3654095424a17faa035795681db7c9",
+    "v2.dags" : "e7b34ae286686779dd064873b8f4fb06733d9669303d56caf4ac6cffff533fe8",
+    "v2.wal" : "3932fea5670d825412e5ab3e22d5a53e8b89b22e3a07f0b00e908e59e725ddad",
+    "v3.dags" : "5f524174ab9d54f3bc39f0310823b97aa3d7400d88b90275fdee0f6fe5780aa3",
+    "v3z.dags" : "62702d284d0f8d2662c693e4ee633c19fd66ffc594e759d82a16fb2dc7a57939",
+    "v4.dags" : "fde64ee1ba49a3184e77b0722ce843644ea04cc93f6770b8c9c9830ae0ced112",
+    "v5z.dags" : "466bcd7769a0fb0563b5b81b97dba77062be4a0f36935cb60f1bedfd3e0069dc",
+    "v6.dags" : "a2cc5db886d5bbe17a19e0f891d4baf719ebb75b6eb3631d41eb995821eb4fb0",
+    "v6z.dags" : "d54a37b05244c4e550f8cc07a31d9c38d019a7863971adc2d23a40f4baa21559",
+    "v7.dags" : "fb1d334eb2f7f68a54b58281560f7eb5e48982b3c8712977213841b69465de5b",
+    "v7.dags.sha256" : "415664fd1fbe6f4c8cb64eedcfd08708c58cac277fe1423b7195098c9e933978",
+    "v7z.dags" : "f2e7af7b37a715ae43eee855b53462f5e67001aaa6ca6d77904f85baf78e2ae1",
+    "v7z.dags.sha256" : "4da31b13e151b4151ca2b3e750dc84a4234e8da0946cac260156a67d9cadca86"
+  },
+  "generator" : "TernaryR4OldFilesTests.makeOldGraph \/ writeOldFiles (Rng seed 0x7e120004, side 8; ranks r in 0..<8 stored as r·2^33+5, v2 files r·1000+300, v1 files r)",
+  "loads" : [
+    {
+      "bytesRead" : "2272",
+      "fileTicks" : "7",
+      "hash" : "ea3da455a7528a40040944aac5f8683b0d86e734236498da5dc782cf5d291ebf",
+      "kind" : "dags",
+      "name" : "v1.dags"
+    },
+    {
+      "bytesRead" : "2464",
+      "fileTicks" : "7",
+      "hash" : "4414efcb6ba0493a75d67ee2303b7d4fb0b0701953c35811ad33d77b7de98b95",
+      "kind" : "dags",
+      "name" : "v2.dags"
+    },
+    {
+      "bytesRead" : "2720",
+      "fileTicks" : "7",
+      "hash" : "6d11b66ed293243919b2ff67422ca2d71ae481ab9debfcac168e2c3a2ae6007f",
+      "kind" : "dags",
+      "name" : "v3.dags"
+    },
+    {
+      "bytesRead" : "1252",
+      "fileTicks" : "7",
+      "hash" : "6d11b66ed293243919b2ff67422ca2d71ae481ab9debfcac168e2c3a2ae6007f",
+      "kind" : "dags",
+      "name" : "v3z.dags"
+    },
+    {
+      "bytesRead" : "2772",
+      "fileTicks" : "7",
+      "hash" : "2db0cd9f2ad6041e657357530c379f8a11370b4904f4bfe33f9d0922019f627d",
+      "kind" : "dags",
+      "name" : "v4.dags"
+    },
+    {
+      "bytesRead" : "1309",
+      "fileTicks" : "7",
+      "hash" : "2db0cd9f2ad6041e657357530c379f8a11370b4904f4bfe33f9d0922019f627d",
+      "kind" : "dags",
+      "name" : "v5z.dags"
+    },
+    {
+      "bytesRead" : "4702",
+      "fileTicks" : "7",
+      "hash" : "60ab6a788b86b1f4e8b8503b3c604f6fc789092be3bf1e3c1257739b1da25c07",
+      "kind" : "dags",
+      "name" : "v6.dags"
+    },
+    {
+      "bytesRead" : "3106",
+      "fileTicks" : "7",
+      "hash" : "1e764499913c6bc728195d85dab000b1884ebd3dbd758f8a21d57f993f5be04a",
+      "kind" : "dags",
+      "name" : "v6z.dags"
+    },
+    {
+      "bytesRead" : "4710",
+      "fileTicks" : "7",
+      "hash" : "60ab6a788b86b1f4e8b8503b3c604f6fc789092be3bf1e3c1257739b1da25c07",
+      "kind" : "dags",
+      "name" : "v7.dags"
+    },
+    {
+      "bytesRead" : "3242",
+      "fileTicks" : "7",
+      "hash" : "60ab6a788b86b1f4e8b8503b3c604f6fc789092be3bf1e3c1257739b1da25c07",
+      "kind" : "dags",
+      "name" : "v7z.dags"
+    },
+    {
+      "fileVersion" : "2",
+      "hash" : "2fca190524a9293f9a44a11397ce58fc3af49fa4617db7db72bf14fdefd0844f",
+      "kind" : "wal",
+      "name" : "v2.wal",
+      "recordsApplied" : "82",
+      "recordsSkipped" : "0"
+    },
+    {
+      "diffsReplayed" : "2",
+      "hash" : "76c820f2c144fd5db1858c039434c838024f327075a67cc824cba167af6dca8d",
+      "kind" : "backup",
+      "name" : "chain"
+    },
+    {
+      "hash" : "6d11b66ed293243919b2ff67422ca2d71ae481ab9debfcac168e2c3a2ae6007f",
+      "kind" : "json",
+      "name" : "v1.json"
+    },
+    {
+      "edgesParsed" : "200",
+      "hash" : "6d11b66ed293243919b2ff67422ca2d71ae481ab9debfcac168e2c3a2ae6007f",
+      "kind" : "csv",
+      "name" : "csv_v1",
+      "nodesParsed" : "64"
+    },
+    {
+      "bytesRead" : "4660",
+      "hash" : "60ab6a788b86b1f4e8b8503b3c604f6fc789092be3bf1e3c1257739b1da25c07",
+      "kind" : "morton",
+      "name" : "morton"
+    }
+  ],
+  "recorded_by" : "main build (git archive main dagdb + this test file), ticket T5",
+  "side" : 8
+}

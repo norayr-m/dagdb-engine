@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// `DagDBEngine.init` — AMENDMENT 1 item 4
-/// (`docs/contracts/TILING_GATES_FROZEN.md`, T-S2 finding): a small
+/// `DagDBEngine.init`: a small
 /// `HexGrid(width: n, height: 1)` can leave one of the 7 Morton-colour
 /// buckets empty, and `device.makeBuffer(length: 0, ...)` returns `nil`,
 /// failing the whole init. The fix allocates at least one element per

@@ -1,9 +1,9 @@
 import XCTest
 @testable import DagDB
 
-/// Audit C, scope α — the npz / kernels / cross-convolution / bank / fold /
-/// derived-views half. `docs/contracts/SUBSYSTEMS_BOUNDS_GATES_FROZEN.md`,
-/// findings 20-44 and test items 79, 80, 83.
+/// Bounds of the newer subsystems, first half: the npz / kernels /
+/// cross-convolution / bank / fold / derived-views part, one edge test per
+/// finding of an internal audit of the newer subsystems.
 ///
 /// Every failing input is built BY HAND: a hand-assembled `.npy`, a hand-
 /// written JSON field, an out-of-range argument, a synthetic fixture. None
@@ -110,7 +110,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         return path
     }
 
-    // MARK: - 20 / 83 · npy major and minor versions
+    // MARK: - npy major and minor versions
 
     func testF20NpyVersionRefusedByName() throws {
         let payload = Data([0, 0, 0x80, 0x3F, 0, 0, 0, 0x40])   // 1.0f, 2.0f
@@ -150,7 +150,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 21 · shape components: negative, and overflowing
+    // MARK: - Shape components: negative, and overflowing
 
     func testF21ShapeComponentsRefusedByName() throws {
         // A negative component: `elementCount` went negative and the
@@ -181,7 +181,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 22 · zip64 placeholders, refused by name
+    // MARK: - Zip64 placeholders, refused by name
 
     func testF22Zip64PlaceholdersRefusedByName() throws {
         let member = npyBytes(major: 1, minor: 0, descr: "<f4", shape: "(2,)",
@@ -209,7 +209,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
 
         // (c) a CENTRAL record's compressed size at the placeholder — the
         //     case the file header says np.savez puts in LOCAL headers, and
-        //     which the pre-audit reader would have taken at face value.
+        //     which the reader before the fix would have taken at face value.
         let c = writeNpz("f22-central", zipBytes(name: "a.npy", member: member,
                                                  centralCompressedSize: 0xFFFF_FFFF))
         defer { removeScratch((c as NSString).deletingLastPathComponent) }
@@ -236,14 +236,14 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
          "window_samples": window, "ear_index_A": 170, "ear_index_B": 236]
     }
 
-    // MARK: - 23 · the sha pin defaults to the sealed constant
+    // MARK: - The sha pin defaults to the sealed constant
 
     func testF23ShaPinDefaultsToTheSealedConstant() throws {
         let path = try writeKernelJSON("f23", kernelJSON())
         defer { removeScratch((path as NSString).deletingLastPathComponent) }
 
         // A file that is NOT the sealed one, loaded with no sha argument:
-        // pre-audit this read happily; the pin now fires by default.
+        // before the fix this read happily; the pin now fires by default.
         do {
             _ = try KernelPair.load(path: path)
             XCTFail("expected shaMismatch — load must default to the sealed pin")
@@ -275,7 +275,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertEqual(sealed.sha256, KernelPair.sealedSHA256)
         XCTAssertEqual(sealed.pair.derivedWarmup, 185)
 
-        // S5 (iii): this line used to assert only that
+        // This line used to assert only that
         // `CortexFixture.sealedSHA256` is 64 characters long — the length
         // of a constant, which checks nothing. When the npz fixture is
         // present (it lives outside the repo), its sha256 is measured here
@@ -305,7 +305,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 26 · non-finite / negative tau and sigma
+    // MARK: - Non-finite / negative tau and sigma
 
     func testF26NonFiniteOrNegativeMetaRefused() throws {
         let base = KernelPair.Meta(fs: 3000, window: 2048, earA: 0, earB: 1)
@@ -334,7 +334,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 27 · window_samples must be an integer
+    // MARK: - window_samples must be an integer
 
     func testF27NonIntegralWindowSamplesRefused() throws {
         for bogus in [2.7 as Any, 1e20 as Any] {
@@ -349,7 +349,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 28 · a warmup that leaves no comparison window
+    // MARK: - A warmup that leaves no comparison window
 
     func testF28WarmupWithNoWindowRefused() throws {
         let meta = KernelPair.Meta(fs: 3000, window: 64, earA: 0, earB: 1, declaredWarmup: 64)
@@ -380,11 +380,11 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 29 · the compared window stops at the record's end
+    // MARK: - The compared window stops at the record's end
 
     func testF29ComparedWindowStopsAtTheRecordEnd() {
         // Records of 40 and 48 samples, kernels of 6 and 9 taps: the
-        // convolution outputs are 48 and 53 long, so the pre-audit window
+        // convolution outputs are 48 and 53 long, so the window before the fix
         // ran to min(48, 53) = 48 — eight samples past the shorter record.
         var stream = NamedStream(name: "audit-c-29",
                                  stateHi: 0x853c_49e6_748f_ea9b, stateLo: 0xda3e_39cb_94b9_5bdb,
@@ -401,14 +401,14 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertEqual(r.comparedSamples, 36)
     }
 
-    // MARK: - 30 / 80 · a warmup at or past the window does not pass
+    // MARK: - A warmup at or past the window does not pass
 
     func testItem80WarmupAtOrPastTheWindowDoesNotPass() {
         let a: [Float] = [0.5, -0.25, 0.125]
         let b: [Float] = [0.5, -0.25, 0.125]
         let k = CrossConvolutionCheck.PathKernel(taps: [1])
 
-        // n = min(3, 3) = 3. Pre-audit, `start` clamped to n: the loop body
+        // n = min(3, 3) = 3. Before the fix, `start` clamped to n: the loop body
         // never ran, residual was 0, comparedSamples 0 — and `passes` was
         // true for EVERY tolerance.
         for warmup in [3, 4, 100] {
@@ -439,7 +439,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertTrue(ok.passes(tolerance: 1e-6))
     }
 
-    // MARK: - 31 · the Nyquist rule covers the Gabor family too
+    // MARK: - The Nyquist rule covers the Gabor family too
 
     func testF31GaborNyquistRuleStated() {
         // Both sealed banks stay clean of the Gabor clause: at the
@@ -468,7 +468,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertNoThrow(try WaveBank(spec: wide))
     }
 
-    // MARK: - 32 · the named harmonic is inside 1...H
+    // MARK: - The named harmonic is inside 1...H
 
     func testF32NamedHarmonicIsInsideTheBank() {
         // H·f0 == fs/2 exactly: the message used to name harmonic H + 1,
@@ -482,7 +482,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertTrue(message.contains("harmonic 25"), message)
         XCTAssertFalse(message.contains("harmonic 26"), message)
 
-        // The named harmonic is <= H for every spec the gate fires on.
+        // The named harmonic is <= H for every spec the refusal fires on.
         for h in 24...40 {
             let spec = WaveBank.Spec(samples: 4096, sampleRate: 3000, f0: 60, harmonics: h,
                                      gaborCenters: 8, gaborFreqs: 6, gaborSigmaFrac: 0.02)
@@ -502,14 +502,14 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertTrue(refMsg.contains("1500"), refMsg)
     }
 
-    // MARK: - 33 · a declaration that cannot be trusted is not handed back
+    // MARK: - A declaration that cannot be trusted is not handed back
 
     func testF33RankDeficientDeclarationRefused() throws {
         // `geomspace(f0, fs/4, 2)` pins its first entry to f0 and its last
         // to fs/4 — so f0 == fs/4 makes the Gabor frequency grid hold the
         // SAME frequency twice, and the bank then carries two bit-identical
         // column pairs. Its smallest singular value is exactly 0 and the
-        // condition number sigmaMax/sigmaMin is not finite: pre-audit that
+        // condition number sigmaMax/sigmaMin is not finite: before the fix that
         // came back dressed as a valid Declaration, with no zero guard.
         let degenerate = WaveBank.Spec(samples: 64, sampleRate: 3000, f0: 750, harmonics: 1,
                                        gaborCenters: 1, gaborFreqs: 2, gaborSigmaFrac: 0.2)
@@ -534,7 +534,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
             XCTAssertTrue(message.contains("rank 4 of 6"), message)
         }
 
-        // S5 (iii): the zero guard used to be "checked" here by building a
+        // The zero guard used to be "checked" here by building a
         // `Declaration` literal in the test and asserting its own fields
         // back — an assertion that exercised no code. The guard is now
         // reached through a real declaration whose smallest singular value
@@ -555,9 +555,9 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertEqual(good.rank, 144)
     }
 
-    // MARK: - S5 (i) · 33's own edge: a NaN column in the declared matrix
+    // MARK: - A NaN column in the declared matrix
 
-    /// The verifier's S1 miss: the repair's `info` capture and zero guard
+    /// The repair's `info` capture and zero guard
     /// were present but no test put a matrix in front of `dgesdd_` that it
     /// could not factor. The corrupted column is written into the built
     /// matrix by hand from the test — `atoms` is a `let` and the production
@@ -619,7 +619,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 34 / 35 · generate's column ceiling and length check
+    // MARK: - generate's column ceiling and length check
 
     func testF34And35GenerateRefusalsAreNamed() throws {
         let bank = try WaveBank(spec: WaveBank.Spec(
@@ -670,12 +670,12 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         return (LadderFold.Objects.control(engine: engine, grid: grid), engine, grid)
     }
 
-    // MARK: - 36 / 79 · a schedule one rank short of the object
+    // MARK: - A schedule one rank short of the object
 
     func testItem79ScheduleOneRankShortRefused() throws {
         let (object, _, _) = try controlObject()
 
-        // The fact the contract asks be PRINTED: both frozen pairings sit
+        // The fact printed here: both frozen pairings sit
         // exactly at the bound, with zero headroom.
         let headroom = LadderFold.scheduleHeadroom(
             object: object, schedule: LadderFold.Objects.controlSchedule)
@@ -710,7 +710,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 36 · eliminated + kept == nodeCount across the whole run
+    // MARK: - Eliminated + kept == nodeCount across the whole run
 
     func testF36EliminatedPlusKeptEqualsNodeCount() throws {
         let (object, _, _) = try controlObject()
@@ -726,7 +726,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertEqual(eliminated + result.keptCount, object.nodeCount)
     }
 
-    // MARK: - 37 · out-of-range source indices
+    // MARK: - Out-of-range source indices
 
     func testF37SourceIndexOutOfRangeRefused() throws {
         let (object, _, _) = try controlObject()
@@ -754,11 +754,11 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
                                           sources: LadderFold.Sources(f1: 0, f2: 1, f3: -1)))
     }
 
-    // MARK: - 38 · a singular operator throws instead of aborting
+    // MARK: - A singular operator throws instead of aborting
 
     func testF38SingularOperatorRefused() throws {
         // Two rank-1 nodes with no edges and zero leak: the operator is the
-        // zero matrix, so the ring block is singular. The pre-audit
+        // zero matrix, so the ring block is singular. Before the fix,
         // `precondition(INFO == 0)` ABORTED the process here.
         let object = LadderFold.Object(
             nodeCount: 2, adjacency: [[], []], rank: [1, 0], leak: 0.0)
@@ -783,14 +783,14 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 39 · a rank the fold cannot represent
+    // MARK: - A rank the fold cannot represent
 
     func testF39RankAboveIntMaxRefused() throws {
         let grid = try HexGrid(width: 12, height: 12)
         let engine = try DagDBEngine(grid: grid, state: DagDBState(width: 12, height: 12), maxRank: 64)
         _ = LadderFold.Objects.control(engine: engine, grid: grid)
 
-        // Write a rank the UInt64 lane holds and Int cannot: the pre-audit
+        // Write a rank the UInt64 lane holds and Int cannot: before the fix,
         // `Int(rkBack[...])` TRAPPED on it, inside a public initializer.
         let rankPtr = engine.rankBuf.contents().bindMemory(to: UInt64.self, capacity: grid.nodeCount)
         rankPtr[3] = UInt64.max
@@ -813,7 +813,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 40 · the price table measured against a serialized size
+    // MARK: - The price table measured against a serialized size
 
     func testF40PriceTableMeasuredAgainstBytesOnDisk() throws {
         let (object, _, _) = try controlObject()
@@ -841,8 +841,8 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
     // MARK: - DerivedViews synthetic fixture
 
     /// A hand-built cortex fixture: `stations` stations, `candidates`
-    /// candidates, deterministic tau rows. Built here so findings 41-44
-    /// have an edge to reach without the out-of-repo npz.
+    /// candidates, deterministic tau rows. Built here so the derived-view edge
+    /// tests have an edge to reach without the out-of-repo npz.
     private func syntheticFixture(stations: Int = 4, samples: Int = 64, candidates: Int = 5,
                                   speed: Double = 1500, dt: Double = 1.0 / 24000, os: Int = 8)
         -> CortexFixture {
@@ -870,7 +870,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
             speed: speed, dt: dt, os: os, fs: 3000)
     }
 
-    // MARK: - 41 · a station count above the fixture's own
+    // MARK: - A station count above the fixture's own
 
     func testF41StationsAboveTheFixtureRefused() {
         let views = DerivedViews(fixture: syntheticFixture())
@@ -904,7 +904,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertEqual(DerivedViews.features(frame: frame, stations: 4, fs: 3000).count, 12)
     }
 
-    // MARK: - 42 · a failed solve is skipped and counted, never scored
+    // MARK: - A failed solve is skipped and counted, never scored
 
     func testF42FailedSolveIsSkippedAndCounted() {
         let views = DerivedViews(fixture: syntheticFixture())
@@ -916,12 +916,12 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertNil(decision.refusal)
         XCTAssertEqual(views.reflexSummary(stations: 4).skippedTotal, 0)
 
-        // The counter is carried, not invented: it is the field the
-        // contract asks be printed beside the decision.
+        // The counter is carried, not invented: it is the field printed
+        // beside the decision.
         print("F42 reflex: winner=\(decision.winner) tied=\(decision.tiedSet.count) "
               + "skipped=\(decision.skipped)")
 
-        // S5 (iii): these three lines used to copy `decision.residuals`
+        // These three lines used to copy `decision.residuals`
         // into a LOCAL array, write `.infinity` into it, and assert things
         // about the local array — no code under test was exercised. The
         // claim they were reaching for is the selection rule: the minimum
@@ -951,7 +951,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         }
     }
 
-    // MARK: - 43 · the 16-sample front window, gated as a control
+    // MARK: - The 16-sample front window, gated as a control
 
     func testF43FrontWindowConventionAtTheRecordEnd() {
         // A frame whose arrival lands within 16 samples of the end — the
@@ -988,7 +988,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         let numpyShortCentroid = magSum < 1e-12 ? 0.0 : weighted / magSum
 
         // The two conventions DO diverge here — that is the finding. The
-        // gate pins which one this engine implements: the declared,
+        // test pins which one this engine implements: the declared,
         // zero-filled 16-sample window, with bins k·fs/16.
         print("F43 front at t=50: engine centroid \(feat[1]) Hz, numpy short-window "
               + "centroid \(numpyShortCentroid) Hz")
@@ -1020,7 +1020,7 @@ final class SubsystemsBoundsTwinTests: XCTestCase {
         XCTAssertEqual(earlyFeat[1], 750.0, accuracy: 1e-9)
     }
 
-    // MARK: - 44 · a non-finite k
+    // MARK: - A non-finite k
 
     func testF44NonFiniteScaleRefused() {
         // speed 0 makes k = 1/(speed·dt·os) infinite: every class size 1

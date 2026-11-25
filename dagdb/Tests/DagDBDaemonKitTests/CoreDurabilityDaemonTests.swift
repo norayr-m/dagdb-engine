@@ -2,11 +2,11 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// The wire side of `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`:
-/// C4's kernel gate as the daemon sees it, and C10's rank-bound fixture.
+/// The wire side of the core durability checks: the kernel bounds check as
+/// the daemon sees it, and the rank-bound fixture.
 final class CoreDurabilityDaemonTests: XCTestCase {
 
-    /// C4 · a hand-corrupted neighbour index leaves the truth buffer alone
+    /// A hand-corrupted neighbour index leaves the truth buffer alone
     /// and the daemon still answers with `nodes_computed`.
     func testCorruptNeighbourIndexLeavesTruthAloneAndTickStillReports() throws {
         let f = try HandlerFixture(side: 8, maxRank: 4)   // neighbours all -1
@@ -31,16 +31,16 @@ final class CoreDurabilityDaemonTests: XCTestCase {
         XCTAssertEqual(before[5], 1, "the fixture really did set node 5 first")
     }
 
-    /// C10 · a node held at rank ≥ `nodeCount` by a DIRECT write — the shape
+    /// A node held at rank ≥ `nodeCount` by a DIRECT write — the shape
     /// no verb accepts and only a corrupt buffer or an old file can produce.
     /// The existing rank-bound fixture runs 0…21 over 81 nodes and never
-    /// reaches the clamp, so that gate could not fail on it (audit A, 48).
+    /// reaches the clamp, so the rank-bound checks could not fail on it.
     func testARankAtOrAboveNodeCountIsNamedAndLeftOutOfTheDispatch() throws {
         let f = try HandlerFixture(side: 8, maxRank: 8)   // 64 nodes
         let e = f.handler.engine
         let n = e.nodeCount
 
-        // Direct write: SET RANK refuses this value at the door (R3).
+        // Direct write: SET RANK refuses a rank of N or more.
         XCTAssertTrue(f.handler.handle("SET 7 RANK 150").hasPrefix("ERROR out_of_range"))
         e.rankBuf.contents().bindMemory(to: UInt64.self, capacity: n)[7] = 150
         e.markRankTopologyDirty()
@@ -58,7 +58,7 @@ final class CoreDurabilityDaemonTests: XCTestCase {
         XCTAssertEqual(e.rankDispatchNodeCount(), n - 1)
     }
 
-    // MARK: - C12(iii) · CONNECT BACK logs before it applies
+    // MARK: - CONNECT BACK logs before it applies
 
     private func walDir() throws -> String {
         let d = NSTemporaryDirectory() + "dagdb-c12-\(UUID().uuidString)/"
@@ -68,9 +68,9 @@ final class CoreDurabilityDaemonTests: XCTestCase {
 
     /// The order, gated from the end that CAN be observed. Killing the
     /// process between the append and the buffer write is not simulable, so
-    /// the gate is its consequence: a log that will not take the record must
+    /// the test checks its consequence: a log that will not take the record must
     /// leave the back edge unregistered. If the apply ran first — as it did
-    /// before C12 — the edge would be registered and the log would be empty,
+    /// before this fix — the edge would be registered and the log would be empty,
     /// which is precisely the state a crash in that window used to leave.
     func testConnectBackLeavesNoEdgeWhenTheLogRefusesTheRecord() throws {
         let dir = try walDir()

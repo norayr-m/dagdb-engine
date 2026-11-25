@@ -1,16 +1,15 @@
 import XCTest
 @testable import DagDB
 
-/// W7 — discrimination (`docs/contracts/TICKING_GATES_FROZEN.md`,
-/// AMENDMENT 6, letters 3–6). Every assertion here carries a number
+/// Discrimination. Every assertion here carries a number
 /// derived from `TiledReference` BEFORE the engine runs; none of them is
 /// "greater than zero".
 ///
-/// W7a  perturbation, one strip entry at a time, change set == `Δ_e`
-/// W7b  deletion (ghosts held at the previous tick) == `stale`, and the
-///      ordinary run == `fresh`, with `|D|` against a derived bound
-/// W7c  staticity: the per-tick change count equals the reference's
-/// W7d  registers hold state: a varying register per tile
+/// - perturbation, one strip entry at a time, change set == `Δ_e`
+/// - deletion (ghosts held at the previous tick) == `stale`, and the
+///   ordinary run == `fresh`, with `|D|` against a derived bound
+/// - staticity: the per-tick change count equals the reference's
+/// - registers hold state: a varying register per tile
 final class TiledW7Tests: XCTestCase {
 
     // MARK: - Scratch
@@ -80,7 +79,7 @@ final class TiledW7Tests: XCTestCase {
 
     /// Overwrites one entry's truth bytes inside a committed `DAHA` strip,
     /// leaving the epoch and every other field alone. v2 layout
-    /// (AMENDMENT 8): magic(4) version(4)=2 kind(4) count(4) source(8)
+    /// (two truth bytes): magic(4) version(4)=2 kind(4) count(4) source(8)
     /// target(8) epoch(8), then count × (local u64 + truth_pre u8 +
     /// truth_post u8 + type u8 + 5 pad). `pre` and `post` move
     /// independently, so a test can force exactly the byte one reader
@@ -142,7 +141,7 @@ final class TiledW7Tests: XCTestCase {
         return nil
     }
 
-    // MARK: - AMENDMENT 7, finding A: registers read across a tile boundary
+    // MARK: - Registers read across a tile boundary
 
     /// Every `(reader, register source)` cross-tile edge in the object.
     private func crossTileRegisterReaders(_ subject: Subject) -> [(reader: Int, source: Int)] {
@@ -151,7 +150,8 @@ final class TiledW7Tests: XCTestCase {
     }
 
     /// Gate (a): the objects KEEP their cross-tile readers of registers —
-    /// the earlier build deleted them, which made W1 pass on an object that
+    /// the earlier build deleted them, which made the rank-mode world-tick
+    /// equality pass on an object that
     /// could not exhibit the defect. Counted and printed per side × tiling;
     /// a side with none is said so, not faked.
     func testFindingACrossTileRegisterReadersExist() throws {
@@ -234,7 +234,7 @@ final class TiledW7Tests: XCTestCase {
                 return XCTFail("register \(source) missing from tile \(addr.tile)'s epoch-\(epoch) strip")
             }
             XCTAssertEqual(got.epoch, epoch, "strip epoch")
-            // AMENDMENT 8: the entry carries BOTH bytes, and each is the
+            // The entry carries BOTH bytes, and each is the
             // one its own reader wants — `truthPre` for the rank-mode
             // reader at this epoch, `truthPost` for the sync-mode reader
             // of this parity file one world tick later.
@@ -252,7 +252,7 @@ final class TiledW7Tests: XCTestCase {
                 "the unperturbed round must still equal the reference")
         }
 
-        // 2. AMENDMENT 8, gate (iii): the reproduction re-stated on the
+        // 2. The reproduction re-stated on the
         //    two-byte format — forcing `truthPre` to the POST-latch value
         //    (the byte the pre-two-byte build would have handed a rank-mode
         //    reader) must move this register's readers. The forcing goes
@@ -297,7 +297,7 @@ final class TiledW7Tests: XCTestCase {
         try await runFindingAReproduction(side: 128, tiles: 8, label: "fa-128")
     }
 
-    // MARK: - W7a · perturbation, one strip entry at a time
+    // MARK: - Perturbation, one strip entry at a time
 
     private func runW7a(
         side: Int, tiles: Int, mode: TickMode, sampleSize: Int?, label: String
@@ -360,8 +360,7 @@ final class TiledW7Tests: XCTestCase {
             XCTAssertFalse(readers.isEmpty, "strip entry \(source) feeds no reader")
             // What a cross-tile reader actually sees for this source. Rank
             // mode: the source's post-tick value — EXCEPT for a register,
-            // whose strip byte is its PRE-latch value (AMENDMENT 7,
-            // finding A), i.e. its value from the previous world tick.
+            // whose strip byte is its PRE-latch value, i.e. its value from the previous world tick.
             // Sync mode: the previous vector throughout.
             let isRegisterSource = subject.reference.isRegister[source]
             let trueValue: UInt8 = (mode == .rank && !isRegisterSource)
@@ -377,15 +376,15 @@ final class TiledW7Tests: XCTestCase {
 
             // Derived before the run.
             //
-            // AMENDMENT 6 letter 3 asserts `Δ_e ⊇ readers(e)` "under
+            // The stated claim `Δ_e ⊇ readers(e)` "under
             // parity a single input flip cannot cancel". That holds in
             // SYNC mode, where one world tick is one hop and a reader sees
             // exactly one changed input. It is FALSE in RANK mode, which
             // propagates through every rank inside one tick: a reader `u`
             // can have a SECOND input that is itself downstream of the
             // same perturbation, and two flipped inputs cancel under
-            // parity. Same reconvergence trap the amendment named for
-            // letter 2 and then reproduced in letter 3.
+            // parity. The same reconvergence trap was named for the
+            // reference evaluator's check and then reproduced in this claim.
             //
             // What IS a theorem, and is asserted here: every reader at the
             // MAXIMUM reader rank flips. Anything the perturbation can
@@ -428,7 +427,7 @@ final class TiledW7Tests: XCTestCase {
                 let path = try stripPath(
                     subject: subject, root: work, tile: addr.tile, parity: parity)
                 // Both bytes, so the edited file stays self-consistent;
-                // a sync-mode ghost takes `truthPost` (AMENDMENT 8).
+                // a sync-mode ghost takes `truthPost`.
                 let hit = try forceStripEntry(
                     path: path, local: addr.local, pre: flipped, post: flipped)
                 XCTAssertTrue(hit, "entry \(source) not present in tile \(addr.tile)'s parity-\(parity) strip")
@@ -493,7 +492,7 @@ final class TiledW7Tests: XCTestCase {
         try await runW7a(side: 128, tiles: 8, mode: .sync, sampleSize: 64, label: "w7a-128-sync")
     }
 
-    // MARK: - W7b · deletion: the engine with ghosts held at k − 1 == `stale`
+    // MARK: - Deletion: the engine with ghosts held at k − 1 == `stale`
 
     /// Run at TWO points of the trajectory: `warm = 0` (the first world
     /// tick, where the whole object is still moving) and `warm = 2` (the
@@ -535,7 +534,7 @@ final class TiledW7Tests: XCTestCase {
             (fresh[$0.source] == 1) != (refVector[$0.source] == 1)
         }.count
         // The derived number `|D|` is asserted against, node-locally (see
-        // `oddInputChangeSet`). AMENDMENT 6 letter 4's own inequality
+        // `oddInputChangeSet`). The inequality as first stated
         // (`|D| >= crossings whose source changed`) counts EDGES against a
         // set of NODES and is false on a correct engine — side 16, tick 1,
         // below — so it is printed, not asserted.
@@ -610,7 +609,7 @@ final class TiledW7Tests: XCTestCase {
         for warm in [0, 2] { try await runW7b(side: 128, tiles: 8, warm: warm, label: "w7b-128-\(warm)") }
     }
 
-    // MARK: - W7c · staticity, per tick, gated and printed
+    // MARK: - Staticity, per tick, checked and printed
 
     private func runW7c(side: Int, tiles: Int, mode: TickMode, label: String) async throws {
         let subject = try makeSubject(side: side, tiles: tiles, label: label)
@@ -654,7 +653,7 @@ final class TiledW7Tests: XCTestCase {
     func testW7cStaticity_side128_rank() async throws { try await runW7c(side: 128, tiles: 8, mode: .rank, label: "w7c-128r") }
     func testW7cStaticity_side128_sync() async throws { try await runW7c(side: 128, tiles: 8, mode: .sync, label: "w7c-128s") }
 
-    // MARK: - W7d · registers hold state
+    // MARK: - Registers hold state
 
     /// For every tile, a register whose value differs between two
     /// consecutive ticks of a 12-tick reference run.

@@ -289,7 +289,7 @@ public final class DagDBGraph {
         // the neighbor table for nodes that have explicit edges
         for node in nodes {
             let idx = node.id
-            // C9 · same six-slot bound, same reason: `idx * 6 + 6` is the
+            // The same six-slot bound, same reason: `idx * 6 + 6` is the
             // next node's first weight slot.
             guard node.edges.count <= 6 else {
                 throw GraphError.tooManyEdges(
@@ -313,11 +313,11 @@ public final class DagDBGraph {
     /// Export a custom neighbor table that reflects logical edges, not hex geometry.
     /// Returns [Int32] of size nodeCount * 6, suitable for Metal buffer.
     ///
-    /// C9 · refuses a node carrying more than six edges by name. `connect`
+    /// Refuses a node carrying more than six edges by name. `connect`
     /// guards the bound and `validate` reports it, but this is the path the
     /// engine's convenience init actually takes and that init never calls
     /// `validate`; a seventh entry wrote `nb[idx * 6 + 6]`, which is the NEXT
-    /// node's first slot (audit A, finding 44). `Node.edges` is a public
+    /// node's first slot. `Node.edges` is a public
     /// `var`, so the graph can hold that shape without `connect` ever seeing
     /// it.
     public func exportNeighborTable(nodeCount gridNodeCount: Int) throws -> [Int32] {

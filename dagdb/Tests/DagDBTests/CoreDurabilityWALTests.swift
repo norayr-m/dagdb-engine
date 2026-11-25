@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C1 (b)–(e) and the C10 legacy-rank fixtures —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// WAL replay checks and the legacy-rank fixtures.
 ///
 /// Every log here is built byte by byte from the format documented at the top
 /// of `DagDBWAL.swift`, never by today's appender: a fixture written by the
@@ -55,7 +54,7 @@ final class CoreDurabilityWALTests: XCTestCase {
         return p
     }
 
-    // MARK: - C1b · the replay says what it skipped
+    // MARK: - The replay says what it skipped
 
     func testReplayReportsSkippedRecordsWithAReasonHistogram() throws {
         let eng = try makeEngine(side: 8)
@@ -97,10 +96,10 @@ final class CoreDurabilityWALTests: XCTestCase {
         let r = try DagDBWAL.replay(engine: eng, nodeCount: eng.nodeCount, path: path)
         XCTAssertEqual(r.recordsApplied, 2)
         XCTAssertEqual(r.recordsSkipped, 0)
-        XCTAssertEqual(r.fileVersion, DagDBWAL.versionV2)
+        XCTAssertEqual(r.fileVersion, DagDBWAL.versionV3)
     }
 
-    // MARK: - C1c · SET_RANK widths are a version question
+    // MARK: - SET_RANK widths are a version question
 
     func testLegacyRankWidthsRejectedUnderVersionTwo() throws {
         let eng = try makeEngine(side: 8)
@@ -122,7 +121,7 @@ final class CoreDurabilityWALTests: XCTestCase {
         XCTAssertEqual(rank[5], 11)
     }
 
-    /// C10 · the legacy widths still replay where they are genuine: a v1 log.
+    /// The legacy widths still replay where they are genuine: a v1 log.
     func testLegacyRankWidthsReplayUnderVersionOne() throws {
         let eng = try makeEngine(side: 8)
         let n = eng.nodeCount
@@ -142,7 +141,7 @@ final class CoreDurabilityWALTests: XCTestCase {
         XCTAssertEqual(rank[5], 11)
     }
 
-    // MARK: - C1d · the checkpoint payload is exactly 8 bytes
+    // MARK: - The checkpoint payload is exactly 8 bytes
 
     func testTornCheckpointIsCountedAndDoesNotMoveTheReplayWindow() throws {
         let eng = try makeEngine(side: 8)
@@ -180,17 +179,21 @@ final class CoreDurabilityWALTests: XCTestCase {
         XCTAssertEqual(r.recordsSkipped, 0)
     }
 
-    // MARK: - C1a · version gate
+    // MARK: - The version check
 
     func testVersionAboveTwoIsRefusedByName() throws {
         let eng = try makeEngine(side: 8)
         let n = eng.nodeCount
-        let path = try write(walHeader(version: 3, nodeCount: n), "v3.log")
+        // Version 4 is readable (a v3 log whose import may carry S1–S3),
+        // version 5 is readable too (a v4 log that may carry TICK_NOTE), and
+        // version 6 is readable too (a v5 log that may carry
+        // TWIN_HOOK_SWEEP), so the first refused version is 7.
+        let path = try write(walHeader(version: 7, nodeCount: n), "v3.log")
         XCTAssertThrowsError(try DagDBWAL.replay(engine: eng, nodeCount: n, path: path)) { err in
             guard let e = err as? DagDBWAL.WALError, case .unsupportedVersion(let v) = e else {
                 return XCTFail("expected unsupportedVersion, got \(err)")
             }
-            XCTAssertEqual(v, 3)
+            XCTAssertEqual(v, 7)
         }
         XCTAssertThrowsError(try DagDBWAL.Appender(path: path, nodeCount: n))
     }
@@ -230,7 +233,7 @@ final class CoreDurabilityWALTests: XCTestCase {
         }
     }
 
-    // MARK: - C1e · truncate refuses while an appender is open
+    // MARK: - Truncate refuses while an appender is open
 
     func testTruncateRefusesWhileAnAppenderIsOpen() throws {
         let path = tmpDir! + "trunc_guard.log"
@@ -246,8 +249,8 @@ final class CoreDurabilityWALTests: XCTestCase {
             XCTAssertEqual((p as NSString).lastPathComponent, "trunc_guard.log")
         }
 
-        // The record survives the refused truncate — this is the gate from
-        // audit A finding 33: append after a truncate, then replay.
+        // The record survives the refused truncate: append after a truncate,
+        // then replay.
         _ = try a!.setTruth(node: 2, value: 1)
         a = nil                                    // appender released
 

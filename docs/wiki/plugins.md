@@ -195,7 +195,7 @@ dagdb/plugins/
 │   └── rank_policies.py      # Protocol + 3 defaults + self-test
 └── loom/
     ├── __init__.py
-    ├── adapter.py             # T4 pure-function translator
+    ├── adapter.py             # pure-function translator
     ├── backfill.py            # JSONL → DagDB one-shot script
     └── test_adapter.py        # 16 pytest tests
 ```

@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// Tick-perf recovery equivalence tests (branch dag/tick-perf).
+/// Tick-perf recovery equivalence tests.
 ///
 /// The compacted per-(rank,color) dispatch is the default rank path;
 /// `tickLegacy` (whole color groups + kernel early-out) is retained as
@@ -116,7 +116,7 @@ final class DagDBTickPerfTests: XCTestCase {
         XCTAssertFalse(a.rankTopologyDirty, "tick clears the dirty flag")
     }
 
-    // MARK: - TICK_SYNC (Step 3)
+    // MARK: - TICK_SYNC
 
     /// CPU double-buffered reference: exactly kernel-copy-then-latch.
     private func cpuSyncReference(engine: DagDBEngine, ticks: Int) -> [UInt8] {
@@ -222,7 +222,7 @@ final class DagDBTickPerfTests: XCTestCase {
         XCTAssertEqual(e.readTruthStates().count, e.nodeCount)
     }
 
-    // MARK: - Step 5: the honest benchmark (numbers printed, not asserted)
+    // MARK: - The benchmark (numbers printed, not asserted)
 
     func testBenchmarkTickModes1M() throws {
         let width = 1024, height = 1024

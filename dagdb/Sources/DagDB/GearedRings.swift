@@ -1,8 +1,8 @@
 import Foundation
 
-/// Geared recording rings — twin spec line 1's memory half: the sealed
-/// six-ring odometer (M2: signed recall across six orders of lag in 192
-/// numbers, 100% with signs) as an engine recording primitive.
+/// Geared recording rings — the sealed six-ring odometer (signed recall
+/// across six orders of lag in 192 numbers, 100% with signs) as an engine
+/// recording primitive.
 ///
 /// Ring j advances every gear^j ticks; each cell holds the SIGNED extremum
 /// of its span and the exact tick it happened. A naive equal-budget tail
@@ -31,12 +31,12 @@ public struct GearedRings: Equatable, Codable {
     private var cells: [[Cell]]
 
     /// The sealed shape is gear 6, 6 rings, 32 cells (192 numbers).
-    /// Finding 65: the ordinary init routes through `shapeViolation` — the
+    /// The ordinary init routes through `shapeViolation` — the
     /// same front door the daemon's RINGS OPEN uses — so it can no longer
     /// accept a shape the validator refuses. Callers that must not trap
     /// (the daemon, WAL replay, snapshot restore) ask `shapeViolation`
     /// first or use the throwing state-bearing init below.
-    /// S5 (ii): the `precondition` here was the last trap on this public
+    /// A `precondition` here was once the last trap on this public
     /// path — an abort no caller could catch. It throws `badShape` now,
     /// with the validator's own wording, so the memberwise door and the
     /// state-bearing door below refuse the same shapes the same way.
@@ -65,7 +65,7 @@ public struct GearedRings: Equatable, Codable {
         guard cellsPerRing >= 2 && cellsPerRing <= 4096 else {
             return "cellsPerRing \(cellsPerRing) must be in [2, 4096]"
         }
-        // Finding 64: `spanLength` accumulates a WRAPPING multiply; a gear
+        // `spanLength` accumulates a WRAPPING multiply; a gear
         // whose gear^(rings-1) overflows wraps the coarsest span to 0 and
         // `now / span` then divides by zero. Bound the gear here, where
         // every trap-free caller already looks.
@@ -95,6 +95,18 @@ public struct GearedRings: Equatable, Codable {
         self.cellsPerRing = cellsPerRing
         self.now = now
         self.cells = cells
+    }
+
+    /// What the synthesized decode lets through and RINGS OPEN refuses: a shape outside
+    /// `shapeViolation`, or a cells array whose rings or rows disagree with `rings` / `cellsPerRing` (the ledger
+    /// charges the fields, the memory holds the array). nil for a ring set a live open could have made.
+    public var stateViolation: String? {
+        if let v = Self.shapeViolation(gear: gear, rings: rings, cellsPerRing: cellsPerRing) { return v }
+        if cells.count != rings { return "its cells array holds \(cells.count) rings, its rings field says \(rings)" }
+        if let (j, row) = cells.enumerated().first(where: { $0.element.count != cellsPerRing }) {
+            return "its ring \(j) holds \(row.count) cells, its cellsPerRing field says \(cellsPerRing)"
+        }
+        return nil
     }
 
     /// Read-only snapshot of the full cell grid — the restore/persist path.

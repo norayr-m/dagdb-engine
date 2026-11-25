@@ -18,7 +18,8 @@ Load it:
 
 ```
 cd ..
-.build/release/dagdb-daemon --grid 16 &
+mkdir -p ~/.dagdb
+.build/release/dagdb-daemon --grid 16 --shm-file ~/.dagdb/dagdb_shm &
 while IFS= read -r line; do
   echo "$line" | nc -U /tmp/dagdb.sock
 done < sample_db/demo_graph.dagdb

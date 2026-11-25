@@ -7,6 +7,7 @@ Usage: python3 bridge.py [--port 9100] [--socket /tmp/dagdb.sock]
 """
 
 import asyncio
+import errno
 import websockets
 import socket
 import json
@@ -16,7 +17,7 @@ import os
 DAEMON_SOCK = os.environ.get("DAGDB_SOCK", "/tmp/dagdb.sock")
 WS_PORT = int(os.environ.get("DAGDB_WS_PORT", "9100"))
 
-# Security (Fable review S1/S3). This bridge relays commands from a browser
+# Security. This bridge relays commands from a browser
 # to the daemon's full DSL surface. Any local process — including any web
 # page's JavaScript opening ws://localhost:<port> — can reach it. Two
 # defenses, both on by default:
@@ -28,25 +29,25 @@ WS_PORT = int(os.environ.get("DAGDB_WS_PORT", "9100"))
 #      Set DAGDB_WS_ALLOW_ORIGINS to a comma-separated list to override; the
 #      default permits only localhost origins and origin-less clients
 #      (native tools: no Origin header at all). It does NOT permit the
-#      literal origin "null": browsers send `Origin: null` from file://
-#      pages and from sandboxed iframes, including ones embedded in remote
-#      sites, so allowing it let any such page reach the allowlisted verbs.
-#      A trusted file:// UI can opt back in with DAGDB_WS_ALLOW_ORIGINS=...,null.
-# OPEN_READER and CLOSE_READER are deliberately NOT here (gate D5, audit B
-# finding 24): OPEN_READER allocates a whole snapshot engine per call and
+#      literal origin "null": browsers send `Origin: null`
+#      from file:// pages and sandboxed iframes, so allowing it let any such
+#      page reach the allowlisted verbs. A trusted file:// UI can opt back in
+#      with DAGDB_WS_ALLOW_ORIGINS=...,null.
+# OPEN_READER and CLOSE_READER are deliberately NOT here: OPEN_READER
+# allocates a whole snapshot engine per call and
 # registers it daemon-globally — an unauthenticated page could grow the
 # daemon's memory without bound — and CLOSE_READER destroys a session
 # another client owns. Neither is a read. LIST_READERS is a read and stays.
-# READER stays, but its INNER command is classified too (finding 25).
+# READER stays, but its INNER command is classified too (`_command_allowed`).
 READ_ONLY_VERBS = {
     "STATUS", "GRAPH", "NODES", "GET", "TRAVERSE", "BFS_DEPTHS",
     "ANCESTRY", "SIMILAR_DECISIONS", "SELECT", "DISTANCE", "VALIDATE",
     "LIST_READERS", "READER",
 }
-# Twin-spec verbs (interface phase, 2026-09) are two-token commands (VERB SUBVERB ...) — a
+# Twin-spec verbs are two-token commands (VERB SUBVERB ...) — a
 # single-token allowlist can't express "STREAM STATE read-only, STREAM
-# OPEN not". This mirrors TwinCommand.isReadOnly (§0.13: twin registries
-# are daemon-global, so a mutating twin verb is never safe to expose here
+# OPEN not". This mirrors TwinCommand.isReadOnly (twin registries are
+# daemon-global, so a mutating twin verb is never safe to expose here
 # even though it isn't gated by a READER session).
 READ_ONLY_TWIN = {
     ("STREAM", "STATE"), ("STREAM", "LIST"),
@@ -64,19 +65,17 @@ READ_ONLY_TWIN = {
     ("VIEW", "REFLEX"), ("VIEW", "RUNG"), ("VIEW", "CEILING"),
     ("VIEW", "FEATURES"), ("VIEW", "INFO"), ("VIEW", "LIST"),
     ("KERNEL", "INFO"), ("KERNEL", "LIST"),
-    # FOLD (gate F4): pure computation over the daemon's CURRENT lanes,
-    # nothing persisted. FOLD RUN is NOT on this list (gate D5, audit B
-    # finding 18): it assigns the daemon-global last-fold result that
+    # FOLD: pure computation over the daemon's CURRENT lanes, nothing
+    # persisted. FOLD RUN is NOT on this list: it assigns the daemon-global last-fold result that
     # KEPT/SOURCE/TIER/INFO read, so a browser could overwrite what the
     # primary session sees. Mirrors TwinCommand.isReadOnly.
     ("FOLD", "KEPT"), ("FOLD", "SOURCE"),
     ("FOLD", "TIER"), ("FOLD", "INFO"),
-    # HOOK (gate H5): STATE/LEDGER/INFO/LIST look at a hook without
+    # HOOK: STATE/LEDGER/INFO/LIST look at a hook without
     # mutating it; OPEN/STEP/CLOSE stay off this allowlist (mirrors
     # TwinCommand.isReadOnly).
     ("HOOK", "STATE"), ("HOOK", "LEDGER"), ("HOOK", "INFO"), ("HOOK", "LIST"),
-    # TILED (gate T5, docs/contracts/TILING_GATES_FROZEN.md; ticking across
-    # tiles, docs/contracts/TICKING_GATES_FROZEN.md): NOT a twin verb —
+    # TILED (and ticking across tiles): NOT a twin verb —
     # routers aren't a twin registry (TiledGraphRouter's own header
     # comment) — but they land in this same set because `_command_allowed`
     # below is a generic (verb, subverb) two-token check, not twin-specific.
@@ -84,7 +83,7 @@ READ_ONLY_TWIN = {
     # reader-session split — GET is a truth readback, no different from
     # BFS/SELECT); OPEN/CLOSE mutate the router registry, SAVE TILED writes
     # to disk, and TICK mutates (flushes every tile to disk), so those four
-    # stay off this allowlist. Note (gate D5, audit B finding 19): tile
+    # stay off this allowlist. Note: tile
     # residency is a CACHE, not graph state, which is why the queries stay
     # here — but `TILED STATUS`'s loads=/evicts= are ROUTER-WIDE counters
     # that any session's query moves, this bridge's included. They report
@@ -117,7 +116,7 @@ def _command_allowed(cmd: str, _depth: int = 0) -> bool:
     tokens = cmd.split(None, 2)
     verb = tokens[0].upper() if tokens else ""
     subverb = tokens[1].upper() if len(tokens) > 1 else ""
-    # Gate D5, audit B finding 25: `READER <session-id> <anything>` used to
+    # `READER <session-id> <anything>` used to
     # pass on the verb READER alone, so the INNER command was gated only by
     # the daemon's own reader matrix. Classify the inner command instead.
     # `_depth` stops a nested `READER x READER y ...` from recursing; the
@@ -128,7 +127,7 @@ def _command_allowed(cmd: str, _depth: int = 0) -> bool:
         return _command_allowed(tokens[2], _depth + 1)
     return verb in READ_ONLY_VERBS or (verb, subverb) in READ_ONLY_TWIN
 
-# Gate D4, audit B findings 1 and 27. The daemon frames a command at
+# The daemon frames a command at
 # MAX_COMMAND_BYTES plus a newline and refuses anything that reaches the cap
 # without one. A client that sends more cannot tell a complete command from a
 # truncated one, so it refuses with the daemon's own wording instead.
@@ -145,7 +144,14 @@ def query_daemon(cmd: str) -> str:
         s.settimeout(10)  # don't wedge an executor thread on a stalled daemon
         s.connect(DAEMON_SOCK)
         s.sendall((cmd + "\n").encode())
-        s.shutdown(socket.SHUT_WR)
+        # The daemon stops reading at the newline, answers and closes; when it
+        # closes first, macOS reports ENOTCONN here although the whole reply is
+        # waiting in the socket.
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except OSError as e:
+            if e.errno != errno.ENOTCONN:
+                raise
         response = b""
         while True:
             chunk = s.recv(4096)

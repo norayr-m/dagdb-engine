@@ -1,7 +1,5 @@
-"""Gates D4 and D5 for the WebSocket bridge's client-side allowlist.
-
-`docs/contracts/DAEMON_BOUNDS_GATES_FROZEN.md`, from audit B findings 24,
-25 and 27. No daemon required — these exercise `_command_allowed` and the
+"""Checks for the WebSocket bridge's client-side allowlist and frame check.
+No daemon required — these exercise `_command_allowed` and the
 frame check directly.
 
 Run: python3 -m pytest dagdb/web/test_bridge_allowlist.py
@@ -15,10 +13,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge  # noqa: E402
 
 
-# ---------------------------------------------------------------- D5
+# ---------------------------------------------------------------- read-only classification
 
 def test_open_reader_and_close_reader_are_not_read_only():
-    """Finding 24 — OPEN_READER allocates a whole snapshot engine per call
+    """OPEN_READER allocates a whole snapshot engine per call
     and registers it daemon-globally; CLOSE_READER destroys a session
     another client owns. Neither is a read."""
     assert "OPEN_READER" not in bridge.READ_ONLY_VERBS
@@ -28,7 +26,7 @@ def test_open_reader_and_close_reader_are_not_read_only():
 
 
 def test_reader_envelope_classifies_the_inner_command():
-    """Finding 25 — `cmd.split(None, 2)` made `READER <id> <anything>` pass
+    """`cmd.split(None, 2)` made `READER <id> <anything>` pass
     on the verb READER alone, so the inner command was gated only by the
     daemon's own reader matrix."""
     assert bridge._command_allowed("READER r00000001 STATUS")
@@ -40,7 +38,7 @@ def test_reader_envelope_classifies_the_inner_command():
 
 
 def test_fold_run_is_off_the_read_only_set():
-    """Finding 18 — FOLD RUN assigns daemon-global `lastFold`, which every
+    """FOLD RUN assigns daemon-global `lastFold`, which every
     other FOLD verb reads. The four look-only verbs stay on."""
     assert ("FOLD", "RUN") not in bridge.READ_ONLY_TWIN
     assert ("FOLD", "INFO") in bridge.READ_ONLY_TWIN
@@ -50,7 +48,7 @@ def test_fold_run_is_off_the_read_only_set():
 
 
 def test_tiled_queries_stay_reader_allowed():
-    """Finding 19's ruling: tile residency is a cache, not graph state."""
+    """Tile residency is a cache, not graph state, so the tiled queries stay allowed."""
     for sub in ("BFS", "SELECT", "STATUS", "LIST", "GET"):
         assert ("TILED", sub) in bridge.READ_ONLY_TWIN
     assert not bridge._command_allowed("TILED OPEN /tmp/g 2")
@@ -63,10 +61,10 @@ def test_allow_write_still_opens_everything(monkeypatch):
     assert bridge._command_allowed("READER r1 FOLD RUN 6 3 78 78")
 
 
-# ---------------------------------------------------------------- D4
+# ---------------------------------------------------------------- the command frame
 
 def test_bridge_refuses_a_command_longer_than_the_daemon_frame():
-    """Finding 27 — the client sent `cmd + '\\n'` with no length check, and
+    """The client sent `cmd + '\\n'` with no length check, and
     the daemon answered OK over the truncated prefix, so no client could
     tell a complete command from a truncated one."""
     assert bridge.MAX_COMMAND_BYTES == 4095
@@ -83,13 +81,12 @@ def test_bridge_frame_check_counts_bytes_not_characters():
     assert bridge.query_daemon(over) == "ERROR too_long: command exceeds 4095 bytes"
 
 
-# ------------------------------------------------- Origin: null (2026-10-30)
+# ---------------------------------------------------------------- the Origin allowlist
 
 def test_origin_null_is_refused_by_default():
-    """Browsers send `Origin: null` from file:// pages and from sandboxed
-    iframes, including ones embedded in remote sites, so the default
-    allowlist must not admit it. Native clients (no Origin header at all)
-    and localhost pages still pass."""
+    """Browsers send `Origin: null` from file:// pages and
+    sandboxed iframes; the default allowlist must not admit it. Native
+    clients (no Origin header at all) and localhost pages still pass."""
     assert "null" not in bridge.ALLOW_ORIGINS
     assert not bridge._origin_allowed("null")
     assert bridge._origin_allowed(None)
@@ -101,7 +98,7 @@ def test_origin_null_is_refused_by_default():
 
 
 def test_origin_null_control_old_default_admits_it(monkeypatch):
-    """Control: with the previous default (null included) the same check
+    """Control: with the older default (null included) the same check
     admits `Origin: null`, so the test above can fail."""
     old = {"http://localhost", "http://127.0.0.1", "https://localhost", "null"}
     monkeypatch.setattr(bridge, "ALLOW_ORIGINS", old)
@@ -113,3 +110,4 @@ def test_bridge_binds_localhost_only():
     src = open(bridge.__file__).read()
     assert 'websockets.serve(handler, "localhost", WS_PORT)' in src
     assert "0.0.0.0" not in src
+

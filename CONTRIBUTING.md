@@ -1,6 +1,7 @@
 # Contributing
 
-> **Humble disclaimer.** Amateur engineering project. Errors likely.
+> **Humble disclaimer.** Amateur engineering project. We are not HPC
+> professionals and make no competitive claims. Errors likely.
 
 This is a private research prototype that happens to be readable in
 public. There is no sponsorship, no roadmap commitment, and no SLA.
@@ -20,10 +21,11 @@ Contributions are welcome in the same spirit.
 ## Style
 
 - **Swift.** `swift build` + `swift test` under `dagdb/` must stay
-  green. 1,052 Swift tests (46 skip without the out-of-repo sealed
-  fixtures), full suite about 13 minutes on an M5 Max. Python plugin
-  tests: `python3 -m pytest plugins/loom` from `dagdb/` (16 adapter
-  tests, green as of 2026-09-10) must also stay green.
+  green. 1,540 Swift tests, counted 2026-11-24 (49 skip: 48 without the
+  out-of-repo sealed fixtures, one opt-in); run one test class at a time
+  (`swift test --filter`) if memory is short: DagDBTests in one process peaked above 7 GB (2026-10-29).
+  Python plugin tests: `python3 -m pytest plugins/loom` from `dagdb/`
+  (16 adapter tests, green on 2026-11-19) must also stay green.
 - **Comments.** None unless the reason is non-obvious. Don't explain
   what the code does; well-named identifiers do that.
 - **No emojis** in code or docs unless the existing file already uses

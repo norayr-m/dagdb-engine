@@ -15,8 +15,8 @@ number drifts when you run the same command, trust the new number
 
 | Suite | Count | Wall time | Command |
 |---|---|---|---|
-| Swift `DagDBPackageTests` (all suites) | **98 cases** | ~2.9 s | `cd dagdb && swift test` |
-| Python Loom adapter | **16 cases** | ~0.03 s | `cd dagdb/plugins/loom && python3 -m pytest -q` |
+| Swift `DagDBPackageTests` (both targets) | **1,540 cases** (2026-11-24; 49 skip without the sealed fixtures and an opt-in) | not timed in one process | `cd dagdb && swift test` |
+| Python Loom adapter | **16 cases** (2026-11-19) | not timed alone | `cd dagdb/plugins/loom && python3 -m pytest -q` |
 
 Per-suite Swift breakdown:
 
@@ -71,7 +71,7 @@ repo.)
 | Snapshot header size | 32 B fixed | `DagDBSnapshot.save` |
 | Snapshot-v3 full size at 1 M nodes | ~42 MB uncompressed (exactly 44 040 224 B incl. 32 B header) | `SAVE path.dags`, then `ls -l` |
 | Snapshot-v3 zlib-compressed | typically ~11 MB on sparse data | `SAVE path.dags COMPRESSED` |
-| Shared-memory result buffer | 8 B header + 24 B/row × nodeCount (v3: u64 node + u64 rank + u8 truth + u8 type + 6 pad) | `main.swift` constants |
+| Shared-memory result buffer | 8 B header + 24 B/row × nodeCount (v3: u64 node + u64 rank + u8 truth + u8 type + u8 mode + 5 pad) | `main.swift` constants |
 
 The compressed ratio depends on truth / rank density. Sparse
 graphs compress well; fully-populated ones less. We don't claim a

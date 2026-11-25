@@ -3,7 +3,7 @@ import Metal
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// C1 control gate + C12(i) — `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// The control over every mutating verb.
 ///
 /// A graph is built through EVERY mutating verb the DSL parser has, with the
 /// WAL on; the daemon is discarded without SAVE; the log alone is replayed
@@ -132,16 +132,19 @@ final class CoreDurabilityC1Tests: XCTestCase {
             // ── bulk installs ───────────────────────────────────────────
             let nbSrc = f.shm.advanced(by: 8).bindMemory(to: Int32.self, capacity: n * 6)
             for i in 0..<(n * 6) { nbSrc[i] = -1 }
+            shm1Header(f.shm, count: n, verb: .setNeighborsBulk)
             issue("SET_NEIGHBORS_BULK", "SET_NEIGHBORS_BULK")
             // expectation: already all -1
 
             let rkSrc = f.shm.advanced(by: 8).bindMemory(to: UInt64.self, capacity: n)
             for i in 0..<n { rkSrc[i] = UInt64(i % 8) }
+            shm1Header(f.shm, count: n, verb: .setRanksBulk)
             issue("SET_RANKS_BULK", "SET_RANKS_BULK")
             for i in 0..<n { exp.rank[i] = UInt64(i % 8) }
 
             let ltSrc = f.shm.advanced(by: 8).bindMemory(to: UInt64.self, capacity: n)
             for i in 0..<n { ltSrc[i] = seededLUT(i) }
+            shm1Header(f.shm, count: n, verb: .setLutsBulk)
             issue("SET_LUTS_BULK", "SET_LUTS_BULK")
             for i in 0..<n { exp.lut[i] = seededLUT(i) }
 

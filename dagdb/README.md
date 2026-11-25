@@ -102,9 +102,9 @@ A `launchd` agent (`com.dagdb.mcpo`) keeps the bridge running across reboots. Th
 ### Experiment 5 — Test coverage
 
 ```
-1052 tests pass (DagDBTests + DagDBDaemonKitTests); 46 of them skip
-unless the sealed out-of-repo fixtures are present — see "Sealed
-fixtures" below
+1,540 tests pass (DagDBTests 722 + DagDBDaemonKitTests 818, 2026-11-24);
+49 of them skip: 48 unless the sealed out-of-repo fixtures are present — see
+"Sealed fixtures" below — and one opt-in test
   core: LUT6 presets, state, engine, graph, evaluation, delta codec
   SerDe/WAL: snapshot round-trips, validators, crash-tail truncation
   daemon: full DSL dispatch, guardPath, WAL-failure aborts, COMPOSE
@@ -125,7 +125,7 @@ Honest limits, spelled out:
 - **Property-bag ingestion** from Neo4j-shaped input — no tooling.
 - **LOAD validator** is sequential Swift. 6.5 s at 10 M nodes. A GPU-parallel version is the next honest performance win.
 
-Not lies of omission. Seventeen holes were audited this session; nine closed, three partially addressed, five remain genuine future work.
+Not lies of omission. Seventeen holes were audited; nine closed, three partially addressed, five remain genuine future work.
 
 
 ## Architecture
@@ -157,8 +157,8 @@ DagDB/
 │   ├── Cargo.toml
 │   └── src/lib.rs                (dagdb_exec SQL function)
 │
-└── Tests/                        (1052 tests in two targets; 46 skip
-                                   without the sealed fixtures)
+└── Tests/                        (1,540 tests in two targets; 49 skip,
+                                   48 without the sealed fixtures)
 ```
 
 ## Quick Start
@@ -284,8 +284,9 @@ If you want SQL access via PostgreSQL, you need PostgreSQL 17 and Rust installed
 Start the daemon first, then run the installer:
 
 ```bash
-# Terminal 1: start daemon
-.build/debug/dagdb-daemon --grid 256
+# Terminal 1: start daemon (--shm-file is required; the Postgres backend reads the same file:
+# set DAGDB_SHM_FILE to it in the Postgres environment)
+.build/debug/dagdb-daemon --grid 256 --shm-file ~/.dagdb/dagdb_shm
 
 # Terminal 2: install Postgres extension
 ./install_postgres.sh
@@ -360,6 +361,21 @@ SELECT * FROM dagdb_ascii();                          -- ASCII art schema
 SELECT * FROM dagdb_show();                           -- LIVE graph with values
 ```
 
+**Upgrading a database that ran an earlier pg_dagdb.** pg_dagdb 0.1.0 is the ternary build's extension; before it, pg_dagdb was 0.0.0. In 0.1.0 `dagdb_exec` returns `node_id` and `rank` as `bigint` and adds `mode` and `trit`, and a function's return type cannot change in place. The 0.1.0 package ships the update script `pg_dagdb--0.0.0--0.1.0.sql` (from `pg_dagdb/sql/`). After `cargo pgrx install`, in each database that ran `CREATE EXTENSION pg_dagdb` at 0.0.0:
+
+```sql
+ALTER EXTENSION pg_dagdb UPDATE;   -- 0.0.0 → 0.1.0; drops the views that read dagdb_exec (CASCADE)
+\i setup_views.sql                  -- re-creates the views and replaces its old functions
+```
+
+**The views.** The update drops `dagdb_exec` and creates it again with the new columns. The drop is `CASCADE`, so it also drops every view that reads `dagdb_exec`, directly or through another view: `setup_views.sql`'s `dagdb_nodes`, `dagdb_status_view`, `dagdb_info` and `dagdb_map`, and any view of your own built on `dagdb_exec` or on those views (the columns change, so such a view could not keep working unchanged). Postgres runs an update script with `client_min_messages` at WARNING, which hides the CASCADE's own NOTICE, so the script first names the views it drops: `WARNING:  pg_dagdb 0.0.0 -> 0.1.0 drops the views that read dagdb_exec: dagdb_info, dagdb_map, dagdb_nodes, dagdb_status_view, …`. Re-create your own views over the new columns. `setup_views.sql`'s functions (`dagdb_run`, `dagdb_rank`, `dagdb_traverse`, `dagdb_ascii`, `dagdb_hex`) survive the update with the old shapes, because Postgres does not track what a function body calls. **Re-run `setup_views.sql` after the update**: it drops its old objects and creates them all again. The update runs in one transaction, so a failed update changes nothing.
+
+`CREATE EXTENSION IF NOT EXISTS pg_dagdb` does not update an existing extension: it keeps the 0.0.0 catalog, now over the 0.1.0 library. Until `ALTER EXTENSION … UPDATE` runs, `dagdb_exec` called through that catalog refuses with `ERROR 42804: dagdb_exec: the caller expects a result row of 5 column(s) (…); this library builds 7 (…)` and sends nothing to the daemon (it checks the caller's expected row, column count and types, against the row it builds, gated by `test_pg_dagdb_shape_live.py`); `dagdb_status()` and `dagdb_tick()` answer. Re-creating the extension also works: `DROP EXTENSION pg_dagdb CASCADE; CREATE EXTENSION pg_dagdb;` then `setup_views.sql`.
+
+A database where 0.0.0's functions were loaded without `CREATE EXTENSION` (its generated script run by hand): run 0.1.0's generated script by itself, which drops the old functions first, then `setup_views.sql` (gated by `test_pg_dagdb_upgrade_live.py`).
+
+The update path is gated by `test_pg_dagdb_ext_update_live.py` against a private copy of PostgreSQL 17 (never a system or Homebrew installation; see its docstring): `CREATE EXTENSION` at main's 0.0.0 and main's `setup_views.sql`; without the update script `ALTER EXTENSION pg_dagdb UPDATE` fails (no update path) and `dagdb_exec` refuses by name; with it the update succeeds, then `setup_views.sql`, and the live checks of `test_pg_dagdb_live.py` pass on the upgraded database; a fresh `CREATE EXTENSION` at 0.1.0 passes them too and leaves the same catalog.
+
 **`dagdb_hex(node, depth)`** — the hex DAG as a 6-column table:
 
 ![dagdb_hex in DBeaver](docs/dagdb_hex_dbeaver.png)
@@ -378,30 +394,26 @@ SELECT * FROM dagdb_show();                           -- LIVE graph with values
   GRID:  3 zones → AND → ○   DECISION: ○
 ```
 
+## Upgrade notes
+
+### Rolling back to a build before the hook sweep
+
+The hook-sweep build is the one that sweeps dangling hook ids; its era sidecar `<wal>.hook1_era` and its boot line ("left by pre-HOOK1 logs") carry its name, HOOK1.
+
+- **After a boot only.** A hook-sweep build writes nothing to the write-ahead log at startup. It records where its era begins in a sidecar beside the log, `<wal>.hook1_era`, which older builds do not read. It also seals there how far the log reached when it last wrote (at each SAVE and at a clean stop). If an older build appends to the log after a rollback, the next hook-sweep boot treats those bytes as foreign. A log that a hook-sweep build has only booted on, and written ordinary records to, is still read by an older build.
+- **After a version-6 record.** A hook-sweep build raises the log to version 6 when it first writes a record only it knows: a HOOK CLOSE of a hook bound to a clock, or the boot's sweep of dangling hook ids. An older build then refuses the log by name ("replay failed: version 6") and runs without a WAL. To roll back from there:
+  1. With the hook-sweep build, stop every writer, then `SAVE <the startup snapshot path>` (`DAGDB_STARTUP_LOAD`).
+  2. Stop the daemon.
+  3. Move the log aside, and its era sidecar with it (`mv <wal> <wal>.aside` and `mv <wal>.hook1_era <wal>.aside.hook1_era`). A sidecar left beside a fresh log describes the old one.
+  4. Start the older build with `DAGDB_STARTUP_LOAD` naming that snapshot. It opens a fresh log.
+- **What the older build does with the snapshot.** It reads the hook-sweep build's snapshot as written: the two builds write the same bytes for the same state. Its own restore then lists every hook bound to a clock once more, so that hook steps twice per tick there. That is the older build's bug, which the hook-sweep build fixed.
+
 ## Test Results
 
 ```
-1052 tests, 0 failures (DagDBTests + DagDBDaemonKitTests);
-46 skipped without the sealed fixtures
-```
-
-## Sealed fixtures
-
-Forty-six of the tests are gated on fixtures that are **not in this
-repository and are not distributed**: recordings and a reference world
-from a private lab tree, pinned by SHA-256 so a substitute cannot pass
-for them. Without those files the suite reports 1052 tests, 0 failures,
-46 skipped — each skip printing the environment variable it wanted.
-That is the result a reader who clones this repository will get, and it
-is the honest one: the gates those tests carry are receipts we can show,
-not results you can reproduce. The variables are `DAGDB_W2_FIXTURE`,
-`DAGDB_W1_RECORDS`, `DAGDB_E3_RUNS` and `DAGDB_CORTEX_V4_FIXTURE`; a
-fixture present with the wrong hash FAILS rather than skips, which is
-what makes the pin worth having.
-
-## Benchmarks
-
-```
+1,540 tests, 0 failures (DagDBTests 722 + DagDBDaemonKitTests 818,
+2026-11-24, one full `swift test` run); 49 skipped, 48 without the
+sealed fixtures
 1K nodes:   0.45 ms/tick
 1M nodes:   0.81-1.69 GCUPS (compacted rank tick, shallow spread;
             0.15-0.65 on a 16-rank spread, TICK_SYNC ~3.5 stable;
@@ -411,6 +423,20 @@ what makes the pin worth having.
             save compressed 1.3 s   (14.4 MB, 4% of raw)
 All 7 verification gates: GREEN
 ```
+
+## Sealed fixtures
+
+Forty-eight of the tests are gated on fixtures that are **not in this
+repository and are not distributed**: recordings and a reference world
+from a private lab tree, pinned by SHA-256 so a substitute cannot pass
+for them. Without those files the suite reports 1,540 tests, 0 failures,
+49 skipped (2026-11-24) — each fixture skip printing the environment variable it wanted, and one opt-in test skipping too.
+That is the result a reader who clones this repository will get, and it
+is the honest one: the checks those tests carry are receipts we can show,
+not results you can reproduce. The variables are `DAGDB_W2_FIXTURE`,
+`DAGDB_W1_RECORDS`, `DAGDB_E3_RUNS` and `DAGDB_CORTEX_V4_FIXTURE`; a
+fixture present with the wrong hash FAILS rather than skips, which is
+what makes the pin worth having.
 
 ## Requirements
 

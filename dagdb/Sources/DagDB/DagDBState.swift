@@ -20,8 +20,8 @@ public struct DagDBState {
     public var truthState: [UInt8]
 
     /// Node rank: 0 = root decision, higher = leaf-ward.
-    /// Widened u8 → u32 on 2026-04-20 (T1); u32 → u64 on 2026-04-21 (T1b,
-    /// for the 10^11-nodes-on-laptop target). Max 2^64 - 1.
+    /// Widened u8 → u32 on 2026-04-20; u32 → u64 on 2026-04-21 (for the
+    /// 10^11-nodes-on-laptop target). Max 2^64 - 1.
     public var rank: [UInt64]
 
     /// LUT6: 64-bit programmable Boolean function per node
@@ -37,7 +37,7 @@ public struct DagDBState {
     public var edgeWeights: [Float]
 
     /// Continuous node value (Float per node) — solver state for the
-    /// weighted/linear layer (E1, 2026-08-22). Distinct from `activation`
+    /// weighted/linear layer (2026-08-22). Distinct from `activation`
     /// (Int16, legacy continuous mode): solvers accumulate in Float64 and
     /// store Float32 here. Persisted in the snapshot v6 WGTS section and
     /// writable via the WAL `setNodeValue` opcode.
@@ -45,6 +45,22 @@ public struct DagDBState {
 
     /// Node type marker: 0=real, 1=virtual (hub split), 2=ghost (skip-connection padding)
     public var nodeType: [UInt8]
+
+    /// Ternary mode lane:
+    /// bits 0–1 the kind (0 BINARY, 1 TTABLE, 2 TTHRESH), bit 2 NOSKIP,
+    /// bits 3–7 zero. Default 0 — every node binary, today's LUT6.
+    public var nodeMode: [UInt8]
+
+    /// TTABLE index into `ttables`. Default 0.
+    public var ttableId: [UInt16]
+
+    /// TTHRESH thresholds: finite, lo ≤ hi. Default 0, 0.
+    public var thrLo: [Float]
+    public var thrHi: [Float]
+
+    /// The shared table library: 729 bytes per table, each byte
+    /// the truth-byte encoding of the output trit. Empty by default.
+    public var ttables: [UInt8]
 
     /// BACK_EDGE source list. Each entry is the index of a node whose truth
     /// value is copied into `backEdgeDsts[i]` at the tick boundary (latch
@@ -71,6 +87,11 @@ public struct DagDBState {
         self.edgeWeights = [Float](repeating: 1.0, count: n * 6)
         self.nodeValue = [Float](repeating: 0.0, count: n)
         self.nodeType = [UInt8](repeating: 0, count: n)
+        self.nodeMode = [UInt8](repeating: 0, count: n)
+        self.ttableId = [UInt16](repeating: 0, count: n)
+        self.thrLo = [Float](repeating: 0, count: n)
+        self.thrHi = [Float](repeating: 0, count: n)
+        self.ttables = []
         self.backEdgeSrcs = []
         self.backEdgeDsts = []
     }

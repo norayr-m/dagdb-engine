@@ -2,15 +2,17 @@
 ///
 /// Shipped 2026-04-20.
 ///
-/// A reader session takes a one-shot copy of all ten persisted engine
-/// buffers, plus the back-edge list, at open-time into an independent
+/// A reader session takes a one-shot copy of all fourteen persisted engine
+/// lanes (ten until the ternary build added mode, table id and the two
+/// thresholds), the table library and the back-edge list, at open-time into
+/// an independent
 /// `DagDBEngine` instance. Subsequent reads against that session see the
 /// state as of open-time, immune to writes on the primary engine. Writers
 /// are not blocked by readers.
 ///
 /// (It copied SIX buffers until 2026-09-12, so every session saw registers
 /// as ordinary combinational nodes and every edge weight at its 1.0
-/// default — see C7 in `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.)
+/// default.)
 ///
 /// This is NOT full MVCC — there are no per-node versions, no write-side
 /// version map, no background GC. It's the minimum viable middle step:
@@ -64,7 +66,7 @@ public final class DagDBReaderSessionManager {
 
         public var description: String {
             switch self {
-            case .sessionNotFound(let id): return "session not found: \(id)"
+            case .sessionNotFound(let id): return "session not found: \(Reply.quoted(id))"
             case .snapshotFailed(let s):   return "snapshot: \(s)"
             }
         }
@@ -78,8 +80,10 @@ public final class DagDBReaderSessionManager {
     /// Number of currently open reader sessions.
     public var openCount: Int { sessions.count }
 
+    /// Sorted by id (ids are fixed-width hex of the counter, so this is open order); earlier the
+    /// dictionary's order, seeded per process, picked LIST_READERS's order.
     public var openSessions: [DagDBReaderSession] {
-        Array(sessions.values)
+        sessions.values.sorted { $0.id < $1.id }
     }
 
     /// Open a new reader session. Snapshots the primary engine's six
@@ -94,9 +98,9 @@ public final class DagDBReaderSessionManager {
     ) throws -> DagDBReaderSession {
         let n = primary.nodeCount
 
-        // C7 · the destination is sized by the CALLER's grid, and every
+        // The destination is sized by the CALLER's grid, and every
         // memcpy below is `n` elements of the PRIMARY's. A smaller grid was
-        // a heap overwrite with no complaint (audit A, finding 42).
+        // a heap overwrite with no complaint.
         guard grid.nodeCount == n else {
             throw MVCCError.snapshotFailed(
                 "grid nodeCount \(grid.nodeCount) does not match the primary's \(n)")
@@ -108,14 +112,14 @@ public final class DagDBReaderSessionManager {
         do {
             snap = try DagDBEngine(grid: grid, state: stateTemplate, maxRank: maxRank)
         } catch {
-            throw MVCCError.snapshotFailed("engine init: \(error)")
+            throw MVCCError.snapshotFailed("engine init: \(Reply.errorWords(error))")
         }
 
-        // C7 · ALL TEN persisted lanes, plus the back-edge list. Copying six
+        // ALL TEN persisted lanes, plus the back-edge list. Copying six
         // of them left every reader session seeing registers as ordinary
         // combinational nodes and all weights at their 1.0 default, so a
         // session on a graph with a BACK_EDGE diverged from the primary on
-        // the first tick (audit A, finding 41).
+        // the first tick.
         //
         // rank is u64 → n * 8 bytes. (Was n * 4 pre-2026-05-18, which
         // truncated the copy to the lower half of nodes — every reader saw
@@ -130,6 +134,20 @@ public final class DagDBReaderSessionManager {
         memcpy(snap.edgeWeightsBuf.contents(), primary.edgeWeightsBuf.contents(), n * 6 * 4)
         memcpy(snap.activationBuf.contents(),  primary.activationBuf.contents(),  n * 2)
         memcpy(snap.nodeValueBuf.contents(),   primary.nodeValueBuf.contents(),   n * 4)
+        // Ten lanes → fourteen: the mode,
+        // table-id and two threshold lanes, plus the table library. A session
+        // that dropped them would read every ternary node as a binary one.
+        // Lanes the primary never allocated stay unallocated here too.
+        let lanes = primary.ternaryLaneView
+        snap.installTernaryLanes(mode: lanes.map { UnsafeRawPointer($0.mode) },   // keeps snap's count exact
+                                 ttableId: lanes.map { UnsafeRawPointer($0.ttableId) },
+                                 thrLo: lanes.map { UnsafeRawPointer($0.thrLo) },
+                                 thrHi: lanes.map { UnsafeRawPointer($0.thrHi) })
+        do {
+            try snap.replaceLibrary(primary.libraryBytes())
+        } catch {
+            throw MVCCError.snapshotFailed("ternary library: \(Reply.errorWords(error))")
+        }
         // The register flags come with the back-edge list, through the
         // checked installer, so the session's lists are validated like any
         // other install path.
@@ -138,17 +156,17 @@ public final class DagDBReaderSessionManager {
                 try snap.addBackEdgeUnchecked(src: primary.backEdgeSrcs[i],
                                               dst: primary.backEdgeDsts[i])
             } catch {
-                throw MVCCError.snapshotFailed("back edge \(i): \(error)")
+                throw MVCCError.snapshotFailed("back edge \(i): \(Reply.errorWords(error))")
             }
         }
         snap.markRankTopologyDirty()
 
         counter += 1
-        // C7 · 64-bit seconds. The old u32 field wrapped in February 2106,
-        // and its 32-bit counter half collided whenever two counters agreed
-        // mod 2^32 (audit A, finding 43).
-        let id = String(format: "r%016llx%016llx",
-                        UInt64(Date().timeIntervalSince1970), counter)
+        // 64-bit fields. The id comes from the counter only (the first field, once wall-clock seconds, is
+        // zero), so identical daemons mint identical ids. The
+        // shape is unchanged: r + 32 hex digits. The counter restarts with the daemon, so an id held across a
+        // restart can name a later session.
+        let id = String(format: "r%016llx%016llx", UInt64(0), counter)
         let session = DagDBReaderSession(
             id: id, snapshotEngine: snap,
             nodeCount: n, gridW: grid.width, gridH: grid.height,

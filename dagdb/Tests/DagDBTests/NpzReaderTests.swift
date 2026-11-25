@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — NpzReader. Synthetic `.npz` archives are written by `python3`
+/// NpzReader. Synthetic `.npz` archives are written by `python3`
 /// (numpy present in this environment) so the reader is exercised against
 /// what `np.savez`/`np.savez_compressed` actually produce, not a
 /// hand-rolled zip. Whole class skips if `python3 -c "import numpy"` fails.

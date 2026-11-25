@@ -1,7 +1,7 @@
 import Foundation
 
-/// Alarm-stream record — twin spec line 4, the sealed W2 court's frame
-/// vocabulary. Three ears (A, B, C), four culprit classes (quiet, liar,
+/// Alarm-stream record — the frame vocabulary of the sealed alarm-stream
+/// court. Three ears (A, B, C), four culprit classes (quiet, liar,
 /// deep, drift). No judgement lives here — only the shape sealed by the
 /// allocator/successor courts (see `SealedCourt`).
 public enum Ear: String, Codable, CaseIterable {
@@ -16,7 +16,7 @@ public enum ValueRow: String, Codable {
     case L, D
 }
 
-/// The sealed W2 trial classes. `liar` carries the ear it swapped.
+/// The sealed alarm-stream trial classes. `liar` carries the ear it swapped.
 public enum CulpritClass: Equatable, Hashable, Codable {
     case quiet
     case liar(Ear)
@@ -73,7 +73,7 @@ public struct SealedClaim: Equatable, Hashable, Codable {
     }
 }
 
-/// One replayed W2 record: its file-order index, its JSON key, its
+/// One replayed alarm-stream record: its file-order index, its JSON key, its
 /// culprit class, and (optionally) the three ear waveforms.
 public struct AlarmRecord: Equatable, Codable {
     public struct Waveforms: Equatable, Codable {

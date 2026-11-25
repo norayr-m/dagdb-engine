@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C6 · BFS is bounded and says what it excludes —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// BFS is bounded and says what it excludes.
 final class CoreDurabilityBFSTests: XCTestCase {
 
     private func bareEngine(side: Int) throws -> DagDBEngine {

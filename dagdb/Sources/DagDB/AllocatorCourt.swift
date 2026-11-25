@@ -1,17 +1,17 @@
 import Foundation
 
-/// Allocator-court replay — twin spec line 4's gate 1. Mirrors
+/// Allocator-court replay. Mirrors
 /// `market/build_court_allocator_runs.py`'s `run_point` bit-for-bit: four
 /// arms (allocator, uniform, greedy, oracle) over the five sealed
 /// budget-grid points. Mechanical replay only — no gate judgment lives
 /// here; `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md` is the frozen criterion this
-/// type is compared against (interface phase, 2026-09).
+/// type is compared against.
 ///
-/// Burst (contract amendment 1 §5): the letter's frame-level burst
+/// Burst (P4 AMENDMENT 1 item 5): the contract's frame-level burst
 /// phrase, taken literally on one-alarm frames, would count every
 /// non-quiet frame (150) as a "burst" — the sealed number is 116, which is
 /// `liar_C(16) + deep(50) + drift(50)` = the concentration-pocket (6)
-/// count, the letter's own parenthesis. The frame-level phrase is
+/// count, the contract's own parenthesis. The frame-level phrase is
 /// therefore NOT implemented; burst here is exactly the alarm-level
 /// definition (`pocket == concentrationPocket`), which coincides with the
 /// frame level 1:1 because this replay has one alarm per frame.
@@ -35,7 +35,7 @@ public enum AllocatorCourt {
         public var perEar: [String: Tally]
         public var burst = Burst()
         public var servedTrialIds: [Int] = []
-        /// Finding 46: both are the run's own `delta`, never the literal
+        /// Both are the run's own `delta`, never the literal
         /// 3 — `newArmBucket(delta:)` seeds them from the parameter the
         /// caller actually passed.
         public var warmupFramesExcluded = SealedCourt.delta, tailFramesAppended = SealedCourt.delta
@@ -64,7 +64,7 @@ public enum AllocatorCourt {
     /// Smallest tier with value 1 for `row` that is affordable at `budget`
     /// — mirrors `cheapest_value1_tier`. `SealedCourt.tiers` is already
     /// ascending, so the first affordable candidate is the cheapest.
-    /// Validating front door (finding 47): a pocket outside the sealed
+    /// Validating front door: a pocket outside the sealed
     /// `3…6` vocabulary is refused by name instead of indexing
     /// `layout.cost` out of bounds.
     public static func cheapestValue1Tier(
@@ -111,8 +111,8 @@ public enum AllocatorCourt {
         return (nil, 0)
     }
 
-    /// `internal`, not `private`: `AttentionHook` (twin spec line 6, the
-    /// incremental hook) reproduces this court's per-frame loop one frame
+    /// `internal`, not `private`: `AttentionHook` (the incremental hook)
+    /// reproduces this court's per-frame loop one frame
     /// at a time and calls this exact function so its arithmetic can never
     /// drift from the court's — never change what it computes.
     static func newArmBucket(delta: Int = SealedCourt.delta) -> ArmResult {
@@ -124,7 +124,7 @@ public enum AllocatorCourt {
     }
 
     /// Records the outcome of one judged, non-quiet trial into `arm` —
-    /// mirrors `record_outcome`. Counter order matches the Python hand:
+    /// mirrors `record_outcome`. Counter order matches the Python reference:
     /// maxSpendRatio, cost, dummy, dominated, served/misses, perClass (by
     /// raw class), perEar (when an ear is present), servedTrialIds, burst
     /// (when the trial's pocket is the concentration pocket).
@@ -140,7 +140,7 @@ public enum AllocatorCourt {
         if tierBought == SealedCourt.dummyTier { arm.dummy += 1 }
         if let t = tierBought, SealedCourt.dominatedTiers.contains(t) { arm.dominated += 1 }
         if hit { arm.served += 1 } else { arm.misses += 1 }
-        // Finding 48: `default:` rather than optional chaining — a class or
+        // `default:` rather than optional chaining — a class or
         // ear absent from the seeded buckets must still be counted, so the
         // per-class tallies always sum to served + misses.
         if hit { arm.perClass[trial.rawClass, default: Tally()].served += 1 }
@@ -167,14 +167,14 @@ public enum AllocatorCourt {
     /// of class. Oracle iterates every trial directly with no lag.
     public static func run(records: [AlarmRecord], budget: Double, delta: Int = SealedCourt.delta) -> [Arm: ArmResult] {
         let layout = SealedCourt.makeLayout()
-        // Finding 49: keep-first rather than `uniqueKeysWithValues`, which
+        // Keep-first rather than `uniqueKeysWithValues`, which
         // traps on a duplicate index. A fixture loaded through
         // `AlarmFixture.load` cannot carry one (the loader refuses a
         // duplicate reconstructed position by name); a hand-built array
         // can, and `duplicateRecordIndex(in:)` names it for callers that
         // want the refusal. `AttentionHook.init` throws on it outright.
         let byIndex = Dictionary(records.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
-        // Finding 45: the judged range is the fixture's own length, never
+        // The judged range is the fixture's own length, never
         // the literal 200 — the same quantity `AttentionHook` derives from
         // `records.count`, so hook and court judge the same frame set for
         // a fixture of any size.
@@ -230,7 +230,7 @@ public enum AllocatorCourt {
                         if hit { arm.burst.served += 1 } else { arm.burst.missed += 1 }
                     }
                     // r4 is neither dummy(3) nor dominated(8-10) on the sealed grid;
-                    // checked mechanically anyway, matching the Python hand.
+                    // checked mechanically anyway, matching the Python reference.
                     if SealedCourt.uniformTier == SealedCourt.dummyTier { arm.dummy += 1 }
                     if SealedCourt.dominatedTiers.contains(SealedCourt.uniformTier) { arm.dominated += 1 }
                     continue
@@ -255,7 +255,7 @@ public enum AllocatorCourt {
     }
 
     /// The first 1-based frame index carried by two different records, or
-    /// nil when every index is distinct (finding 49).
+    /// nil when every index is distinct.
     public static func duplicateRecordIndex(in records: [AlarmRecord]) -> Int? {
         var seen = Set<Int>()
         for r in records where !seen.insert(r.index).inserted { return r.index }

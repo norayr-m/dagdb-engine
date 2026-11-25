@@ -11,7 +11,8 @@
 #   6. Creates the dagdb database
 #   7. Tests everything end-to-end
 #
-# The daemon must be running first: .build/debug/dagdb-daemon --grid 256
+# The daemon must be running first: .build/debug/dagdb-daemon --grid 256 --shm-file "$HOME/.dagdb/dagdb_shm"
+# (--shm-file is required; the Postgres backend reads the same file: DAGDB_SHM_FILE in its environment.)
 
 set -e
 
@@ -25,7 +26,7 @@ if ! echo 'STATUS' | nc -U /tmp/dagdb.sock &>/dev/null; then
     echo "  ERROR: DagDB daemon is not running."
     echo "  Start it first in another terminal:"
     echo ""
-    echo "    .build/debug/dagdb-daemon --grid 256"
+    echo "    .build/debug/dagdb-daemon --grid 256 --shm-file \"\$HOME/.dagdb/dagdb_shm\""
     echo ""
     exit 1
 fi
@@ -103,6 +104,11 @@ echo ""
 
 RESULT=$(psql dagdb -t -c "CREATE EXTENSION IF NOT EXISTS pg_dagdb;" 2>&1)
 echo "  ✓ Extension loaded"
+
+# A database created by an older install keeps its old catalog under CREATE EXTENSION IF NOT EXISTS;
+# bring it to the installed version (a no-op on a fresh database).
+RESULT=$(psql dagdb -t -c "ALTER EXTENSION pg_dagdb UPDATE;" 2>&1)
+echo "  ✓ Extension at $(psql dagdb -t -c "SELECT extversion FROM pg_extension WHERE extname = 'pg_dagdb';" | xargs)"
 
 RESULT=$(psql dagdb -t -c "SELECT dagdb_status();" 2>&1)
 echo "  ✓ dagdb_status() = $(echo $RESULT | xargs)"

@@ -7,7 +7,7 @@ failed with `ModuleNotFoundError: No module named 'adapter'` after the
 worktree split. A conftest.py is imported by pytest before the test modules
 in its directory, so putting the sys.path insertion here fixes collection
 for every test in this dir without touching the existing `import adapter`
-style. (Fable review — test_adapter collection fix.)
+style.
 """
 
 import os

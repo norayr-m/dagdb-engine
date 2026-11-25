@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phasea — state-bearing inits + Codable round-trips for NamedStream,
+/// State-bearing inits + Codable round-trips for NamedStream,
 /// StreamHeader, StreamRecord. Fixtures reused verbatim from
 /// NamedStreamTests / StreamHeaderTests / StreamRecordTests.
 final class TwinCodableStreamTests: XCTestCase {

@@ -1,21 +1,21 @@
 import Foundation
 
-/// Successor counting hand — twin spec line 4's second sealed court. Mirrors
+/// Successor counting reference — the second sealed court. Mirrors
 /// `market/build_pregate_successor.py`'s `allocator_decide` / `greedy_decide`
 /// / `class_stats_at` / `frame_totals_at` bit-for-bit over the corrupted-read
 /// enumeration produced by `CorruptionModel`.
 ///
-/// `allocatorDecide` reproduces the SUCCESSOR's own multi-claim allocator
-/// (law 39's second bite): per-pocket Pareto frontiers of (cost, value,
+/// `allocatorDecide` reproduces the SUCCESSOR's own multi-claim allocator:
+/// per-pocket Pareto frontiers of (cost, value,
 /// tier), `itertools.product` over occupied pockets, max value → min cost →
 /// residual lexicographic tie-break. This is deliberately NOT
 /// `BudgetLayout.allocate` — the successor allows a pocket to buy a tier
 /// that satisfies only PART of its claims (e.g. the deep row at tier 4
 /// while an L claim at the same pocket goes unserved), a partial-tier
-/// option `BudgetLayout`'s merge rule does not express. Contract amendment
-/// 1 §8: the two rules coincide in VALUE on the sealed grid only because
-/// no two pockets are ever affordable at r7 together there — the gate pins
-/// numbers, not rule equivalence.
+/// option `BudgetLayout`'s merge rule does not express. P4 AMENDMENT 1
+/// item 8: the two rules coincide in VALUE on the sealed grid only because
+/// no two pockets are ever affordable at r7 together there — the interface-phase gate
+/// pins numbers, not rule equivalence.
 public enum SuccessorCourt {
     public enum Sweep: String, CaseIterable {
         case m, s, n, diag
@@ -50,7 +50,7 @@ public enum SuccessorCourt {
         pattern: [ValueRow], pocket: Int, layout: BudgetLayout
     ) -> [(cost: Double, value: Int, tier: Int?)] {
         var opts: [(cost: Double, value: Int, tier: Int?)] = [(0.0, 0, nil)]
-        // Finding 47: an unknown pocket has no column in the layout, so it
+        // An unknown pocket has no column in the layout, so it
         // offers nothing beyond the baseline. The public front doors
         // (`allocatorDecide`, `greedyDecide`) refuse such a pocket by name
         // before ever reaching here.
@@ -82,10 +82,10 @@ public enum SuccessorCourt {
 
     /// Multi-claim allocator: maximize total READ value over in-budget
     /// purchase sets across occupied pockets; tie -> minimum total cost;
-    /// residual tie -> lowest-pocket-first tiebreak tuple (law 39's
-    /// second-bite rule). Feasibility test mirrored exactly:
-    /// `total_cost > budget + 1e-9` is infeasible (contract amendment 1
-    /// §10). `served` is the set of occupied pockets where the winning
+    /// residual tie -> lowest-pocket-first tiebreak tuple. Feasibility test
+    /// mirrored exactly:
+    /// `total_cost > budget + 1e-9` is infeasible (P4 AMENDMENT 1
+    /// item 10). `served` is the set of occupied pockets where the winning
     /// combo bought a non-baseline option (value > 0 at the chosen tier),
     /// regardless of whether every claim at that pocket is satisfied.
     public static func allocatorDecide(
@@ -95,7 +95,7 @@ public enum SuccessorCourt {
         return allocatorDecideTotal(pocketClaims: pocketClaims, budget: budget, layout: layout)
     }
 
-    /// Findings 47 and 50: the occupied-pocket count is bounded by
+    /// The occupied-pocket count is bounded by
     /// `BudgetLayout.maxClaimedPockets` (the exact product below is
     /// exponential in it) and every pocket must be one of the sealed
     /// `3…6`. Both refuse by name.
@@ -253,7 +253,7 @@ public enum SuccessorCourt {
         public let costGreedy: Double
         public let maxWeightDev: Double
         public let perClass: [String: ClassStats]
-        /// Finding 51: every label declared in `classSpecs` (plus "quiet")
+        /// Every label declared in `classSpecs` (plus "quiet")
         /// that the supplied `counts` did not carry, in declaration order.
         /// Empty on the sealed counts. A non-empty list means the totals
         /// above are short by exactly those classes — counted and named,
@@ -280,7 +280,7 @@ public enum SuccessorCourt {
         classSpecs.map(\.label) + ["quiet"]
     }
 
-    /// Validating front door for a counts table (finding 51). Refuses by
+    /// Validating front door for a counts table. Refuses by
     /// name the first `classSpecs` label the table does not carry.
     /// `frameTotals` itself cannot throw — its signature is shared with a
     /// non-court caller — so it reports the same fact in
@@ -295,7 +295,7 @@ public enum SuccessorCourt {
     /// budget) point — mirrors `frame_totals_at`. Accumulation order
     /// mirrors the Python loop exactly: liar_A, liar_B, liar_C, deep,
     /// drift, then quiet's cost (harmless on the sealed dyadic five per
-    /// contract amendment 1 §10, but mirrored anyway).
+    /// P4 AMENDMENT 1 item 10, but mirrored anyway).
     public static func frameTotals(
         counts: [String: Int] = SealedCourt.classCounts, model: CorruptionModel, budget: Double
     ) -> FrameTotals {

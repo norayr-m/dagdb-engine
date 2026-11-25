@@ -1,4 +1,4 @@
-/// STREAM / HEADER / RECORD verb family — real implementation (interface phase, 2026-09).
+/// STREAM / HEADER / RECORD verb family.
 ///
 /// Mutating verbs follow the WAL-first pattern established by `.setWeight`
 /// (DagDBCommandHandler.swift): validate → mint an id via
@@ -18,23 +18,27 @@ extension DagDBCommandHandler {
         // MARK: STREAM
 
         case .streamOpen(let name, let stateHi, let stateLo, let incHi, let incLo):
+            if let e = nameCapRefusal("STREAM OPEN", name) { return e }
+            // The count cap, then the stream's bytes.
+            if let e = admitTwinCreate("STREAM OPEN", prefix: "s", bytes: Self.alloc1bStreamBytes(nameBytes: name.utf8.count),
+                                       what: "a stream, 1.1*(410 B + the name)") { return e }
             let id = twin.nextId(prefix: "s")
             let op = TwinOp.streamOpen(id: id, name: name, stateHi: stateHi, stateLo: stateLo, incHi: incHi, incLo: incLo)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinErrorLine(error) }
-            return twinResponse("STREAM OPEN", sessionId: sessionId, "id=\(id) name=\(name) draws=0")
+            return twinResponse("STREAM OPEN", sessionId: sessionId, "id=\(id) name=\(Reply.quoted(name)) draws=0")
 
         case .streamNext(let id, let n):
-            // D2 · the bound is the shm mapping's real capacity, not the
+            // The bound is the shm mapping's real capacity, not the
             // hardcoded `nodeCount * 3` restatement of it. For a default
             // handler the two are the same number (8 + n·24 bytes holds
             // 3n u64s); for a `shmBytes:`-built one they are not, and the
-            // old bound stayed wide while the buffer shrank (finding 20).
+            // old bound stayed wide while the buffer shrank.
             guard n >= 1 && n <= maxU64VectorCount else {
                 return "ERROR out_of_range: n \(n) not in 1...\(maxU64VectorCount)"
                     + " — shm holds \(shmCapacityBytes) bytes"
             }
-            guard var stream = twin.streams.get(id) else { return "ERROR not_found: \(id)" }
+            guard var stream = twin.streams.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             var values: [UInt64] = []
             values.reserveCapacity(n)
             for _ in 0..<n { values.append(stream.next64()) }
@@ -49,15 +53,15 @@ extension DagDBCommandHandler {
             )
 
         case .streamState(let id):
-            guard let stream = twin.streams.get(id) else { return "ERROR not_found: \(id)" }
+            guard let stream = twin.streams.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             let s = stream.stateWords
             return twinResponse(
                 "STREAM STATE", sessionId: sessionId,
-                "id=\(id) name=\(stream.name) draws=\(stream.draws) state=\(hexWord(s.hi)):\(hexWord(s.lo))"
+                "id=\(id) name=\(Reply.quoted(stream.name)) draws=\(stream.draws) state=\(hexWord(s.hi)):\(hexWord(s.lo))"
             )
 
         case .streamClose(let id):
-            guard twin.streams.get(id) != nil else { return "ERROR not_found: \(id)" }
+            guard twin.streams.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinErrorLine(error) }
@@ -78,7 +82,7 @@ extension DagDBCommandHandler {
                 signalBandHz: band, tauWindowSec: tau, combRateHz: comb,
                 firstEchoSec: echo, recordWindowSec: record, stepSec: step, clockSyncFloorSec: floor
             )
-            // F4 (beta 71) · the seventh quantity is judged here too, so this
+            // The seventh quantity is judged here too, so this
             // verb and `RECORD OPEN` answer the same header the same way:
             // `StreamRecord`'s birth refuses a declared clock-sync floor
             // coarser than the step or reaching the record window, and this
@@ -95,6 +99,7 @@ extension DagDBCommandHandler {
 
         case .recordOpen(let name, let band, let tau, let comb, let echo, let record, let step, let floor,
                           let stateHi, let stateLo, let incHi, let incLo):
+            if let e = nameCapRefusal("RECORD OPEN", name) { return e }
             let header = StreamHeader(
                 signalBandHz: band, tauWindowSec: tau, combRateHz: comb,
                 firstEchoSec: echo, recordWindowSec: record, stepSec: step, clockSyncFloorSec: floor
@@ -104,29 +109,73 @@ extension DagDBCommandHandler {
                 let desc = violations.map(violationTag).joined(separator: ";")
                 return "ERROR schema: inadmissible header: \(desc)"
             }
+            // The seventh quantity too, before the
+            // WAL. `StreamRecord`'s birth refuses a clock-sync floor coarser
+            // than the step or reaching the record window, and the handler
+            // asked only the six rules, so that refusal came after the
+            // TWIN_RECORD_OPEN record. Same words as before.
+            let floorViolations = header.clockSyncViolations()
+            guard floorViolations.isEmpty else {
+                return "ERROR schema: \(StreamRecord.RecordError.inadmissibleClockSyncFloor(floorViolations))"
+            }
+            // HEADER CHECK's finite rule too,
+            // before the WAL. A nan the six rules and the floor rule pass
+            // (every comparison with nan is false) answered OK, and every
+            // SAVE and every loader's rebase then refused (JSON cannot encode
+            // nan) until RECORD CLOSE, across restarts. HEADER CHECK's words.
+            guard band.isFinite, tau.isFinite, comb.isFinite, echo.isFinite,
+                  record.isFinite, step.isFinite, floor.isFinite else {
+                return "ERROR bad_value: header fields must be finite; nothing written"
+            }
+            // The count cap, then the record's bytes.
+            if let e = admitTwinCreate("RECORD OPEN", prefix: "t",
+                                       bytes: Self.alloc1bRecordBytes(nameBytes: name.utf8.count, slices: 0, draws: 0),
+                                       what: "a record, 1.1*(300 B + the name)") { return e }
             let id = twin.nextId(prefix: "t")
             let op = TwinOp.recordOpen(id: id, name: name, header: header, stateHi: stateHi, stateLo: stateLo, incHi: incHi, incLo: incLo)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinErrorLine(error) }
-            return twinResponse("RECORD OPEN", sessionId: sessionId, "id=\(id) name=\(name) slices=0")
+            return twinResponse("RECORD OPEN", sessionId: sessionId, "id=\(id) name=\(Reply.quoted(name)) slices=0")
 
         case .recordSlice(let id, let count):
             guard count >= 1 && count <= maxU64VectorCount else {
                 return "ERROR out_of_range: count \(count) not in 1...\(maxU64VectorCount)"
                     + " — shm holds \(shmCapacityBytes) bytes"
             }
-            guard twin.records.get(id) != nil else { return "ERROR not_found: \(id)" }
-            let op = TwinOp.recordSlice(id: id, count: UInt32(count))
+            guard twin.records.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
+            // The record's count is a u32; only the shm size held
+            // `UInt32(count)` (a count past u32 needs a shm above 32 GiB).
+            guard let count32 = UInt32(exactly: count) else {
+                return "ERROR out_of_range: RECORD SLICE count \(count) not in 1...\(UInt32.max); nothing written"
+            }
+            // The per-record slice cap (after the shm check), then the slice's bytes and the
+            // copy of the record's slices array its append makes.
+            if let rec0 = twin.records.get(id) {
+                let have = rec0.slices.count
+                if have >= Self.alloc1bSlicesPerRecordCap {
+                    return "ERROR out_of_budget: RECORD SLICE needs \(have + 1) slices on \(id), the per-record slice cap is"
+                        + " \(Self.alloc1bSlicesPerRecordCap); nothing written"
+                }
+                if let e = admit("RECORD SLICE", bytes: Self.newBytes(Self.alloc1bMargin * (100 + 8.32 * Double(count) + 48 * Double(have))),
+                                 what: "a slice, 1.1*(100 B + 1.04*8*count), and the copy of the record's slices array, 1.1*48 B per slice") {
+                    return e
+                }
+            }
+            // The replay ceiling before the
+            // WAL, in apply's words, at apply's place in the order (it came
+            // after the record before, so the record stayed in the log).
+            if let e = TwinState.recordSliceRefusal(count: count) { return twinErrorLine(e) }
+            let op = TwinOp.recordSlice(id: id, count: count32)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinErrorLine(error) }
-            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(id)" }
+            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             return twinResponse(
                 "RECORD SLICE", sessionId: sessionId,
                 "id=\(id) index=\(rec.slices.count - 1) count=\(count) slices=\(rec.slices.count)"
             )
 
         case .recordReplay(let id, let index):
-            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(id)" }
+            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             guard rec.slices.indices.contains(index) else {
                 return "ERROR out_of_range: index \(index) not in [0, \(rec.slices.count))"
             }
@@ -143,20 +192,20 @@ extension DagDBCommandHandler {
             }
 
         case .recordVerify(let id):
-            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(id)" }
+            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             let failing = rec.verify()
             let idxStr = failing.isEmpty ? "" : " failing_indices=" + failing.map(String.init).joined(separator: ",")
             return twinResponse("RECORD VERIFY", sessionId: sessionId, "id=\(id) failing=\(failing.count)\(idxStr)")
 
         case .recordInfo(let id):
-            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(id)" }
+            guard let rec = twin.records.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             return twinResponse(
                 "RECORD INFO", sessionId: sessionId,
-                "id=\(id) name=\(rec.streamName) slices=\(rec.slices.count) draws=\(rec.generatorState.draws)"
+                "id=\(id) name=\(Reply.quoted(rec.streamName)) slices=\(rec.slices.count) draws=\(rec.generatorState.draws)"
             )
 
         case .recordClose(let id):
-            guard twin.records.get(id) != nil else { return "ERROR not_found: \(id)" }
+            guard twin.records.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinErrorLine(error) }
@@ -182,14 +231,14 @@ extension DagDBCommandHandler {
     private func twinErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
-            case .notFound(let s): return "ERROR not_found: \(s)"
-            case .badId(let s): return "ERROR bad_value: \(s)"
+            case .notFound(let s): return "ERROR not_found: \(Reply.quoted(s))"
+            case .badId(let s): return "ERROR bad_value: \(Reply.quoted(s))"
             case .badValue(let s): return "ERROR bad_value: \(s)"
             case .schema(let s): return "ERROR schema: \(s)"
             case .io(let s): return "ERROR io: \(s)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
     private func hexWord(_ v: UInt64) -> String {
@@ -200,7 +249,7 @@ extension DagDBCommandHandler {
         ids.isEmpty ? "" : " " + ids.joined(separator: " ")
     }
 
-    /// F4 · the clock-sync half of the header's judgement, tagged in the
+    /// The clock-sync half of the header's judgement, tagged in the
     /// same style as `violationTag` so one `FAIL HEADER CHECK` line carries
     /// both kinds.
     private func clockSyncTag(_ v: StreamHeader.ClockSyncViolation) -> String {

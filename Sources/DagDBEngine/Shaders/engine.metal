@@ -115,7 +115,7 @@ kernel void leafMirror(device DagNode*        nodes       [[buffer(0)]],
 // wave completes one full cycle without rewriting the answer.
 //
 // V1 does NOT implement the 14 validation gates; those come in a
-// future E2 increment. For now, the mirror carries the forward
+// later increment. For now, the mirror carries the forward
 // result faithfully and the fold is identity. Any validation
 // algorithm in V2 will XOR or mask onto this baseline.
 // ─────────────────────────────────────────────────────────────

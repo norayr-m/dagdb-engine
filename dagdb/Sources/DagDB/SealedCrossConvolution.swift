@@ -1,9 +1,9 @@
 import Foundation
 
-/// The W1 court's residual, exactly as gate_w1.py computes it. Distinct from
+/// The sealed court's frozen residual formula, exactly as its reference computes it. Distinct from
 /// `CrossConvolutionCheck.check` (the patrol check): window [warmup, n) on
 /// both numerator and denominator, one-sided denominator max|kB⋆a| + 1e-300,
-/// float64 end to end. See docs/contracts/KERNELS_GATES_FROZEN.md.
+/// float64 end to end.
 public enum SealedCrossConvolution {
     public struct Result: Equatable {
         public let residual: Double
@@ -14,7 +14,8 @@ public enum SealedCrossConvolution {
     /// Full-length direct convolution (length = x.count + k.count − 1);
     /// out[i+j] += x[i]·k[j], i ascending outer, j ascending inner. This
     /// summation order (vs numpy's direct/FFT choice) is the instrument
-    /// floor K1's bound measures.
+    /// floor that the per-trial comparison against the reference residuals
+    /// measures.
     public static func convolveFull(_ x: [Double], _ k: [Double]) -> [Double] {
         let n = x.count, m = k.count
         guard n > 0, m > 0 else { return [] }
@@ -51,7 +52,7 @@ public enum SealedCrossConvolution {
         return Result(residual: r, n: n, warmup: warmup)
     }
 
-    /// K5: the sealed residual beside the patrol check's, and the three
+    /// The sealed residual beside the patrol check's, and the three
     /// formula differences that separate them, printed separately so the
     /// divergence is attributable, not only counted.
     public struct Attribution: Equatable {

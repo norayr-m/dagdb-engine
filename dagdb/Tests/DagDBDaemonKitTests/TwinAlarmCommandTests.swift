@@ -2,7 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// the interface phase — daemon-level tests for the real ALARM verb family
+/// Daemon-level tests for the real ALARM verb family
 /// (DagDBCommandHandler+TwinAlarm.swift): LOAD/INFO/LIST/CLOSE/FRAME/COURT/
 /// SUCCESSOR/CORRUPT. Synthetic-fixture tests exercise every verb without
 /// the sealed file; the sealed-fixture tests replay the real 200-record
@@ -302,9 +302,9 @@ final class TwinAlarmCommandTests: XCTestCase {
         XCTAssertTrue(reply.contains("cost_alloc=561907.5"), reply)
     }
 
-    // MARK: - D2/D7 · ALARM CORRUPT's shm write
+    // MARK: - ALARM CORRUPT's shm write
 
-    /// Audit finding 10 — `writeCorruptionOutcomes` compared `8 + n*40` to
+    /// `writeCorruptionOutcomes` compared `8 + n*40` to
     /// nothing at all. The outcome count comes from the loaded fixture, not
     /// from `nodeCount`, and the reply printed `shm_bytes=` without ever
     /// comparing it to capacity. The structurally identical `HOOK LEDGER`
@@ -320,7 +320,7 @@ final class TwinAlarmCommandTests: XCTestCase {
                        "rows were written despite the refusal")
     }
 
-    /// Audit finding 11 — the 40-byte row holds 5 claim slots while
+    /// The 40-byte row holds 5 claim slots while
     /// `outcome.claims.count` is whatever the model enumerates. The count is
     /// carried in `nClaims`, so truncation is detectable, but the reply line
     /// never said the row was lossy. It says so now.

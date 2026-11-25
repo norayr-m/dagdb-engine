@@ -1,7 +1,6 @@
 /// E3Ladder — thin CLI over `LadderFold` (dagdb/Sources/DagDB/LadderFold.swift),
-/// per CONTRACT_E3_FROZEN.md (frozen 2026-08-26; contract held outside this repository)
-/// and docs/contracts/FOLD_API_GATES_FROZEN.md (F3: the rebuilt CLI's output
-/// must equal the sealed runner's, bit for bit).
+/// built to a specification frozen on 2026-08-26 and held outside this repository.
+/// The rebuilt CLI's output must equal the sealed runner's, bit for bit.
 ///
 /// Builder's half: topology, weights, leaks and ranks live in ENGINE lanes
 /// (neighborsBuf, edgeWeightsBuf, nodeValueBuf as leak carrier, rankBuf);

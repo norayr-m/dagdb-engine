@@ -2,15 +2,15 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// The wire side of `docs/contracts/POST_MERGE_FOLLOWUP_2026-09-12.md` —
-/// the edits each of the five branches deferred because they crossed a file
-/// another branch owned, gated here on merged main.
+/// The wire side of the post-merge follow-up — fixes deferred while five
+/// parallel changes were built, because each crossed a file another change
+/// owned; tested here once all five were merged.
 final class PostMergeFollowUpTests: XCTestCase {
 
-    // MARK: - F2 · BFS_DEPTHS prints the disclosure the library result carries
+    // MARK: - BFS_DEPTHS prints the disclosure the library result carries
 
-    /// C6 decided the walk EXCLUDES back edges and says so. The library
-    /// result has said so since the core branch; the daemon reply did not.
+    /// The walk EXCLUDES back edges and says so. The library
+    /// result has said so since the core durability fix; the daemon reply did not.
     func testBfsDepthsRepliesCarryTheBackEdgeDisclosure() throws {
         let f = try HandlerFixture(side: 4)          // 16 nodes, all -1 slots
         // One back edge, so the count is not the trivial zero.
@@ -43,11 +43,11 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertTrue(rr.contains(" back_edge_count=1"), rr)
     }
 
-    // MARK: - F3 · ALARM SUCCESSOR validates its counts first (beta 51)
+    // MARK: - ALARM SUCCESSOR validates its counts first
 
     /// The mini fixture holds quiet/liar_B/deep/drift and no `liar_A` or
     /// `liar_C` — labels `SuccessorCourt.classSpecs` declares. Before this
-    /// letter the handler called `frameTotals` straight through, which
+    /// fix the handler called `frameTotals` straight through, which
     /// folded the absent classes into zero and answered `OK`.
     func testAlarmSuccessorRefusesAFixtureMissingAClassCount() throws {
         let dir = NSTemporaryDirectory() + "dagdb-f3-\(UUID().uuidString)/"
@@ -116,15 +116,15 @@ final class PostMergeFollowUpTests: XCTestCase {
         return path
     }
 
-    // MARK: - F4 · HEADER CHECK and RECORD OPEN agree on the clock-sync floor
+    // MARK: - HEADER CHECK and RECORD OPEN agree on the clock-sync floor
 
     /// The seventh t-zero quantity. `StreamRecord`'s birth refuses a declared
     /// floor coarser than the step or reaching the record window; before this
-    /// letter `HEADER CHECK` looked only at `violations()` and answered
+    /// fix `HEADER CHECK` looked only at `violations()` and answered
     /// `admissible=1` for a header `RECORD OPEN` would then refuse.
     ///
-    /// `100 1 1000 10 1 0.001 <floor>` is the admissible header of beta's
-    /// finding 71 with the floor left free.
+    /// `100 1 1000 10 1 0.001 <floor>` is an admissible header with the
+    /// floor left free.
     func testHeaderCheckRefusesTheClockSyncFloorsRecordOpenRefuses() throws {
         let f = try HandlerFixture(side: 4)
 
@@ -165,9 +165,9 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertTrue(hc3.contains("floorAboveStep"), hc3)
     }
 
-    // MARK: - F5 · every daemon verb goes through alpha's throwing door
+    // MARK: - Every daemon verb goes through the library's throwing checks
 
-    /// FOLD RUN · finding 36. A node whose rank sits above the requested
+    /// FOLD RUN. A node whose rank sits above the requested
     /// `maxRank` would be dropped at the first fold with its row and column
     /// of the operator. `LadderFold.run` reports that as a `refusal` field
     /// plus a stderr line and hands back an empty result, which the handler
@@ -213,7 +213,7 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("FOLD RUN 6 3 78 78").hasPrefix("OK FOLD RUN kept=49"))
     }
 
-    /// BANK GENERATE · finding 35. A column count above the bank's own
+    /// BANK GENERATE. A column count above the bank's own
     /// ceiling produced an empty vector — indistinguishable from an empty
     /// request — under an `OK` line. `generateChecked` names it.
     func testBankGenerateRefusesAColumnCountAboveTheCeiling() throws {
@@ -224,6 +224,7 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertTrue(open.hasPrefix("OK BANK OPEN"), open)
 
         let over = WaveBank.maxGenerateColumns + 1        // 100_001
+        shm1Header(f.shm, count: 2 * over, verb: .bankGenerate)   // a marked frame of zeros: K = 2 atoms × M
         let reply = f.handler.handle("BANK GENERATE w00000001 \(over)")
         XCTAssertTrue(reply.hasPrefix("ERROR"), reply)
         XCTAssertTrue(reply.contains("\(over)"), reply)
@@ -231,19 +232,20 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("STATUS").hasPrefix("OK STATUS"))
 
         // One column still generates.
+        shm1Header(f.shm, count: 2, verb: .bankGenerate)   // a marked frame of zeros: K = 2 atoms × M = 1
         XCTAssertTrue(f.handler.handle("BANK GENERATE w00000001 1").hasPrefix("OK BANK GENERATE"))
     }
 
-    /// BANK OPEN / BANK INFO · finding 33. `declarationChecked` is the door;
+    /// BANK OPEN / BANK INFO. `declarationChecked` is the throwing check;
     /// its extra clause (a smallest singular value at or below the rank
     /// threshold) is DISCLOSED rather than refused, because the sealed
     /// 160-atom control bank is deliberately rank deficient (146 of 160) and
-    /// its printed `rank=146` is a frozen gate of its own.
+    /// its printed `rank=146` is itself a pinned value.
     func testBankDeclarationIsCheckedAndTheRankDeficiencyDisclosed() throws {
         let f = try HandlerFixture(side: 64)
         // The repaired default bank: full rank, nothing disclosed.
         let open = f.handler.handle("BANK OPEN mouth")
-        XCTAssertTrue(open.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=144"), open)
+        XCTAssertTrue(open.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=144"), open)
         XCTAssertTrue(open.contains(" rank=144 "), open)
         XCTAssertTrue(open.contains(" rank_deficient=0"), open)
         XCTAssertTrue(f.handler.handle("BANK INFO w00000001").contains(" rank_deficient=0"))
@@ -251,7 +253,7 @@ final class PostMergeFollowUpTests: XCTestCase {
         // The sealed control bank: still OK, still rank=146, now disclosed.
         let f2 = try HandlerFixture(side: 64)
         let ctl = f2.handler.handle("BANK OPEN mouth 4096 3000 60 32 8 6 0.02 ALIASED")
-        XCTAssertTrue(ctl.hasPrefix("OK BANK OPEN id=w00000001 name=mouth T=4096 K=160"), ctl)
+        XCTAssertTrue(ctl.hasPrefix("OK BANK OPEN id=w00000001 name=\"mouth\" T=4096 K=160"), ctl)
         XCTAssertTrue(ctl.contains(" rank=146 "), ctl)
         XCTAssertTrue(ctl.contains(" rank_deficient=1"), ctl)
         XCTAssertTrue(f2.handler.handle("BANK INFO w00000001").contains(" rank_deficient=1"))
@@ -260,18 +262,18 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertThrowsError(try WaveBank(spec: .reference).declarationChecked())
     }
 
-    /// KERNEL LOAD · finding 28. Named here for completeness, and honest
-    /// about where the refusal comes from: alpha's `KernelPair.load` ALREADY
+    /// KERNEL LOAD. Named here for completeness, and honest
+    /// about where the refusal comes from: the library's `KernelPair.load` ALREADY
     /// calls `checkedWarmup` and throws, so this verb refused a declared
-    /// warmup at or above the kernels file's own `window_samples` before F5
-    /// as well, as `ERROR io: bad layout: …`. F5's change here is ordering,
+    /// warmup at or above the kernels file's own `window_samples` before this
+    /// change as well, as `ERROR io: bad layout: …`. The change here is ordering,
     /// not a new refusal — the daemon resolves the warmup through the
-    /// throwing door BEFORE the id is minted and before the op reaches the
+    /// throwing check BEFORE the id is minted and before the op reaches the
     /// WAL, so no path that reaches this handler can install a kernel whose
     /// warmup leaves no comparison window. The handler's own refusal wording
     /// (`ERROR bad_value: KERNEL LOAD refused: …`) is therefore unreachable
     /// today and is defence in depth; `XCONV SEALED` below is the override
-    /// path that F5 actually closes.
+    /// path that this change actually closes.
     func testKernelLoadRefusesADeclaredWarmupThatLeavesNoWindow() throws {
         let f = try HandlerFixture(side: 64, dataRoot: Self.kernelsDir)
         let reply = f.handler.handle("KERNEL LOAD \(Self.kernelsPath) WARMUP 2048")
@@ -298,7 +300,7 @@ final class PostMergeFollowUpTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("STATUS").hasPrefix("OK STATUS"))
     }
 
-    /// VIEW · finding 41. Fixture-gated: the sealed cortex npz lives outside
+    /// VIEW. Fixture-gated: the sealed cortex npz lives outside
     /// the repo, so this skips when `DAGDB_CORTEX_V4_FIXTURE` is unset.
     func testViewVerbsRefuseStationsThroughCheckStations() throws {
         guard let path = CortexFixture.envPath else {
@@ -325,16 +327,14 @@ final class PostMergeFollowUpTests: XCTestCase {
     }
     static var kernelsPath: String { kernelsDir + "/w1_kernels.json" }
 
-    // MARK: - F6 · the daemon verifier's live scenario, on merged main
+    // MARK: - A bulk-installed register fan-in, re-driven after the merge
 
-    /// D6's closing gate, re-driven here. `SET_NEIGHBORS_BULK` installs the
+    /// The bulk installers' closing check, re-driven here. `SET_NEIGHBORS_BULK` installed the
     /// exact edge `CONNECT` refuses by name — a combinational input into a
-    /// BACK_EDGE destination (a register) — and its reply points the caller
-    /// at `VALIDATE`. On the daemon branch alone `VALIDATE` had no register
-    /// check (that clause is the core branch's C3) and answered `OK`, so the
-    /// reply directed the caller at a re-check that could not fire. The core
-    /// merge is what closes it; this is the gate that says so.
-    func testBulkInstalledRegisterFanInIsCaughtByValidate() throws {
+    /// BACK_EDGE destination (a register) — and its reply pointed the caller
+    /// at `VALIDATE`, which caught it. Now S4 is refused everywhere — the bulk refuses that slot by
+    /// name in CONNECT's words, writes nothing, and VALIDATE stays OK.
+    func testBulkInstalledRegisterFanInIsRefusedByName() throws {
         let f = try HandlerFixture(side: 4)               // 16 nodes
         let n = f.handler.nodeCount
 
@@ -359,21 +359,18 @@ final class PostMergeFollowUpTests: XCTestCase {
             .bindMemory(to: Int32.self, capacity: slots)
         for i in 0..<slots { src[i] = live[i] }
         src[5 * 6 + 0] = 7
+        shm1Header(f.shm, count: n, verb: .setNeighborsBulk)
 
         let bulk = f.handler.handle("SET_NEIGHBORS_BULK")
-        XCTAssertTrue(bulk.hasPrefix("OK SET_NEIGHBORS_BULK nodes=\(n)"), bulk)
-        XCTAssertTrue(bulk.contains("validation=skipped"), bulk)
-        XCTAssertTrue(bulk.contains("skipped=back_edge_register_fanin"), bulk)
-        XCTAssertTrue(bulk.contains("recheck=VALIDATE"), bulk)
+        XCTAssertEqual(bulk, "ERROR schema: SET_NEIGHBORS_BULK slot 30 (node 5 dir 0): "
+                       + refused.dropFirst("ERROR schema: ".count) + "; nothing written")
 
-        // The edge really is installed.
-        XCTAssertEqual(live[5 * 6 + 0], 7)
+        // Nothing was installed.
+        XCTAssertEqual(live[5 * 6 + 0], -1)
 
-        // And the re-check the reply names actually fires.
+        // And the graph is still clean.
         let v = f.handler.handle("VALIDATE")
-        XCTAssertTrue(v.hasPrefix("FAIL VALIDATE"), "on merged main VALIDATE must catch the bypass: \(v)")
-        XCTAssertTrue(v.contains("5"), v)
-        XCTAssertTrue(v.lowercased().contains("register"), v)
+        XCTAssertTrue(v.hasPrefix("OK VALIDATE"), v)
         XCTAssertTrue(f.handler.handle("STATUS").hasPrefix("OK STATUS"))
     }
 }

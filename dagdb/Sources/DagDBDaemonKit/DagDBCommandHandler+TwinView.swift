@@ -1,6 +1,5 @@
 /// VIEW verb family — alarm-set derived views over the sealed cortex v4
-/// world (spec line 4, second view family). Gate contract:
-/// docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md, gate V6.
+/// world.
 ///
 /// `VIEW LOAD` follows ALARM LOAD's guardPath-first, validate-before-mint
 /// pattern (DagDBCommandHandler+TwinAlarm.swift): `guardPath` rejects
@@ -26,9 +25,18 @@ extension DagDBCommandHandler {
 
         case .viewLoad(let path, let sha256Arg):
             if let err = guardPath(path) { return err }
+            // The count cap, then the load's peak by the file's size (3.92 x the file measured).
+            if let e = alloc1bTwinCap("VIEW LOAD", prefix: "v") { return e }
+            // Admitted on the opened file's st_size (see ALARM LOAD's note); read once.
+            let admitView: (Int) -> String? = { [unowned self] fb in
+                self.admit("VIEW LOAD", bytes: Self.newBytes(Self.alloc1bMargin * AdmissionCharge.viewLoad(fileBytes: fb)),
+                           what: "the file read and decoded, 1.1*(4.0*file + 1 MiB) for \(fb) B")
+            }
             let fixture: CortexFixture
             do {
-                fixture = try CortexFixture.load(path: path, expectedSHA256: sha256Arg)
+                fixture = try CortexFixture.load(path: path, expectedSHA256: sha256Arg, admit: admitView)
+            } catch DaemonFile.Refusal.admission(let line) {
+                return line
             } catch {
                 return viewLoadErrorLine(error)
             }
@@ -46,7 +54,7 @@ extension DagDBCommandHandler {
             )
 
         case .viewReflex(let id, let s):
-            guard let set = twin.views.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.views.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             if let err = stationsRangeError(s, set) { return err }
             let summary = set.views.reflexSummary(stations: s)
             return twinResponse(
@@ -57,7 +65,7 @@ extension DagDBCommandHandler {
             )
 
         case .viewRung(let id, let s):
-            guard let set = twin.views.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.views.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             if let err = stationsRangeError(s, set) { return err }
             let centroids = set.views.centroids(stations: s)
             let summary = set.views.rung(stations: s, centroids: centroids)
@@ -67,7 +75,7 @@ extension DagDBCommandHandler {
             )
 
         case .viewCeiling(let id, let s):
-            guard let set = twin.views.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.views.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             if let err = stationsRangeError(s, set) { return err }
             let c = set.views.ceiling(stations: s)
             return twinResponse(
@@ -78,7 +86,7 @@ extension DagDBCommandHandler {
             )
 
         case .viewFeatures(let id, let frame, let s):
-            guard let set = twin.views.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.views.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             if let err = stationsRangeError(s, set) { return err }
             guard frame >= 0 && frame < set.views.fixture.testCount else {
                 return "ERROR out_of_range: frame \(frame) not in [0, \(set.views.fixture.testCount))"
@@ -99,10 +107,10 @@ extension DagDBCommandHandler {
             )
 
         case .viewInfo(let id):
-            guard let set = twin.views.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.views.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             return twinResponse(
                 "VIEW INFO", sessionId: sessionId,
-                "id=\(id) path=\(set.ref.path) sha256=\(set.ref.sha256) train=\(set.views.fixture.trainCount) " +
+                "id=\(id) path=\(Reply.quoted(set.ref.path)) sha256=\(set.ref.sha256) train=\(set.views.fixture.trainCount) " +
                 "test=\(set.views.fixture.testCount) stations=\(set.views.fixture.stations) " +
                 "samples=\(set.views.fixture.samples) candidates=\(set.views.fixture.candidates)"
             )
@@ -112,7 +120,7 @@ extension DagDBCommandHandler {
             return twinResponse("VIEW LIST", sessionId: sessionId, "count=\(ids.count)\(idsSuffixView(ids))")
 
         case .viewClose(let id):
-            guard twin.views.get(id) != nil else { return "ERROR not_found: \(id)" }
+            guard twin.views.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinViewStateErrorLine(error) }
@@ -130,7 +138,7 @@ extension DagDBCommandHandler {
 
     /// nil iff `s` is a valid station-subset size for `set`'s fixture
     /// (1...stations, fixed at 8 by CortexFixture.load).
-    /// F5 · every VIEW verb's station bound goes through `DerivedViews`'
+    /// Every VIEW verb's station bound goes through `DerivedViews`'
     /// own throwing door, so the daemon and the library cannot drift apart
     /// about what `S` the fixture admits. The existing `ERROR out_of_range:
     /// S <s> not in [1, N]` line is kept and the library's own named reason
@@ -141,10 +149,10 @@ extension DagDBCommandHandler {
             return nil
         } catch let e as CortexFixture.FixtureError {
             let why: String
-            if case .badLayout(let m) = e { why = m } else { why = "\(e)" }
+            if case .badLayout(let m) = e { why = m } else { why = Reply.errorWords(e) }
             return "ERROR out_of_range: S \(s) not in [1, \(set.views.fixture.stations)] — \(why)"
         } catch {
-            return "ERROR out_of_range: S \(s) not in [1, \(set.views.fixture.stations)] — \(error)"
+            return "ERROR out_of_range: S \(s) not in [1, \(set.views.fixture.stations)] — \(Reply.errorWords(error))"
         }
     }
 
@@ -159,31 +167,31 @@ extension DagDBCommandHandler {
         if let e = error as? CortexFixture.FixtureError {
             switch e {
             case .fileNotFound(let p):
-                return "ERROR io: file not found: \(p)"
+                return "ERROR io: file not found: \(Reply.quoted(p))"
             case .shaMismatch(let expected, let actual):
-                return "ERROR io: sha256 mismatch: expected \(expected) actual \(actual)"
+                return "ERROR io: sha256 mismatch: expected \(Reply.quoted(expected)) actual \(actual)"
             case .badLayout(let reason):
                 return "ERROR io: bad layout: \(reason)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
     /// `TwinState.TwinError` renders via its own `description`; kept as a
     /// file-local twin (see DagDBCommandHandler+TwinAlarm.swift's
-    /// `twinStateErrorLine`) since `private` helpers in a sibling extension
+    /// `twinStateErrorLine`) since `private` helpers in another extension
     /// file aren't visible here.
     private func twinViewStateErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
-            case .notFound(let s): return "ERROR not_found: \(s)"
-            case .badId(let s): return "ERROR bad_value: \(s)"
+            case .notFound(let s): return "ERROR not_found: \(Reply.quoted(s))"
+            case .badId(let s): return "ERROR bad_value: \(Reply.quoted(s))"
             case .badValue(let s): return "ERROR bad_value: \(s)"
             case .schema(let s): return "ERROR schema: \(s)"
             case .io(let s): return "ERROR io: \(s)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
     private func idsSuffixView(_ ids: [String]) -> String {

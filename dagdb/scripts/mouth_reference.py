@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Prep-hand reference fixture generator for spec 8 (waveform mouth).
+"""Reference fixture generator for the waveform mouth.
 
-Reproduces the frozen numpy mouth definition from
-docs/contracts/SPEC8_MOUTH_GATES_FROZEN.md verbatim, and writes
+Reproduces the frozen numpy mouth definition verbatim, and writes
 dagdb/Tests/Fixtures/mouth_reference_v1.json for the engine to bridge against.
 """
 import hashlib

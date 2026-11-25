@@ -46,7 +46,7 @@ If you have twenty minutes, read those four plus:
   layout, paths, git safety, backup, WAL, autosnapshot,
   `DAGDB_DATA_ROOT` policy.
 - **[dsl.md](dsl.md)** — the daemon's command language.
-- **[mcp.md](mcp.md)** — Python MCP surface (104 tools on port 8787).
+- **[mcp.md](mcp.md)** — Python MCP surface (116 tools on port 8787).
 - **[plugins.md](plugins.md)** — biology rank policies + Loom event
   adapter.
 - **[queries.md](queries.md)** — BFS, subgraph distances,
@@ -81,12 +81,15 @@ For the 4-cycle runtime (paper 4), see
 
 ## Status (2026-04-21)
 
-- **Tests**: 129 Swift + 16 Python adapter, all green, no skips.
+- **Tests**: 129 Swift + 16 Python adapter, all green, no skips. As
+  of 2026-10-29: 1,408 Swift (48 fixture-gated skips) and 82 Python,
+  0 failures.
 - **Daemon**: launchd-supervised on `/tmp/dagdb.sock`, grid 1024 ≈
   1 M nodes.
 - **Loom Pass 1**: 694 events ingested end-to-end on the u32
   daemon; dual-write live through `capture_latest`.
-- **MCP bridge**: `http://localhost:8787/dagdb/`, 104 tools.
+- **MCP bridge**: `http://localhost:8787/dagdb/`, 116 tools (the
+  `@mcp.tool()` functions in `dagdb/mcp_server.py`, counted by AST on 2026-11-18).
 - **Persistence root**: `~/dag_databases/`. Daemon enforces via
   `DAGDB_DATA_ROOT`. One allow-listed sample
   (`dagdb/sample_db/demo_graph.dagdb`) is tracked in git;
@@ -96,14 +99,16 @@ For the 4-cycle runtime (paper 4), see
 
 Six engine changes landed in one day. In shipping order:
 
-1. **T1 u32 rank** + **T1b u64 rank** — snapshot format widened to
+1. **u32 rank**, then **u64 rank** — snapshot format widened to
    v3 (42 B/node, u64 rank). Load is backward-compat with v1 (u8)
    and v2 (u32); save now writes v5 (env-origin trailer, body
    geometry from v3). See [`../../CURRENT_STATE.md`](../../CURRENT_STATE.md).
-2. **T2 `rankPolicy` Protocol** + three defaults.
-3. **T3 `SET_RANKS_BULK`** — shm-fed u64 vector rewrite (was u32
-   at landing; widened with T1b).
-4. **T7 MVCC snapshot-on-read** — `OPEN_READER` / `READER id …`.
+2. **`rankPolicy` Protocol** + three defaults.
+3. **`SET_RANKS_BULK`** — shm-fed u64 vector rewrite (was u32
+   at landing; widened with the u64 rank). The frame now carries
+   the header `[u32 nodeCount][u32 0x314D4801]` ([`dsl.md`](dsl.md)
+   § Input frames).
+4. **MVCC snapshot-on-read** — `OPEN_READER` / `READER id …`.
 5. **`bfsDepths` primitive** + `BFS_DEPTHS FROM <seed>` DSL.
 6. **Loom Pass 1 complete** — 694 events, ~140 ms aggregate.
 

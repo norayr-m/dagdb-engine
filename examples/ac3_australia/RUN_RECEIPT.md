@@ -30,8 +30,8 @@ All 3 ticks match. BACK_EDGE verified.
 
 ## Status
 
-This closes the provenance gap flagged in the 2026-06-24 deck-claims
-audit: AC-3 on DagDB is **demonstrated** — committed encoding spec +
+This closes a provenance gap found on 2026-06-24, when the deck's claims
+were checked: AC-3 on DagDB is **demonstrated** — committed encoding spec +
 committed verifier + this run receipt. Still not a committed XCTest
 (the verifier needs a live daemon); porting to an engine-level XCTest
 (like `DagDBMicrocircuitTests`) is the remaining upgrade.

@@ -1,21 +1,19 @@
 import XCTest
 @testable import DagDB
 
-/// RANK BOUND gates — docs/contracts/RANK_BOUND_GATES_FROZEN.md
-/// (AMENDMENT 1 replaces the original R1 with the reviewer's restore-path
-/// fixture;
-/// AMENDMENT 2 rules the remedy to be *compute*, not refuse.)
+/// Rank bound: a graph whose ranks exceed the engine's configured `maxRank`
+/// is computed, not refused.
 ///
-/// R1 · the restore path. A graph whose ranks run to 21, built in an
+/// The restore path. A graph whose ranks run to 21, built in an
 /// engine configured with `maxRank` 32, ticked to a fixed point, SAVEd,
 /// then loaded into an engine configured with `maxRank` 8. The expected
 /// fixed point is re-derived HERE from the LUT6 tables and the neighbour
 /// slots — never by calling either tick.
 ///
-/// The daemon-wire halves of the contract (R2's reply fields, R3's door,
-/// R4's STATUS trio) live in `Tests/DagDBDaemonKitTests/RankBoundDaemonTests.swift`,
-/// because `HandlerFixture` — which the contract names — belongs to that
-/// target and this one cannot see it.
+/// The daemon-wire halves (the reply fields, the refusal of a rank of N or
+/// more, STATUS's rank fields) live in `Tests/DagDBDaemonKitTests/RankBoundDaemonTests.swift`,
+/// because `HandlerFixture` belongs to that target and this one cannot see
+/// it.
 final class RankBoundTests: XCTestCase {
 
     private var tmpDir: String!
@@ -70,7 +68,7 @@ final class RankBoundTests: XCTestCase {
 
     // MARK: - The object itself
 
-    /// The fixture must satisfy the contract's shape: every rank level
+    /// The fixture must have this shape: every rank level
     /// 0…21 non-empty, and at least one edge crossing rank 8.
     func testR1_objectShape() throws {
         let t = RankBoundFixture.tables()
@@ -107,7 +105,7 @@ final class RankBoundTests: XCTestCase {
         }
     }
 
-    // MARK: - R1 · the restore path
+    // MARK: - The restore path
 
     func testR1_restorePathBothModesReachRecordedTruth() throws {
         let side = RankBoundFixture.side
@@ -205,7 +203,7 @@ final class RankBoundTests: XCTestCase {
         XCTAssertEqual(engB.highestRankPresent, 21)
     }
 
-    // MARK: - R5 · no regression on shallow objects
+    // MARK: - No regression on shallow objects
 
     /// An object whose ranks are all below the bound must dispatch exactly
     /// the bound's levels and compute exactly as before.

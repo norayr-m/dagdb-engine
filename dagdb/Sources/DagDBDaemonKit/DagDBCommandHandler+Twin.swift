@@ -1,12 +1,10 @@
-/// DagDBCommandHandler+Twin — dispatcher for the twin-spec DSL (interface phase, 2026-09).
+/// DagDBCommandHandler+Twin — dispatcher for the twin-spec DSL.
 ///
-/// The handler's `twin` property holds the real `DagDB.TwinState` (interface phase, 2026-09) —
+/// The handler's `twin` property holds the real `DagDB.TwinState` —
 /// daemon-global, so every connection (primary and reader sessions alike)
 /// shares one instance.
 ///
-/// `handleTwin` fans each verb out to its family handler. STREAM/HEADER/
-/// RECORD are real as of T8.2; RINGS/CLOCK/GEAR (T8.3), XCONV/BUDGET (T8.4),
-/// and ALARM (T8.5) remain stubs until their tasks land.
+/// `handleTwin` fans each verb out to its family handler.
 import Foundation
 import DagDB
 
@@ -48,7 +46,7 @@ extension DagDBCommandHandler {
         }
     }
 
-    // MARK: - Shared helpers for the family handlers (T8.2+)
+    // MARK: - Shared helpers for the family handlers
 
     /// Total shm bytes available past the base — historically `8 +
     /// nodeCount * resultRowSize` (the [u32 count][u32 rowSize-or-0] header
@@ -61,12 +59,12 @@ extension DagDBCommandHandler {
 
     /// How many u64s the `[u32 count][u32 8][u64 × count]` layout can hold
     /// in THIS handler's mapping — the true extent behind `STREAM NEXT`'s
-    /// `n` and `RECORD SLICE`'s `count` (gate D2, audit B finding 20).
+    /// `n` and `RECORD SLICE`'s `count`.
     var maxU64VectorCount: Int { max(0, (shmCapacityBytes - 8) / 8) }
 
     /// Writes a u64 vector to shm as `[u32 count][u32 8][u64 × count]` —
     /// the layout `STREAM NEXT` and friends use for variable-length results.
-    /// D2 · capacity-checked, like the read side always was. Returns nil
+    /// Capacity-checked, like the read side always was. Returns nil
     /// when the vector fits, else the refusal line — nothing is written.
     @discardableResult
     func writeU64Vector(_ v: [UInt64]) -> String? {
@@ -111,7 +109,7 @@ extension DagDBCommandHandler {
     /// Reads `count` little-endian Float32s starting at `byteOffset` into shm.
     /// Returns nil if the read would run past `shmCapacityBytes`.
     func readFloats(count: Int, at byteOffset: Int) -> [Float]? {
-        guard count >= 0, byteOffset >= 0, byteOffset + count * 4 <= shmCapacityBytes else { return nil }
+        guard shmReadFits(count: count, elementSize: 4, at: byteOffset) else { return nil }
         let ptr = shmBase.advanced(by: byteOffset).bindMemory(to: Float.self, capacity: max(1, count))
         return (0..<count).map { ptr[$0] }
     }
@@ -120,7 +118,7 @@ extension DagDBCommandHandler {
     /// shm — `XCONV SEALED`'s a/b record inputs (rowSize 8). Returns nil if
     /// the read would run past `shmCapacityBytes`.
     func readDoubles(count: Int, at byteOffset: Int) -> [Double]? {
-        guard count >= 0, byteOffset >= 0, byteOffset + count * 8 <= shmCapacityBytes else { return nil }
+        guard shmReadFits(count: count, elementSize: 8, at: byteOffset) else { return nil }
         let ptr = shmBase.advanced(by: byteOffset).bindMemory(to: Double.self, capacity: max(1, count))
         return (0..<count).map { ptr[$0] }
     }
@@ -142,12 +140,18 @@ extension DagDBCommandHandler {
     /// (WAL disabled) or the append succeeded; returns the `ERROR wal:`
     /// line to propagate otherwise.
     func appendTwinWAL(_ op: TwinOp) -> String? {
+        appendTwinWALs([op])
+    }
+
+    /// Several twin ops as one append, whole or not at all
+    /// (`Appender.twins`): a bound hook's TWIN_CLOSE and its TWIN_HOOK_SWEEP.
+    func appendTwinWALs(_ ops: [TwinOp]) -> String? {
         guard let wal = walAppender else { return nil }
         do {
-            _ = try wal.twin(op)
+            _ = try wal.twins(ops)
             return nil
         } catch {
-            return "ERROR wal: append: \(error)"
+            return walAppendError(error)
         }
     }
 }

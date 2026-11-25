@@ -2,16 +2,14 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// Derived-views gate contract — daemon-level tests for the real VIEW verb
+/// Derived views — daemon-level tests for the real VIEW verb
 /// family (DagDBCommandHandler+TwinView.swift): LOAD/REFLEX/RUNG/CEILING/
 /// FEATURES/INFO/LIST/CLOSE. Error-path tests (nonexistent file, outside
 /// data root, malformed npz layout) run unconditionally with a synthetic
 /// mini-npz written by python3 (numpy present in this environment, same
 /// precedent as NpzReaderTests.swift); the sealed-fixture tests replay the
 /// real `cortex_v4_world.npz` and skip (XCTSkip) when
-/// `DAGDB_CORTEX_V4_FIXTURE` is unset — gate contract:
-/// docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md, gate V6 for the reply
-/// shapes and V1-V5 for the sealed numbers.
+/// `DAGDB_CORTEX_V4_FIXTURE` is unset.
 final class TwinViewCommandTests: XCTestCase {
 
     private var tmpDir: String!
@@ -39,7 +37,7 @@ final class TwinViewCommandTests: XCTestCase {
 
     /// A tiny, well-typed npz with EVERY key `CortexFixture.load` expects,
     /// but M = 8 train frames instead of 129*54 = 6966 — triggers the
-    /// contract's ruling (c) refusal ("X_train frame count ... != 129*54")
+    /// loader's frame-count refusal ("X_train frame count ... != 129*54")
     /// rather than a missing-key or bad-dtype error.
     private func writeSyntheticMiniNpz(in dir: String, named name: String = "mini_cortex.npz") throws -> String {
         let path = dir + name
@@ -146,8 +144,8 @@ final class TwinViewCommandTests: XCTestCase {
         XCTAssertEqual(reply, expected)
     }
 
-    /// Verifier gap (2026-09-10): the interface spot-checked only S = 2 and 8;
-    /// V1–V5 are pinned at S = 4 and 6 too.
+    /// The interface tests checked only S = 2 and 8 (a gap an independent
+    /// check found, 2026-09-10); the reflex, rung and ceiling numbers are pinned at S = 4 and 6 too.
     func testSealedViewS4AndS6ReflexRungCeiling() throws {
         let path = try sealedPathOrSkip()
         let root = (path as NSString).deletingLastPathComponent
@@ -180,9 +178,10 @@ final class TwinViewCommandTests: XCTestCase {
         XCTAssertEqual(reply, expected)
     }
 
-    /// `near_edge` is printed-only (contract's V1 honest clause, not
-    /// gated) — computed once via the library directly so the exact-line
-    /// assertions above don't hardcode a number the contract never sealed.
+    /// `near_edge` (the number of candidate residuals within 10x the tie
+    /// tolerance of the tie edge, summed over the frames) is printed only, not
+    /// checked — computed once via the library directly so the exact-line
+    /// assertions above don't hardcode a number no sealed reference holds.
     private func reflexNearEdge(_ f: HandlerFixture, id: String, s: Int) -> Int {
         f.handler.twin.views.get(id)!.views.reflexSummary(stations: s).nearEdgeTotal
     }
@@ -239,7 +238,7 @@ final class TwinViewCommandTests: XCTestCase {
 
         let info = f.handler.handle("VIEW INFO v00000001")
         XCTAssertTrue(info.contains("id=v00000001"), info)
-        XCTAssertTrue(info.contains("path=\(path)"), info)
+        XCTAssertTrue(info.contains("path=\"\(path)\""), info)
         XCTAssertTrue(info.contains("sha256=\(CortexFixture.sealedSHA256)"), info)
         XCTAssertTrue(info.contains("train=6966"), info)
         XCTAssertTrue(info.contains("test=300"), info)

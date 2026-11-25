@@ -1,14 +1,14 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — the two sealed gates. Gate 1 (`AllocatorCourt`) replays the
+/// The two sealed gates. Gate 1 (`AllocatorCourt`) replays the
 /// alarm-stream fixture and needs `DAGDB_W2_FIXTURE`; gate 2
 /// (`CorruptionModel`/`SuccessorCourt`) needs only the sealed class counts
 /// and never skips. `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md` (with AMENDMENT 1)
 /// is the frozen criterion — every literal below is copied from it
 /// verbatim; a mismatch here is a finding, never a moved threshold.
 ///
-/// Amendment 1 §15: fixture absent -> XCTSkip with a printed reason;
+/// Fixture absent -> XCTSkip with a printed reason;
 /// fixture present with hash != pinned -> the gate-1 tests FAIL (the load
 /// throws `shaMismatch`, which propagates as a test failure), never skip.
 final class SealedGateTests: XCTestCase {
@@ -220,7 +220,7 @@ final class SealedGateTests: XCTestCase {
                 XCTAssertEqual(a.tailFramesAppended, 3)
             }
 
-            // oracle == allocator at every point (contract: "allocator == oracle at every point").
+            // oracle == allocator at every point.
             XCTAssertEqual(actual[.allocator]!, actual[.oracle]!, "point \(gi) allocator == oracle")
 
             // Conservation: every non-quiet trial served exactly once per arm.
@@ -364,7 +364,7 @@ final class SealedGateTests: XCTestCase {
         XCTAssertEqual(maxDev, 0.0)
     }
 
-    /// Contract amendment 1 §8: pocket-6 r7 (5618) is affordable at every
+    /// Pocket-6 r7 (5618) is affordable at every
     /// non-cut budget point, while the cheapest r7 pair (16570) exceeds
     /// every one — the mechanical fact that makes the merge rule and the
     /// successor's partial-tier options coincide in VALUE on the sealed

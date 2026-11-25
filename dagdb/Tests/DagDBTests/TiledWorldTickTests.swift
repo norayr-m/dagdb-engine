@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 @testable import DagDB
 
-/// Ticking gates W1–W4, W6 — `docs/contracts/TICKING_GATES_FROZEN.md`.
+/// Ticking across tiles.
 /// Style follows `TiledGraphRouterTests.swift` / `TiledGraphFilesTests.swift`.
 final class TiledWorldTickTests: XCTestCase {
 
@@ -45,7 +45,7 @@ final class TiledWorldTickTests: XCTestCase {
     }
 
     /// Recursive directory copy (Foundation's `copyItem` already recurses
-    /// for directories) — used by the W4 crash-simulation tests to snapshot
+    /// for directories) — used by the crash-mid-flush tests to snapshot
     /// a tile directory at a checkpoint epoch.
     private func snapshotDir(_ src: String, _ dst: String) throws {
         try? FileManager.default.removeItem(atPath: dst)
@@ -57,12 +57,12 @@ final class TiledWorldTickTests: XCTestCase {
         try FileManager.default.copyItem(atPath: src, toPath: dst)
     }
 
-    // MARK: - AMENDMENT 6, letter 2: the reference evaluator is gated first
+    // MARK: - The reference evaluator is checked first
 
     /// `TiledReference` is the authority every later equality is compared
     /// against, so it is gated against the UNTILED engine before it is
     /// used for anything: 12 ticks, exact, every side, both modes. Also
-    /// prints the per-tick change count, which is W7c's own line at the
+    /// prints the per-tick change count, which is the staticity test's own line at the
     /// untiled level — the repaired object must never go static.
     private func runReferenceMatchesUntiledEngine(mode: TickMode) throws {
         for side in TiledFixture.sides {
@@ -111,15 +111,15 @@ final class TiledWorldTickTests: XCTestCase {
         try runReferenceMatchesUntiledEngine(mode: .sync)
     }
 
-    // MARK: - W1 / W2: world ticks equal the untiled engine, bit for bit
+    // MARK: - World ticks equal the untiled engine, bit for bit
 
-    /// Shared body for W1 (mode: .rank) and W2 (mode: .sync). For each
+    /// Shared body for both modes (.rank and .sync). For each
     /// tiling × K: one fresh reference engine (untiled), one fresh tiled
     /// write, and one `TiledReference` (the test-side evaluator that never
     /// calls `DagDBEngine`), all three ticked incrementally through `ns`
-    /// (ascending) and compared at every checkpoint — AMENDMENT 6, letter
-    /// 2: **tiled == untiled == reference**, bit for bit — plus the
-    /// tickCount/meta pair (§7's invariant) on every tile.
+    /// (ascending) and compared at every checkpoint —
+    /// **tiled == untiled == reference**, bit for bit — plus the
+    /// tickCount/meta pair invariant on every tile.
     private func runWorldTickEqualsUntiled(
         side: Int, tilings: [Int], ks: [Int], ns: [Int], mode: TickMode, label: String
     ) async throws {
@@ -133,10 +133,10 @@ final class TiledWorldTickTests: XCTestCase {
                 let reference = TiledReference(engine: refObject.engine)
                 var refVector = refObject.engine.readTruthStates()
 
-                // AMENDMENT 7, finding A: this equality is only worth
+                // This equality is only worth
                 // anything if the object CAN exhibit the register
                 // latch-timing defect — i.e. if some node reads a register
-                // across a tile boundary. Counted here, beside the gate it
+                // across a tile boundary. Counted here, beside the check it
                 // guards; `TiledW7Tests.testFindingACrossTileRegisterReadersExist`
                 // asserts the per-side total and prints the whole table.
                 let tileOf = reference.tileAssignment(boundaries: TiledFixture.boundaries(side: side, tiles: tiles))
@@ -190,7 +190,7 @@ final class TiledWorldTickTests: XCTestCase {
         }
     }
 
-    // W1 — rank mode, split by side per the task's runtime note.
+    // Rank mode, split by side (for runtime).
 
     func testW1RankModeEqualsUntiled_Side16() async throws {
         try await runWorldTickEqualsUntiled(
@@ -210,7 +210,7 @@ final class TiledWorldTickTests: XCTestCase {
         )
     }
 
-    // W2 — sync mode, split by side.
+    // Sync mode, split by side.
 
     func testW2SyncModeEqualsUntiled_Side16() async throws {
         try await runWorldTickEqualsUntiled(
@@ -230,7 +230,7 @@ final class TiledWorldTickTests: XCTestCase {
         )
     }
 
-    // MARK: - W3: halo epochs, staleness detection + regeneration
+    // MARK: - Halo epochs, staleness detection + regeneration
 
     /// Finds one real (reader, source) ghost relationship from a written
     /// manifest — the reader is the first tile with a non-empty
@@ -294,7 +294,7 @@ final class TiledWorldTickTests: XCTestCase {
     }
 
     /// Corrupts the source's write-time epoch-0 strip (`halo_lower.0.bin`
-    /// — the one `write` lays down per ruling (e), read by sync mode's
+    /// — the one `write` lays down, read by sync mode's
     /// `k == 1` case) to a wrong epoch, pre-loads the reader (mirroring
     /// where in `worldTick`'s loop a ghost lookup happens — right after
     /// the reader itself is loaded), then calls `ghostTruth` for `k = 1`
@@ -377,7 +377,7 @@ final class TiledWorldTickTests: XCTestCase {
         XCTAssertEqual(strip.epoch, 0, "refusal must not regenerate the strip")
     }
 
-    // MARK: - W4: crash-mid-flush, both crash points, both modes
+    // MARK: - Crash mid-flush, both crash points, both modes
 
     func testW4CrashPointsRecovered() async throws {
         for mode: TickMode in [.rank, .sync] {
@@ -434,7 +434,7 @@ final class TiledWorldTickTests: XCTestCase {
             XCTAssertEqual(bodyEpoch, 2)
         }
 
-        // AMENDMENT 3: recovery now happens automatically in a writer-role
+        // Recovery now happens automatically in a writer-role
         // `init`, reported via `openReport` — `recover(mode:)` is gone.
         let router2 = try await TiledGraphRouter(dataRoot: w.dir, graphName: w.name, maxResidentTiles: k, role: .writer)
         let openReport1 = await router2.openReport
@@ -442,7 +442,7 @@ final class TiledWorldTickTests: XCTestCase {
         let truthAfterCaseI = try await router2.truthArray()
         XCTAssertEqual(truthAfterCaseI, refTruth, "mode=\(mode) K=\(k) case (i) recovered truth mismatch")
 
-        // AMENDMENT 2 letter 1 / AMENDMENT 3: recovered tile is accepted
+        // The recovered tile is accepted
         // on BOTH paths — the ticker (just asserted via truthArray above)
         // AND the query path (`loadTile`, over the router's OWN
         // now-current manifest, which recovery refreshed in place).
@@ -507,7 +507,7 @@ final class TiledWorldTickTests: XCTestCase {
         }
     }
 
-    // MARK: - W6: printed, not gated
+    // MARK: - Printed, not checked
 
     func testW6Printed() async throws {
         let side = 128, tiles = 8, k = 1
@@ -527,7 +527,7 @@ final class TiledWorldTickTests: XCTestCase {
         }
     }
 
-    // MARK: - AMENDMENT 1: manifest entry refreshed at every flush
+    // MARK: - Manifest entry refreshed at every flush
 
     func testManifestEntryRefreshedAtEveryFlush_rank() async throws {
         try await runManifestEntryRefreshedAtEveryFlush(mode: .rank)
@@ -593,7 +593,7 @@ final class TiledWorldTickTests: XCTestCase {
         }
     }
 
-    // MARK: - AMENDMENT 2, letter 1(b): clean-but-disagreeing manifest sha refused
+    // MARK: - Clean-but-disagreeing manifest sha refused
 
     /// Snapshots every regular file under `dir` (recursive), keyed by
     /// full path — used to prove "nothing else moved" after a refusal.
@@ -671,7 +671,7 @@ final class TiledWorldTickTests: XCTestCase {
         }
     }
 
-    // MARK: - AMENDMENT 3: partial-round completion at open (role-gated)
+    // MARK: - Partial-round completion at open (role-gated)
 
     private struct Interruption {
         let dir: String

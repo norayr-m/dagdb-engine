@@ -3,7 +3,7 @@ import Foundation
 /// Deterministic named random stream — PCG64 (XSL-RR 128/64), bit-compatible
 /// with numpy's PCG64 when seeded from an explicitly printed state.
 ///
-/// Twin spec line 3 (deterministic replay): courts pin fixtures to named
+/// Deterministic replay: courts pin fixtures to named
 /// streams with a pinned draw order. The bridge to the python fixture side is
 /// explicit state, not seed hashing: the fixture prints its generator state
 /// (state/inc as four 64-bit words), the engine ingests them, and both sides

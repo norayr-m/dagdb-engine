@@ -1,9 +1,9 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — Snapshot v7 TWIN section: a length-prefixed, Codable
+/// Snapshot v7 TWIN section: a length-prefixed, Codable
 /// `TwinState.Snapshot` between the WGTS lane section and the ENVS
-/// trailer. Fixtures mirror `TwinRegistryTests` (T5) and the v6
+/// trailer. Fixtures mirror `TwinRegistryTests` and the v6
 /// `DagDBSnapshotTests` / `DagDBWeightLaneTests` byte-accounting shape.
 final class DagDBSnapshotTwinTests: XCTestCase {
 
@@ -293,7 +293,7 @@ final class DagDBSnapshotTwinTests: XCTestCase {
         let path = tmpDir! + "twin_empty.dags"
         let saved = try DagDBSnapshot.save(engine: eng1, nodeCount: eng1.nodeCount,
                                            gridW: gw, gridH: gh, tickCount: 0, path: path)
-        // Audit C test item 74: the guard used to restate, term for term,
+        // The guard used to restate, term for term,
         // the sum `save` builds its own return value from — the writer
         // grading its own arithmetic. The independent measurement is the
         // file itself, the pattern `DagDBWALTwinTests` already uses.
@@ -432,7 +432,7 @@ final class DagDBSnapshotTwinTests: XCTestCase {
                                    gridW: gw, gridH: gh, tickCount: 0, path: path, twin: twin1)
 
         // Remove the alarm fixture's backing file before load — restore
-        // must drop that one entry (warn to stderr, interface-phase convention 15) and still
+        // must drop that one entry (warn to stderr) and still
         // succeed for everything else, never refusing the whole load.
         try FileManager.default.removeItem(atPath: alarmPath)
 
@@ -450,7 +450,7 @@ final class DagDBSnapshotTwinTests: XCTestCase {
 
     /// A minimal `CortexFixture` for view-registry plumbing tests.
     /// `CortexFixture.load`'s own asserts (M == 129*54, every class exactly
-    /// 54 train frames, FS == 3000, OS == 8, ruling (c)) make a real
+    /// 54 train frames, FS == 3000, OS == 8) make a real
     /// npz-backed fixture too heavy to build here — this test isolates the
     /// restore-side WARN-and-drop behavior (the mechanic under test), not
     /// `CortexFixture.load`'s own validation (exercised for real in

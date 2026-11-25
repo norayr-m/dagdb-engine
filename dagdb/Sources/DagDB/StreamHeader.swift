@@ -1,6 +1,6 @@
 import Foundation
 
-/// Time-domain stream header — twin spec line 7 (the t-zero law).
+/// Time-domain stream header (the t-zero law).
 ///
 /// Every stream declares seven quantities BEFORE use; the engine refuses
 /// undeclared or inconsistent streams. The three probe deaths that bought
@@ -24,6 +24,15 @@ public struct StreamHeader: Equatable, Codable {
     ///     declared floor is compared against `stepSec` and
     ///     `recordWindowSec` by `violations()`).
     public var clockSyncFloorSec: Double
+
+    /// HEADER CHECK's finite rule. RECORD OPEN refuses a non-finite field,
+    /// but a log written before that rule can still replay one (a nan
+    /// clock-sync floor), which JSON cannot encode, so SAVE names it instead
+    /// of failing in the encoder.
+    public var isFinite: Bool {
+        signalBandHz.isFinite && tauWindowSec.isFinite && combRateHz.isFinite && firstEchoSec.isFinite
+            && recordWindowSec.isFinite && stepSec.isFinite && clockSyncFloorSec.isFinite
+    }
 
     public init(signalBandHz: Double, tauWindowSec: Double, combRateHz: Double,
                 firstEchoSec: Double, recordWindowSec: Double, stepSec: Double,
@@ -73,7 +82,7 @@ public struct StreamHeader: Equatable, Codable {
         return v
     }
 
-    /// Finding 71: quantity 7 is COMPARED, not merely declared. A
+    /// Quantity 7 is COMPARED, not merely declared. A
     /// single-clock stream declares 0 and both rules pass trivially — the
     /// sealed regime is untouched. A declared multi-clock floor must be no
     /// coarser than the integrator step (otherwise the step's precision is

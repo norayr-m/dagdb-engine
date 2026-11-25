@@ -28,8 +28,7 @@
 /// (TiledGraphRouter, future) will introduce their own RankHalo enum
 /// (`upper` / `lower`) but reuse this same file-format pattern.
 ///
-/// Step 1 of `docs/tiled-streaming.md` build order. See companion memo
-/// `docs/tiled-streaming-memo-2026-04-29.md` for context.
+/// Step 1 of `docs/tiled-streaming.md` build order.
 
 import Foundation
 

@@ -232,7 +232,5 @@ v3 → v4 round-trip). Suite stands at **165 green** as of
   validated (or are loading from a previously-validated WAL/snapshot)
   should use it.
 
-The architectural rationale and the Carnot-mirror framing that led
-here are in internal design notes (2026-04-29), not in this
-repository. Public-surface description:
+Public-surface description:
 **synchronous DagDB**.

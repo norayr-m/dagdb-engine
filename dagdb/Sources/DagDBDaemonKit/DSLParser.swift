@@ -3,7 +3,8 @@
 /// Commands:
 ///   STATUS                              → daemon info
 ///   TICK <n>                            → run n ticks
-///   EVAL [WHERE <predicate>] [RANK <from> TO <to>]  → evaluate and return roots
+///   EVAL [WHERE <predicate>]                       → evaluate and return roots
+///                                                    (a RANK clause is refused)
 ///   NODES [AT RANK <n>] [WHERE <predicate>]         → list nodes
 ///   TRAVERSE FROM <node> DEPTH <n>      → walk n ranks from node
 ///   SET <node> TRUTH <0|1|2>            → set truth state
@@ -16,12 +17,12 @@ public enum DSLCommand {
     case status
     case tick(count: Int)
     case tickSync(count: Int)
-    case eval(predicate: Predicate?, rankFrom: Int?, rankTo: Int?)
+    case eval(predicate: Predicate?)
     case nodes(rank: Int?, predicate: Predicate?)
     case traverse(fromNode: Int, depth: Int)
     case setTruth(node: Int, value: UInt8)
-    case setWeight(node: Int, dir: Int, value: Float)   // SET <node> WEIGHT <dir> <f> (E1)
-    case setValue(node: Int, value: Float)              // SET <node> VALUE <f> (E1)
+    case setWeight(node: Int, dir: Int, value: Float)   // SET <node> WEIGHT <dir> <f>
+    case setValue(node: Int, value: Float)              // SET <node> VALUE <f>
     case setRank(node: Int, value: UInt64)
     case setLUT(node: Int, preset: String)
     case connect(from: Int, to: Int)
@@ -39,7 +40,7 @@ public enum DSLCommand {
     case getTruth(node: Int)
     case graphInfo
     case save(path: String, compressed: Bool)
-    case load(path: String)
+    case load(path: String, unverified: Bool = false)
     case exportMorton(dir: String)
     case importMorton(dir: String)
     case validateGraph
@@ -47,7 +48,7 @@ public enum DSLCommand {
     case loadJSON(path: String)
     case saveCSV(dir: String)
     case loadCSV(dir: String)
-    /// SAVE TILED <dir> <b1,b2,...> — gate T5. `boundaries` is the raw
+    /// SAVE TILED <dir> <b1,b2,...>. `boundaries` is the raw
     /// comma-separated list as parsed (numeric, but not yet checked for
     /// ascending order — that's a semantic check the handler makes, same
     /// split as every other bad-number case in this grammar). Splits the
@@ -76,7 +77,7 @@ public enum DSLCommand {
     /// see `TiledGraphRouter`'s header comment on why `save`/`close` on the
     /// router itself stay stubs).
     case tiledClose(id: String)
-    /// TILED TICK <id> [<n>] [SYNC] — ticking gates W5. Advances the
+    /// TILED TICK <id> [<n>] [SYNC]. Advances the
     /// world `n` ticks (default 1, checked 1...10000 by the handler) in
     /// rank mode, or sync mode if `SYNC` trails. Mutating (flushes every
     /// tile to disk) — forbidden in a reader session.
@@ -102,6 +103,35 @@ public enum DSLCommand {
     /// Bypasses rank-monotonicity validation (matches SET_RANKS_BULK);
     /// run VALIDATE after if paranoid.
     case setNeighborsBulk
+    /// CONNECT_BACK_BULK. A client frame in shm: u32 count, u32 the verb's mark (0x314D4808) at offset 0, then count ×
+    /// (u32 src, u32 dst) at offset 8. Equal to `count` CONNECT BACKs, all or nothing.
+    case connectBackBulk
+    /// SET_TRUTH_BULK. A client frame in shm:
+    /// u32 count, u32 the verb's mark (0x314D4809), then count × (u32 node, u8 value,
+    /// three zero bytes). Equal to `count` SET TRUTHs, all or nothing.
+    case setTruthBulk
+    /// TRUTH_SLICE NODES <lo>-<hi> | TRUTH_SLICE RANK <lo>-<hi>. The truth bytes of the nodes in the id range (or with a rank
+    /// in the rank range, ascending id), packed into shm: 1 bit per node on a
+    /// binary-only graph whose slice holds only 0/1, else 2 bits.
+    /// `… BYTES` (`bytes`) — every truth byte verbatim, 8 bits per
+    /// node, nothing refused by its value.
+    case truthSlice(byRank: Bool, lo: UInt64, hi: UInt64, bytes: Bool)
+    /// TICK UNTIL_STABLE [MAX k]. Rank-mode ticks until a
+    /// tick changes no truth byte and no register latch, at most k ticks
+    /// (default and ceiling: the TICK cap).
+    case tickUntilStable(max: Int?)
+    /// SET_LUTS NODES|RANK <lo>-<hi> FILL <hex64> |
+    /// SET_LUTS NODES|RANK <lo>-<hi> MAP [MASK <hex64>] <from>=<to> ….
+    /// FILL writes the value to every node of the selection; MAP writes
+    /// `to` to every node whose LUT ANDed with the mask (default all ones)
+    /// equals `from`, simultaneously (1…16 pairs; the handler refuses the
+    /// rest by name). Hex with or without 0x. DagDBEngine+SetLuts.swift.
+    case setLuts(DagDBEngine.LutSelection, DagDBEngine.LutOp)
+    /// SET_TRUTH NODES|RANK <lo>-<hi> FILL <v>. The truth byte of
+    /// every node in the selection := v (decimal 0…255, as SET TRUTH; the
+    /// handler refuses v ≥ 3 by name on a graph with a ternary node).
+    /// DagDBEngine+SetTruthFill.swift.
+    case setTruthFill(DagDBEngine.LutSelection, UInt8)
     case openReader
     case closeReader(id: String)
     case listReaders
@@ -123,10 +153,41 @@ public enum DSLCommand {
     /// a common input vector — the engine just performs the bitwise op
     /// on the 64-bit LUT integers.  Result composes the truth tables.
     case composeLUT(op: String, src1: Int, src2: Int?, dst: Int)
+    // ── The native ternary tick ──
+    /// SET <id> MODE BINARY|TTABLE|TTHRESH [NOSKIP]. `kind` is the raw
+    /// (upper-cased) word; the handler refuses an unknown one by name.
+    case setMode(node: Int, kind: String, noskip: Bool)
+    /// SET <id> TTABLE <tid>
+    case setTTableId(node: Int, tid: Int)
+    /// SET <id> THRESH <lo> <hi>
+    case setThresh(node: Int, lo: Float, hi: Float)
+    /// SET <id> TRIT -1|0|1
+    case setTrit(node: Int, trit: Int)
+    /// GET <id> TRIT → `OK GET node= trit=`
+    case getTrit(node: Int)
+    /// TTABLE DEFINE <tid> <729 chars of - 0 +>
+    case ttableDefine(tid: Int, table: String)
+    /// TTABLE PRESET <tid> <name> <k>
+    case ttablePreset(tid: Int, name: String, k: Int)
+    /// TTABLE GET <tid>
+    case ttableGet(tid: Int)
+    /// SET_MODES_BULK — u8[N] at shm offset 8.
+    case setModesBulk
+    /// SET_TTABLE_IDS_BULK — u16[N] at shm offset 8.
+    case setTTableIdsBulk
+    /// SET_THRESH_BULK — f32[2N] (lo, hi pairs) at shm offset 8.
+    case setThreshBulk
+    /// TTABLE_BULK <first> <count> — u8[729·count] at shm offset 8.
+    case ttableBulk(first: Int, count: Int)
     /// Twin-spec DSL: one of the ten verb families (STREAM, HEADER, RECORD,
     /// RINGS, CLOCK, GEAR, XCONV, BUDGET, ALARM, VIEW) parsed by DSLParser+Twin.
-    /// See TwinCommand for the full grammar (interface phase, 2026-09).
+    /// See TwinCommand for the full grammar.
     case twin(TwinCommand)
+    /// A line the parser refuses by name, in the grammar's
+    /// category for an unsupported clause. The handler replies
+    /// `ERROR dsl_parse: <words>` and runs nothing (no tick, no rows, no
+    /// WAL byte; the cached verdicts are kept).
+    case dslParse(String)
     case unknown(String)
 }
 
@@ -200,7 +261,7 @@ public enum DSLParser {
             // SAVE <path> [COMPRESSED]        — binary snapshot
             // SAVE JSON <path>                — JSON
             // SAVE CSV <dir>                  — two-file CSV
-            // SAVE TILED <dir> <b1,b2,...>    — gate T5, tile split
+            // SAVE TILED <dir> <b1,b2,...>    — tile split
             guard rawTokens.count >= 2 else { return .unknown(input) }
             if rawTokens.count >= 3 && tokens[1] == "JSON" {
                 return .saveJSON(path: rawTokens[2])
@@ -230,6 +291,11 @@ public enum DSLParser {
             }
             if rawTokens.count >= 3 && tokens[1] == "CSV" {
                 return .loadCSV(dir: rawTokens[2])
+            }
+            // `LOAD <path> UNVERIFIED` loads a snapshot whose .sha256 manifest exists but cannot be
+            // read (an explicit flag); without it such a load is refused as unverified.
+            if rawTokens.count == 3 && tokens[2] == "UNVERIFIED" {
+                return .load(path: rawTokens[1], unverified: true)
             }
             return .load(path: rawTokens[1])
 
@@ -318,9 +384,9 @@ public enum DSLParser {
             // TILED STATUS <id>
             // TILED LIST
             // TILED CLOSE <id>
-            // TILED TICK <id> [<n>] [SYNC]     — ticking gates W5
-            // TILED GET <id> <globalId> TRUTH  — ticking gates W5
-            // Gate T5 — NOT a twin verb (routers aren't a twin registry:
+            // TILED TICK <id> [<n>] [SYNC]
+            // TILED GET <id> <globalId> TRUTH
+            // NOT a twin verb (routers aren't a twin registry:
             // `TiledGraphRouter`'s own header comment), so this is parsed
             // at the top level, not routed through `parseTwin`.
             guard rawTokens.count >= 2 else { return .unknown(input) }
@@ -402,6 +468,75 @@ public enum DSLParser {
             // SET_NEIGHBORS_BULK — Int32[nodeCount*6] vector at shm offset 8.
             return .setNeighborsBulk
 
+        case "CONNECT_BACK_BULK":
+            guard tokens.count == 1 else { return .unknown(input) }
+            return .connectBackBulk
+
+        case "SET_TRUTH_BULK":
+            guard tokens.count == 1 else { return .unknown(input) }
+            return .setTruthBulk
+
+        case "TRUTH_SLICE":
+            // TRUTH_SLICE NODES <lo>-<hi> [BYTES] | TRUTH_SLICE RANK <lo>-<hi> [BYTES]
+            guard tokens.count == 3 || (tokens.count == 4 && tokens[3] == "BYTES"),
+                  tokens[1] == "NODES" || tokens[1] == "RANK" else { return .unknown(input) }
+            let range = tokens[2].split(separator: "-", omittingEmptySubsequences: false)
+            guard range.count == 2, let lo = UInt64(range[0]), let hi = UInt64(range[1]) else {
+                return .unknown(input)
+            }
+            return .truthSlice(byRank: tokens[1] == "RANK", lo: lo, hi: hi, bytes: tokens.count == 4)
+
+        case "SET_LUTS":
+            // SET_LUTS NODES|RANK <lo>-<hi> FILL <hex64>
+            // SET_LUTS NODES|RANK <lo>-<hi> MAP [MASK <hex64>] <from>=<to> …
+            return parseSetLuts(tokens) ?? .unknown(input)
+
+        case "SET_TRUTH":
+            // SET_TRUTH NODES|RANK <lo>-<hi> FILL <v>   (v decimal 0…255, as SET TRUTH)
+            guard tokens.count == 5, tokens[1] == "NODES" || tokens[1] == "RANK", tokens[3] == "FILL",
+                  let v = UInt8(tokens[4]) else { return .unknown(input) }
+            let range = tokens[2].split(separator: "-", omittingEmptySubsequences: false)
+            guard range.count == 2, let lo = UInt64(range[0]), let hi = UInt64(range[1]) else { return .unknown(input) }
+            return .setTruthFill(tokens[1] == "RANK" ? .rank(lo, hi) : .nodes(lo, hi), v)
+
+        case "SET_MODES_BULK":
+            guard tokens.count == 1 else { return .unknown(input) }
+            return .setModesBulk
+
+        case "SET_TTABLE_IDS_BULK":
+            guard tokens.count == 1 else { return .unknown(input) }
+            return .setTTableIdsBulk
+
+        case "SET_THRESH_BULK":
+            guard tokens.count == 1 else { return .unknown(input) }
+            return .setThreshBulk
+
+        case "TTABLE_BULK":
+            // TTABLE_BULK <first> <count> — u8[729·count] at shm offset 8.
+            guard tokens.count == 3, let first = Int(tokens[1]), let count = Int(tokens[2]) else {
+                return .unknown(input)
+            }
+            return .ttableBulk(first: first, count: count)
+
+        case "TTABLE":
+            // TTABLE DEFINE <tid> <729 chars of - 0 +>
+            // TTABLE PRESET <tid> <name> <k>
+            // TTABLE GET <tid>
+            guard tokens.count >= 3, let tid = Int(tokens[2]) else { return .unknown(input) }
+            switch tokens[1] {
+            case "DEFINE":
+                guard tokens.count == 4 else { return .unknown(input) }
+                return .ttableDefine(tid: tid, table: rawTokens[3])
+            case "PRESET":
+                guard tokens.count == 5, let k = Int(tokens[4]) else { return .unknown(input) }
+                return .ttablePreset(tid: tid, name: tokens[3], k: k)
+            case "GET":
+                guard tokens.count == 3 else { return .unknown(input) }
+                return .ttableGet(tid: tid)
+            default:
+                return .unknown(input)
+            }
+
         case "BFS_DEPTHS":
             // BFS_DEPTHS FROM <seed>                  — undirected (default)
             // BFS_DEPTHS FROM <seed> BACKWARD         — inputs-only
@@ -457,8 +592,19 @@ public enum DSLParser {
             return .status
 
         case "TICK":
-            let count = tokens.count > 1 ? Int(tokens[1]) ?? 1 : 1
-            return .tick(count: count)
+            // TICK UNTIL_STABLE [MAX k].
+            if tokens.count > 1 && tokens[1] == "UNTIL_STABLE" {
+                if tokens.count == 2 { return .tickUntilStable(max: nil) }
+                guard tokens.count == 4, tokens[2] == "MAX", let k = Int(tokens[3]) else { return .unknown(input) }
+                return .tickUntilStable(max: k)
+            }
+            // `TICK <garbage>` is unknown,
+            // not one tick. `TICK` and `TICK <integer>` are unchanged.
+            if tokens.count > 1 {
+                guard let count = Int(tokens[1]) else { return .unknown(input) }
+                return .tick(count: count)
+            }
+            return .tick(count: 1)
 
         case "TICK_SYNC":
             // Double-buffered synchronous mode: every node reads the
@@ -467,22 +613,18 @@ public enum DSLParser {
             return .tickSync(count: count)
 
         case "EVAL":
-            var predicate: Predicate? = nil
-            var rankFrom: Int? = nil
-            var rankTo: Int? = nil
-
-            if let whereIdx = tokens.firstIndex(of: "WHERE") {
-                predicate = parsePredicate(tokens, after: whereIdx)
+            let whereIdx = tokens.firstIndex(of: "WHERE")
+            let predicate = whereIdx.flatMap { parsePredicate(tokens, after: $0) }
+            // The RANK clause used to be parsed and then ignored. EVAL's rows are the
+            // rank-0 roots, so a rank range on them is trivial and the meant
+            // scope change is new semantics: every RANK form is refused here,
+            // before anything runs. The one RANK token that is not the clause
+            // is a spaced predicate's own field (`WHERE rank = 0`).
+            let fieldIdx = predicate?.field == "rank" ? whereIdx.map { $0 + 1 } : nil
+            if tokens.indices.contains(where: { tokens[$0] == "RANK" && $0 != fieldIdx }) {
+                return .dslParse(Self.evalRankClauseRefusal)
             }
-            if let rankIdx = tokens.firstIndex(of: "RANK"),
-               rankIdx + 1 < tokens.count {
-                rankFrom = Int(tokens[rankIdx + 1])
-                if let toIdx = tokens.firstIndex(of: "TO"),
-                   toIdx + 1 < tokens.count {
-                    rankTo = Int(tokens[toIdx + 1])
-                }
-            }
-            return .eval(predicate: predicate, rankFrom: rankFrom, rankTo: rankTo)
+            return .eval(predicate: predicate)
 
         case "NODES":
             var rank: Int? = nil
@@ -530,6 +672,24 @@ public enum DSLParser {
             case "VALUE":
                 guard let val = Float(tokens[3]) else { return .unknown(input) }
                 return .setValue(node: node, value: val)
+            case "MODE":
+                // SET <id> MODE BINARY|TTABLE|TTHRESH [NOSKIP]
+                if tokens.count == 4 { return .setMode(node: node, kind: tokens[3], noskip: false) }
+                if tokens.count == 5 && tokens[4] == "NOSKIP" {
+                    return .setMode(node: node, kind: tokens[3], noskip: true)
+                }
+                return .unknown(input)
+            case "TTABLE":
+                guard tokens.count == 4, let tid = Int(tokens[3]) else { return .unknown(input) }
+                return .setTTableId(node: node, tid: tid)
+            case "THRESH":
+                guard tokens.count == 5, let lo = Float(rawTokens[3]), let hi = Float(rawTokens[4]) else {
+                    return .unknown(input)
+                }
+                return .setThresh(node: node, lo: lo, hi: hi)
+            case "TRIT":
+                guard tokens.count == 4, let t = Int(tokens[3]) else { return .unknown(input) }
+                return .setTrit(node: node, trit: t)
             default:
                 return .unknown(input)
             }
@@ -569,18 +729,17 @@ public enum DSLParser {
 
         case "GET":
             // GET <node> TRUTH
-            guard tokens.count >= 3, let node = Int(tokens[1]),
-                  tokens[2] == "TRUTH" else {
+            // GET <node> TRIT     — a ternary node's trit
+            guard tokens.count >= 3, let node = Int(tokens[1]) else {
                 return .unknown(input)
             }
+            if tokens[2] == "TRIT" && tokens.count == 3 { return .getTrit(node: node) }
+            guard tokens[2] == "TRUTH" else { return .unknown(input) }
             return .getTruth(node: node)
 
         case "STREAM", "HEADER", "RECORD", "RINGS", "CLOCK", "GEAR", "XCONV", "BUDGET", "ALARM", "BANK", "VIEW", "KERNEL", "FOLD", "HOOK":
-            // Twin-spec DSL (interface phase, 2026-09) — see DSLParser+Twin.swift for the grammar.
-            // FOLD (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md) joined
-            // this route 2026-09-10. KERNEL (gates K3/K4, docs/contracts/
-            // KERNELS_GATES_FROZEN.md) joined the same day. HOOK (gate H5,
-            // docs/contracts/HOOK_GATES_FROZEN.md) joined the same day too.
+            // Twin-spec DSL — see DSLParser+Twin.swift for the grammar.
+            // FOLD, KERNEL and HOOK joined this route on 2026-09-10.
             return parseTwin(rawTokens: rawTokens, tokens: tokens, input: input)
 
         default:
@@ -588,7 +747,53 @@ public enum DSLParser {
         }
     }
 
+    /// A 64-bit hex word, with or without 0x, 1…16 digits.
+    static func hex64<S: StringProtocol>(_ s: S) -> UInt64? {
+        var t = Substring(s)
+        if t.hasPrefix("0X") || t.hasPrefix("0x") { t = t.dropFirst(2) }
+        guard (1...16).contains(t.count), t.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        return UInt64(t, radix: 16)
+    }
+
+    /// `SET_LUTS`'s grammar (upper-cased tokens). nil: malformed
+    /// (an unknown command). MAP's pair count and keys are the handler's to
+    /// refuse by name, so `MAP` with no pair parses.
+    static func parseSetLuts(_ tokens: [String]) -> DSLCommand? {
+        guard tokens.count >= 4, tokens[1] == "NODES" || tokens[1] == "RANK" else { return nil }
+        let range = tokens[2].split(separator: "-", omittingEmptySubsequences: false)
+        guard range.count == 2, let lo = UInt64(range[0]), let hi = UInt64(range[1]) else { return nil }
+        let sel: DagDBEngine.LutSelection = tokens[1] == "RANK" ? .rank(lo, hi) : .nodes(lo, hi)
+        switch tokens[3] {
+        case "FILL":
+            guard tokens.count == 5, let v = hex64(tokens[4]) else { return nil }
+            return .setLuts(sel, .fill(v))
+        case "MAP":
+            var i = 4
+            var mask = UInt64.max
+            if i < tokens.count && tokens[i] == "MASK" {
+                guard i + 1 < tokens.count, let m = hex64(tokens[i + 1]) else { return nil }
+                mask = m
+                i += 2
+            }
+            var pairs: [DagDBEngine.LutPair] = []
+            while i < tokens.count {
+                let kv = tokens[i].split(separator: "=", omittingEmptySubsequences: false)
+                guard kv.count == 2, let f = hex64(kv[0]), let t = hex64(kv[1]) else { return nil }
+                pairs.append(DagDBEngine.LutPair(from: f, to: t))
+                i += 1
+            }
+            return .setLuts(sel, .map(mask: mask, pairs: pairs))
+        default:
+            return nil
+        }
+    }
+
     /// Parse "field=value" or "field = value" after WHERE
+    /// The refusal of EVAL's RANK clause, the way out named.
+    static let evalRankClauseRefusal =
+        "EVAL takes no RANK clause: EVAL reports the rank-0 roots (scope=roots), "
+        + "and NODES AT RANK <n> [WHERE <field><op><value>] reads other ranks; nothing ran"
+
     private static func parsePredicate(_ tokens: [String], after whereIdx: Int) -> Predicate? {
         let remaining = tokens[(whereIdx + 1)...].joined(separator: " ")
 

@@ -3,7 +3,7 @@ import XCTest
 @testable import DagDBDaemonKit
 
 /// Handler-level tests that were impossible while the command dispatch lived
-/// in the daemon's executableTarget (Fable review T1/G2). The handler runs
+/// in the daemon's executableTarget. The handler runs
 /// against a real engine with a plain allocated results buffer standing in
 /// for the mmap'd shm, so every OK/ERROR string and every state change is
 /// directly assertable — no socket, no daemon process.
@@ -87,7 +87,7 @@ final class DagDBCommandHandlerTests: XCTestCase {
         _ = h.handle("SET 3 RANK 7")
         _ = h.handle("SET 3 TRUTH 1")
         let reply = h.handle("NODES AT RANK 7")
-        // `omitted=` appended at gate D7 (audit B finding 17): the default
+        // `omitted=` appended: the default
         // filter drops rank-0/truth-0 nodes and never said how many.
         XCTAssertEqual(reply, "OK NODES rows=1 omitted=0")
         // Header: [u32 rowCount][u32 rowSize]; row 0: [u64 node][u64 rank]...
@@ -115,7 +115,7 @@ final class DagDBCommandHandlerTests: XCTestCase {
         XCTAssertTrue(h.handle("CONNECT FROM 3 TO 3").contains("self-loop"))
     }
 
-    // MARK: - COMPOSE (was completely untested — review G2)
+    // MARK: - COMPOSE (was completely untested)
 
     func testComposeAndProducesBitwiseAnd() throws {
         let h = try makeHandler(side: 4)
@@ -145,7 +145,7 @@ final class DagDBCommandHandlerTests: XCTestCase {
     /// full token count) BEFORE the handler's own "requires two sources" guard
     /// can fire — so that guard is effectively dead defensive code. The
     /// contract that matters: the malformed command does not mutate and is
-    /// rejected. (Discovery surfaced by the T1 extraction.)
+    /// rejected.
     func testComposeBinaryMissingSecondSourceIsRejected() throws {
         let h = try makeHandler(side: 4)
         XCTAssertTrue(h.handle("COMPOSE AND 1 INTO 3").hasPrefix("ERROR"))
@@ -219,7 +219,7 @@ final class DagDBCommandHandlerTests: XCTestCase {
     }
 }
 
-// MARK: - E1 weight commands (2026-08-22)
+// MARK: - Weight commands (2026-08-22)
 
 extension DagDBCommandHandlerTests {
 

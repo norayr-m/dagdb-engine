@@ -1,11 +1,11 @@
 import XCTest
 @testable import DagDB
 
-/// T1b: state-bearing inits + Codable round-trips for BudgetLayout,
+/// State-bearing inits + Codable round-trips for BudgetLayout,
 /// CrossConvolutionCheck, GearedRings, and MasterClock/GearRatio/PhaseGear —
 /// so a daemon-held instance survives restart in O(1).
 ///
-/// Fixtures are reused verbatim from the sibling test classes:
+/// Fixtures are reused verbatim from these test classes:
 /// `BudgetLayoutTests.layoutEngine()`, `GearedRingsTests`' signed-spike
 /// fixture, and `MasterClockTests`' gear fixtures.
 final class TwinCodableClockRingsTests: XCTestCase {

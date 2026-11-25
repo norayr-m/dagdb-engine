@@ -4,7 +4,7 @@ A runnable walk through the seven twin-spec primitives in `DagDB`
 (`NamedStream`, `StreamHeader`, `StreamRecord`, `GearedRings`,
 `MasterClock`/`PhaseGear`, `CrossConvolutionCheck`, `BudgetLayout`) plus,
 as of the interface phase (2026-09-06), the sealed alarm-stream court
-types (`SealedCourt`, `AlarmFixture`, `AllocatorCourt` — twin spec line 4)
+types (`SealedCourt`, `AlarmFixture`, `AllocatorCourt` — the twin spec's alarm-stream contract)
 and a Codable restart round-trip.
 
 Source: `dagdb/Sources/TwinDemo/main.swift`. It calls each primitive's public
@@ -38,7 +38,7 @@ corrupt and out-of-root snapshots exit 2. Refuses to run while any
 file. Result 2026-09-09: `pass=23 fail=0`.
 
 Steps [1]–[9] need nothing beyond the build. Step [10] (the sealed gate-1
-grid) needs the real, SHA-pinned, out-of-repo W2 fixture:
+grid) needs the real, SHA-pinned, out-of-repo alarm-records fixture:
 
 ```
 DAGDB_W2_FIXTURE=/path/to/w2_records.json swift run -c release dagdb-twin-demo
@@ -62,7 +62,7 @@ on the Swift side.
 **[2] StreamHeader.** A `StreamHeader` models seven declared quantities
 (signal band, τ-window, comb rate, first echo, record window, step, clock
 floor) and refuses to be admissible if they're inconsistent. The demo shows
-one admissible header (the sealed W1-like regime: 1.5 kHz band, 3 kHz comb,
+one admissible header (a regime like the sealed recordings': 1.5 kHz band, 3 kHz comb,
 0.6827 s window), then three of the four probe deaths the type exists to
 catch: a signal band dropped so its period exceeds the τ-window (reads as a
 constant), a comb rate dropped below twice the signal band (aliasing), and
@@ -264,15 +264,13 @@ printf 'BUDGET ALLOCATE b00000001 13491.480553724456 0:0 2:0\n' | nc -U /tmp/dag
 
 ### BANK over the socket
 
-Spec 8's waveform mouth (branch `dag/spec8-mouth`, 2026-09-10, not yet
-merged to main) — a frozen bank Φ hosted by the engine, `GENERATE` is
+The waveform mouth (2026-09-10) — a frozen bank Φ hosted by the engine, `GENERATE` is
 one matrix product, `FIT` a least-squares solve. The reply lines below
 are test-log output of 2026-09-10 — `TwinBankCommandTests.swift`'s
 assertions for the `OK ...` shape, id, K, and rank fields; the printed
 `residual=`/`cond=`/throughput values that no test pins to an exact
-number come from the same day's engine-printed run recorded in the
-gate contract (`docs/contracts/SPEC8_MOUTH_GATES_FROZEN.md`, amendment
-3) — not a live `nc` capture. The grammar is identical over the real
+number come from the same day's engine-printed run — not a live `nc`
+capture. The grammar is identical over the real
 socket (`docs/wiki/dsl.md`'s "BANK" subsection).
 
 Default `OPEN` (no numbers) opens the repaired bank, K=144, full rank:
@@ -290,7 +288,9 @@ printf 'BANK OPEN mouth 4096 3000 60 32 8 6 0.02 ALIASED\n' | nc -U /tmp/dagdb.s
 # → OK BANK OPEN id=w00000001 name=mouth T=4096 K=160 atoms_bytes=2621440 rank=146 cond=5.6e+15
 ```
 
-`FIT` (target waveform written to shm at offset 8 first) reports the
+`FIT` (target waveform written to shm at offset 8 first, after the
+header `[u32 T][u32 0x314D480E]` at bytes 0..7: the client
+frame, BANK FIT's code 14) reports the
 residual the engine actually got, not a canned number:
 
 ```
@@ -298,7 +298,7 @@ printf 'BANK FIT w00000001\n' | nc -U /tmp/dagdb.sock
 # → OK BANK FIT id=w00000001 residual=<d> norm=<d> coefficients=160
 ```
 
-`NOISE` prints the out-of-bank law (gate G3) beside the engine's own
+`NOISE` prints the out-of-bank law beside the engine's own
 measurement — 20 probes on the control bank:
 
 ```
@@ -306,7 +306,7 @@ printf 'BANK NOISE w00000001 0 20\n' | nc -U /tmp/dagdb.sock
 # → OK BANK NOISE id=w00000001 n=20 expected=0.98027419633488 mean=<d> min=<d> max=<d>
 ```
 
-`BENCH` is the throughput measurement (gate G6, printed, not gated):
+`BENCH` is the throughput measurement (printed, not checked):
 
 ```
 printf 'BANK BENCH w00000001 1000 2\n' | nc -U /tmp/dagdb.sock
@@ -315,8 +315,7 @@ printf 'BANK BENCH w00000001 1000 2\n' | nc -U /tmp/dagdb.sock
 
 ### VIEW over the socket
 
-Spec line 4's second view family (branch `dag/derived-views`,
-2026-09-10, off `dag/spec8-mouth`, merged with `main` here) — three
+Added 2026-09-10 — three
 alarm-set derived views (reflex, geometry-then-energy rung,
 arrival-geometry ceiling) over the sealed cortex v4 world. The fixture
 (`cortex_v4_world.npz`, 15,145,646 bytes) lives OUT of this repo, at
@@ -327,7 +326,7 @@ The reply lines below are test-log output of 2026-09-10 —
 `TwinViewCommandTests.swift`'s exact-line assertions for LOAD,
 REFLEX (S=8 and S=2), CEILING, and the LIST/INFO/CLOSE lifecycle;
 `RUNG`'s `hits=` is pinned the same way but its line is asserted as a
-prefix (min_margin is a printed floor, not gated). The grammar is
+prefix (min_margin is printed, not checked). The grammar is
 identical over the real socket (`docs/wiki/dsl.md`'s "VIEW"
 subsection).
 
@@ -336,8 +335,9 @@ printf 'VIEW LOAD /path/to/cortex_v4_world.npz SHA 7d732e58a4e68fc7c6357ce753469
 # → OK VIEW LOAD id=v00000001 train=6966 test=300 stations=8 samples=64 candidates=129 sha256=7d732e58a4e68fc7c6357ce75346984b39aec1d71c4dccd4c76a666543890bc2
 ```
 
-`REFLEX` at S=8 (gate V1-V3's numbers; `near_edge` is printed only,
-the V1 honest-clause floor):
+`REFLEX` at S=8 (every field but `near_edge` is pinned; `near_edge`, the
+number of candidate residuals within 10× the tie tolerance of the tie
+edge summed over the frames, is printed only):
 
 ```
 printf 'VIEW REFLEX v00000001 8\n' | nc -U /tmp/dagdb.sock
@@ -352,15 +352,15 @@ printf 'VIEW REFLEX v00000001 2\n' | nc -U /tmp/dagdb.sock
 ```
 
 `RUNG` resolves the reflex tied set by nearest standardized-feature
-class centroid (gate V4's `hits=`):
+class centroid (`hits=` is pinned):
 
 ```
 printf 'VIEW RUNG v00000001 8\n' | nc -U /tmp/dagdb.sock
 # → OK VIEW RUNG id=v00000001 S=8 hits=39 min_margin=<d>
 ```
 
-`CEILING` reads τ alone, no frame data (gate V5's numbers, printed at
-six decimals):
+`CEILING` reads τ alone, no frame data (every field pinned, the ceiling
+at six decimals):
 
 ```
 printf 'VIEW CEILING v00000001 8\n' | nc -U /tmp/dagdb.sock
@@ -380,8 +380,7 @@ printf 'VIEW CLOSE v00000001\n' | nc -U /tmp/dagdb.sock
 
 ### FOLD over the socket
 
-The E3 tier ladder (branch `dag/fold-api`, built on `dag/spec8-mouth`,
-2026-09-10, merged to main 2026-09-10) — Kron/Schur fold of a rank ring
+The exact tier ladder (2026-09-10) — Kron/Schur fold of a rank ring
 into the kept set, operator stored to Float32 between folds, solved in
 Float64 via LAPACK `dgesv`, moved verbatim out of the sealed
 `E3Ladder` runner into `LadderFold.run`. `FOLD` is the one twin verb
@@ -456,14 +455,14 @@ printf 'READER <id> FOLD RUN 6 3 78 78\n' | nc -U /tmp/dagdb.sock
 
 ### KERNEL and XCONV SEALED over the socket
 
-Spec line 6's second half (branch `dag/kernels`, 2026-09-10, built on
-`main`, not yet merged) — per-path kernels stored by reference, and
-the W1 court's own frozen cross-convolution residual R reached over
+The second half of the cross-convolution self-test (2026-09-10) —
+per-path kernels stored by reference, and
+the out-of-repo court's own frozen cross-convolution residual R reached over
 the socket as `XCONV SEALED`, distinct from the pre-existing `XCONV
 CHECK` (now documented as the deprecated patrol check). The kernels
 fixture (`w1_kernels.json`, 144,554 bytes) is IN-REPO at
 `dagdb/Tests/Fixtures/w1_kernels.json`, sha256-pinned, always
-available; the 190 W1 records it is checked against
+available; the 190 sealed records it is checked against
 (`w1_records.json`, 18,580,321 bytes) live OUT of this repo, at
 whatever path `DAGDB_W1_RECORDS` names, also sha256-pinned. The reply
 line below is `TwinKernelCommandTests.swift`'s exact-line assertion
@@ -471,7 +470,7 @@ for `KERNEL LOAD` (`testKernelLoadExactOKLine`) — not a live `nc`
 capture. The grammar is identical over the real socket
 (`docs/wiki/dsl.md`'s "KERNEL / XCONV SEALED" subsection).
 
-`KERNEL LOAD` with `TAU`/`SIGMA` declared derives the W1 warmup (K4):
+`KERNEL LOAD` with `TAU`/`SIGMA` declared derives the sealed set's warmup:
 
 ```
 printf 'KERNEL LOAD dagdb/Tests/Fixtures/w1_kernels.json SHA 2523d3a8a4de44b56268ee31a703b6bcc6522c7c66a305651f8ec7c03e5c56b8 TAU 0.18227148035108542 0.18382585465904366 SIGMA 0.02\n' | nc -U /tmp/dagdb.sock
@@ -479,7 +478,9 @@ printf 'KERNEL LOAD dagdb/Tests/Fixtures/w1_kernels.json SHA 2523d3a8a4de44b5626
 ```
 
 `XCONV SEALED` (records `a`, `b` written to shm as f64 at offset 8,
-`b` immediately after `a`, first) reports the sealed residual for a
+`b` immediately after `a`, first, after the header `[u32 2n][u32
+0x314D480B]` at bytes 0..7: the client frame, XCONV SEALED's
+code 11) reports the sealed residual for a
 loaded pair — the same Double the court's own numpy formula prints,
 string-equal:
 
@@ -501,19 +502,17 @@ printf 'KERNEL CLOSE k00000001\n' | nc -U /tmp/dagdb.sock
 # → OK KERNEL CLOSE id=k00000001
 ```
 
-On the 190 sealed W1 records (`DAGDB_W1_RECORDS` set), the frozen
-gate contract (`docs/contracts/KERNELS_GATES_FROZEN.md`) holds: K2
-reproduces every court line (worst court trial 5.415e-03, 50/50
+On the 190 sealed records (`DAGDB_W1_RECORDS` set), the checks
+hold: every court line is reproduced (worst court trial 5.415e-03, 50/50
 within tolerance; fakes 50/50; perturbed 50/50, quartiles
-1.019e-01/1.032e-01/1.052e-01); K1' (the standing relative bound)
-holds on all 190; K5 shows the deprecated `XCONV CHECK` would flip 50
-of 190 court gates — all true recordings — max |R_patrol − R_sealed|
-= 23.7.
+1.019e-01/1.032e-01/1.052e-01); the standing relative bound
+holds on all 190; and the deprecated `XCONV CHECK` would flip the
+court's pass/fail verdict on 50 of the 190 — all true recordings —
+max |R_patrol − R_sealed| = 23.7.
 
 ### HOOK over the socket
 
-Roadmap item 7 (branch `dag/hook`, 2026-09-10, built on `main`, not
-yet merged) — the sealed allocator court (`AllocatorCourt.run`) as a
+Roadmap item 7 (2026-09-10) — the sealed allocator court (`AllocatorCourt.run`) as a
 daemon-global ticked process: instead of one batch replay call, a hook
 advances one frame per `HOOK STEP`, appending one derived ledger row
 each time, reproducing the court's `ArmResult` bit for bit at every
@@ -530,7 +529,7 @@ are `TwinHookCommandTests.swift`'s exact-line assertions
 grammar is identical over the real socket (`docs/wiki/dsl.md`'s
 "HOOK" subsection).
 
-A hook needs a loaded alarm set first — the same sealed W2 records the
+A hook needs a loaded alarm set first — the same sealed alarm records the
 allocator court itself replays (200 judged records, sha256-pinned):
 
 ```
@@ -579,8 +578,7 @@ printf 'HOOK LEDGER h00000001\n' | nc -U /tmp/dagdb.sock
 when that clock advances, once per tick, after the tick's gears; it
 refuses `HOOK STEP` directly so its frame counter has exactly one
 driver, and a bound hook run to completion via `CLOCK ADVANCE` matches
-an otherwise-identical unbound hook stepped directly, field for field
-(H4):
+an otherwise-identical unbound hook stepped directly, field for field:
 
 ```
 printf 'CLOCK OPEN\n' | nc -U /tmp/dagdb.sock
@@ -625,8 +623,7 @@ printf 'ALARM CLOSE a00000001\n' | nc -U /tmp/dagdb.sock
 
 ### TILED over the socket
 
-Tiling, step one (roadmap item 8, `docs/contracts/TILING_GATES_FROZEN.md`
-T5). **Not a twin primitive** — a `TiledGraphRouter` is never
+Tiling, step one (roadmap item 8). **Not a twin primitive** — a `TiledGraphRouter` is never
 persisted, never WAL-logged, never part of a snapshot; the tile
 directory `SAVE TILED` writes IS the durable state, and `TILED OPEN`
 just rebuilds an in-memory view of it. Ids are `x%08x` from a
@@ -683,42 +680,41 @@ io: ...` and the refusal is recorded in the next `TILED STATUS`'s
 
 ## Verification
 
-`swift test` from `dagdb/` reports **446 tests, 9 skipped (fixture-gated),
-0 failures** as of 2026-09-09 (main) — up from the 249/0-skip baseline at the 2026-09-05
-twin-primitives merge. On branch `dag/spec8-mouth` (2026-09-10, not yet
-merged) the spec-8 waveform mouth adds to **506 tests, same 9 skips, 0
-failures**. On branch `dag/fold-api` (2026-09-10, built on
-`dag/spec8-mouth`, merged to main 2026-09-10) the fold API adds to **544 tests,
+On 2026-11-19, `swift test` from `dagdb/`, run once per test class, reports **1,519 tests, 49
+skipped (48 fixture-gated, 1 opt-in), 0 failures** (DagDBTests 722 +
+DagDBDaemonKitTests 797; how it
+was run is in `CURRENT_STATE.md`, Test suite). The record of the
+suite's growth before that: on 2026-09-09 (main) it reported **446
+tests, 9 skipped (fixture-gated), 0 failures** — up from the 249/0-skip baseline at the 2026-09-05
+twin-primitives merge. On 2026-09-10 the waveform mouth adds to **506 tests,
+same 9 skips, 0 failures**. The fold API (2026-09-10) adds to **544 tests,
 10 skipped without `DAGDB_E3_RUNS` set (9 with it), 0 failures** — the
-tenth skip is the out-of-repo E3 court fixture (`LadderFoldTests`'s
+tenth skip is the out-of-repo court-run fixture (`DAGDB_E3_RUNS`, `LadderFoldTests`'s
 `testF2CourtLaddersBitForBit`), same skip-if-absent/FAIL-on-mismatch
-rule as the W2 fixture below. The 9 skips are the `SealedGateTests`/
+rule as the `DAGDB_W2_FIXTURE` fixture below. The 9 skips are the `SealedGateTests`/
 `TwinAlarmCommandTests` cases that need `DAGDB_W2_FIXTURE` set; adding the
 `dagdb-twin-demo` executable target and its `Sources/TwinDemo/` directory
 does not touch any existing target and does not break
-the package. On branch `dag/derived-views` (2026-09-10, off
-`dag/spec8-mouth`, merged with `main` here) the alarm-set derived views add to
+the package. The alarm-set derived views (2026-09-10) add to
 **570 tests, 0 failures**: **32 skipped** with neither fixture env set
 (the same 9 `DAGDB_W2_FIXTURE` skips, unchanged, plus 23 new
 `DAGDB_CORTEX_V4_FIXTURE`-gated skips), **9 skipped** with
 `DAGDB_CORTEX_V4_FIXTURE` set alone (the `DAGDB_W2_FIXTURE` skips
-only — a different fixture, still unset). **Merged (this branch,
-`dag/derived-views` merged with `main`, 2026-09-10): 607 tests, 0
+only — a different fixture, still unset). **Merged with main
+(2026-09-10): 607 tests, 0
 failures — 33 skipped with neither fixture env set (the 32
-derived-views skips above plus the FOLD F2 skip), 10 skipped with
-`DAGDB_CORTEX_V4_FIXTURE` set alone (the 9 W2 skips plus the FOLD F2
-skip).** On branch `dag/kernels` (2026-09-10, built on `main`, not
-yet merged) the per-path kernel storage and sealed cross-convolution
+derived-views skips above plus the fold court-ladder skip), 10 skipped with
+`DAGDB_CORTEX_V4_FIXTURE` set alone (the 9 `DAGDB_W2_FIXTURE` skips plus the fold
+court-ladder skip).** On 2026-09-10 the per-path kernel storage and sealed cross-convolution
 residual (`KernelPair`, `SealedCrossConvolution`, `KERNEL` verb
 family, `XCONV SEALED`) add to **655 tests, 39 skipped with neither
 fixture env set** (the 33 skips above plus 5 new
 `DAGDB_W1_RECORDS`-gated skips — 3 in `SealedCrossConvolutionTests`,
 2 in `TwinKernelCommandTests`), **0 failures**. The in-repo kernels
 fixtures (`w1_kernels.json`, `w1_residuals_v1.json`) are sha-checked
-and never skip; the sealed run against the 190 out-of-repo W1
-records takes ≈10 minutes in a debug build. On branch `dag/hook`
-(2026-09-10, built on `main`, not yet merged) the attention hook
-(`AttentionHook`, `HOOK` verb family) adds to **710 tests: 45 skipped
+and never skip; the sealed run against the 190 out-of-repo sealed
+records takes ≈10 minutes in a debug build. The attention hook
+(2026-09-10; `AttentionHook`, `HOOK` verb family) adds to **710 tests: 45 skipped
 with neither fixture env set, 30 skipped with `DAGDB_W2_FIXTURE` set
 alone**, **0 failures** — no new fixture, the two sealed hook tests
 (`testSealedHookStepAllocatorRichestPoint`,

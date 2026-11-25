@@ -63,7 +63,9 @@ start)
     echo "  Socket: $SOCK"
     echo "  Log: $LOG_FILE"
 
-    .build/debug/dagdb-daemon --grid "$GRID" --socket "$SOCK" > "$LOG_FILE" 2>&1 &
+    # --shm-file is required (the result-row file; no default): beside the data, not in /tmp.
+    # A pg_dagdb backend reads the same path (DAGDB_SHM_FILE in the Postgres environment).
+    .build/debug/dagdb-daemon --grid "$GRID" --socket "$SOCK" --shm-file "$DATA_DIR/dagdb_shm" > "$LOG_FILE" 2>&1 &
     DAEMON_PID=$!
     echo "$DAEMON_PID" > "$PID_FILE"
     echo "$DATA_DIR" > /tmp/dagdb_data_dir

@@ -1,0 +1,1 @@
+../DagDBTests/TiledReference+Ternary.swift

@@ -41,7 +41,7 @@ and how do I keep them off GitHub?**"
 | `.dagdb` | Legacy naming (the original `dagdb-engine` used this extension). Accepted by `LOAD`. | Binary snapshot. | Same as `.dags`. |
 | `.dagb` | `DagDBDelta` time-series recorder (Savanna playback). | `DAGB` header + per-frame zlib. | Depends on frame count. |
 | `.diff` | `BACKUP APPEND` | `DAGD` header (format **2**) + 10 zlib-compressed XOR segments + the back-edge section carried whole. (Format 1, retired, carried 6 segments.) | Typically < 5 % of raw snapshot size per diff. |
-| `.wal` | `DAGDB_WAL` daemon mode | `DAGW` header (**version 2**) + length-prefixed records. See "The WAL" below. | Grows with mutation count; `CHECKPOINT` + truncate bounds it. |
+| `.wal` | `DAGDB_WAL` daemon mode | `DAGW` header (**version 3**; **4** in place once an import carrying S1–S3 is logged) + length-prefixed records. See "The WAL" below. | Grows with mutation count; `CHECKPOINT` + truncate bounds it. |
 | `.json` | `SAVE JSON` | `dagdb-json` v1 mirror of the six engine buffers. | ≈ 5× raw (text). |
 | `nodes.csv` / `edges.csv` | `SAVE CSV <dir>` | Two files. | Text; scales linearly. |
 | (a directory) | `EXPORT MORTON <dir>` | **Eleven** raw buffer files — the six body lanes `rank.bin`, `truth.bin`, `nodeType.bin`, `lut_low.bin`, `lut_high.bin`, `neighbors.bin`, plus `edge_weights.bin`, `activation.bin`, `node_value.bin`, `is_register.bin` and `back_edges.bin`. See "Morton export" below. | Body ≈ 42 B/node, lanes ≈ 31 B/node more; no compression. |
@@ -54,11 +54,83 @@ and how do I keep them off GitHub?**"
 `DAGW` (4 B) + `version` u32 + `nodeCount` u32 + reserved u32, then
 records of `length` u32 (payload only) + `opcode` u8 + payload.
 
-**Version 2** (2026-09-12). Version 1 files still replay in full — their
-opcode set is a subset — and a version above 2 is refused by name. The
-appender keeps an existing file's declared version and refuses by name any
-opcode that version does not describe, so a v1 log never gains a record a
-v1 reader would not understand.
+**Version 3** (the opcodes below `0x40`–`0x50`: the ternary ones, IMPORT
+MORTON's, CONNECT_BACK_BULK's and SET_TRUTH_BULK's, SET_LUTS' and SET_TRUTH
+FILL's; version 2 dates from 2026-09-12). Version 1 and 2 files still replay in
+full — their opcode sets are subsets — and a version above 6 is refused by
+name. The appender keeps an existing file's declared version and refuses by
+name any opcode that version does not describe, so a v1 log never gains a
+record a v1 reader would not understand.
+
+**Version 4** (the slot model): a version-3 log in which an `IMPORT_PART` / `IMPORT_MORTON`
+record may install S1–S3 slots (a duplicate source, a slot self-loop, a rank
+inversion). No record layout and no other record's meaning changes. It is
+content-gated: a fresh log is still stamped 3, and the first import whose slots
+hold S1–S3 rewrites the header's version field from 3 to 4 in place (4 bytes at
+offset 4, `F_FULLFSYNC`) before its record(s); a header that cannot be written
+refuses the import (`ERROR wal: append: header: …; nothing appended`). Why: a
+build before the slot model replays an import record by re-running the import with its
+own DAG rule, refuses an S1–S3 import, names it and applies every later record
+onto the pre-import graph — a mixture. A v4 header makes that build refuse the
+whole log by version instead (`WAL: replay failed: version 4 — continuing
+without WAL`): it applies nothing and leaves the log's bytes as they were, and
+this build later recovers the disk whole. A log that never took such an import
+stays v3 and both builds read it. A crash between the header write and the
+record leaves a v4 log holding only v3 records: this build replays it, an
+older one refuses it. A planned per-record checksum is to take version 7.
+
+**Version 5** (tick notes):
+a version-4 log that may carry `TICK_NOTE` records (`0x52`). On demand, as
+for version 4: the first note rewrites the header's version field to 5 in place
+(fsynced) before its record; a log with no tick command keeps its version. A
+v2–v4 log is upgraded; a v1 log is not (its legacy `SET_RANK` widths are read
+only under version 1) and takes no note. An older build refuses a v5
+log by name (`WAL: replay failed: version 5 — continuing without WAL`).
+
+**Version 6** (hook sweeps): a version-5 log that may carry `TWIN_HOOK_SWEEP` records (`0x31`),
+which remove hook ids from their clocks. On demand, as for version 5: the first
+sweep record rewrites the header's version field to 6 (fsynced) before it; a
+log that never takes one keeps its version. Two writers: `HOOK CLOSE` of a
+hook bound to a clock (the close's `TWIN_CLOSE` and the sweep of its id, in one
+append, whole or not at all), and the one sweep after a recovery that found
+hook ids an older log or snapshot left on a clock (the boot line
+`Twin: swept <n> dangling hook ids left by pre-HOOK1 logs (<n> removed …)`,
+`0 removed` included). A v2–v5 log is upgraded; a v1 log is not, so on it
+`HOOK CLOSE` of a bound hook refuses by name with nothing written, and names
+the way out: SAVE to the startup snapshot path, stop the
+daemon, move the log aside and start it again; it loads the snapshot and
+opens a fresh version-3 log. The same remedy is named by every refusal a
+log's version causes, by the boot line when the sweep cannot be written, and
+by `CLOCK ADVANCE` on a clock whose id the sweep could not remove. With the
+WAL off nothing records the sweep: the boot line says it is not logged and
+repeats at every boot until a SAVE to the startup snapshot writes the state
+without the ids. An older
+build refuses a v6 log by name (`WAL: replay failed: version 6 —
+continuing without WAL`). Replay keeps `TWIN_CLOSE`'s old meaning for a hook
+(the hook alone), so a log written by an older build replays as its daemon ran it: a
+`CLOCK ADVANCE` whose clock still holds a closed hook's id (the era marker)
+replays as one tick and the stop that daemon made live, and the boot counts it
+under its own word (`pre_hook1_stop=<k>`, each named), never under `skipped`.
+
+**Slot shapes on replay.** Replayed import records run under the
+slot model at every version. An older `SET_NEIGHBORS_BULK` record may
+give a register a slot (S4, which the slot model refuses live): it replays as logged, so
+recovery equals what that daemon held, and is named on the boot's line
+`WAL: applied <k> record(s) as logged that this build refuses live — …`; the
+boot then prints `WARN: the recovered state holds <k> slot(s) into a register
+(S4) …` naming every such slot (register, slot, source) and the way out
+(`CLEAR <dst> EDGES` or `CLEAR <dst> BACK_EDGES`), since SAVE, the autosave
+and the writers refuse that state.
+
+**`.dags` and the slot model (no version bump).** Every
+`.dags` version 1–8 loads under the slot model: a source out of range is
+refused, S1–S3 load. SAVE writes S1–S3 graphs in the same version-7/8 layout,
+byte-identical for legal graphs. A build before the slot model refuses such a file by its
+own DAG rule, by name, before anything is committed (LOAD: `ERROR io: load:
+validation: …`; `DAGDB_STARTUP_LOAD`: exit 2; TILED OPEN: refused), and its
+BACKUP RESTORE — which never checked slots — reads a chain holding them with
+the same meaning. JSON, CSV and EXPORT directories: no version change either
+(an old build refuses S1–S3 in them by its own rule).
 
 | Opcode | Name | Payload | Bytes |
 |---|---|---|---|
@@ -76,7 +148,109 @@ v1 reader would not understand.
 | `0x15` | `SET_LUTS_BULK` *(v2)* | u32 n + u64 lut[n] | 4 + 8n |
 | `0x16` | `SET_NEIGHBORS_BULK` *(v2)* | u32 n + i32 nb[n·6] | 4 + 24n |
 | `0x20`–`0x30` | twin registry ops | per `TwinWALCodec` | varies |
+| `0x31` *(v6)* | `TWIN_HOOK_SWEEP`: hook ids removed from their clocks | u32 k + k × (clock id, hook id), u16-length strings | 4 + 4k at least |
+| `0x40`–`0x4A` *(v3)* | ternary writes: `SET_MODE`, `SET_TTABLE_ID`, `SET_THRESH`, `SET_TRIT`, `TTABLE DEFINE/PRESET`, `COMPOSE` on tables, the three ternary bulks, `TTABLE_BULK` | per `DagDBWAL.swift`'s header comment | varies |
+| `0x4B`–`0x4C` *(v3)* | `IMPORT_PART`, `IMPORT_MORTON`: the bytes of every file the import read | per `DagDBWAL.swift` | the import's size |
+| `0x4D`–`0x4E` *(v3)* | `CONNECT_BACK_BULK`, `SET_TRUTH_BULK` | u32 k + k rows | 4 + 8k, 4 + 5k |
+| `0x4F` *(v3)* | `SET_LUTS` by selection | selector, range, FILL value or MAP mask + pairs | 26, 27 + 16p |
+| `0x50` *(v3)* | `SET_TRUTH … FILL` by selection | u8 selector + u64 lo + u64 hi + u8 value | 18 |
+| `0x51` *(any version)* | `SNAPSHOT_BIND`: a durable snapshot's own WAL position | u64 epoch + the SHA-256 of the snapshot file | 40 |
+| `0x52` *(v5)* | `TICK_NOTE`: advisory, never applied, written unsynced; one per tick command that ran | u64 the daemon's tick total after it | 8 |
+| `0x53` *(v5)* | `COUNTER_DROP`: advisory, never applied, unsynced; the tick counter moved within a life, up or down, by anything but a tick and with no successful durable rebase (a LOAD / LOAD JSON whose rebase failed) | u64 the counter after the change | 8 |
 | `0xF0` | `CHECKPOINT` | u64 epoch | 8 |
+
+**Where replay starts (2026-10-19).** Every durable snapshot
+— `SAVE`, the autosave, a loader's rebase — writes its `.tmp` file,
+fsyncs it, hashes it, and appends and fsyncs a `SNAPSHOT_BIND` record
+carrying that digest **before** the rename that makes the file the
+snapshot; then the rename, the `.sha256` manifest (the replaced file's
+old manifest is removed before the rename), and the `CHECKPOINT`. The
+daemon runs one command at a time, so the bind record's position is
+exactly the WAL position the file holds. Startup recovery hands replay the
+digest of the snapshot it loaded and starts after the **last** bind record
+carrying it, whatever checkpoints exist; with none (a snapshot or log from
+an older build, a snapshot written without a WAL), after the last
+`CHECKPOINT`, as before. In older builds a kill between the rename and the
+checkpoint's fsync recovered the new snapshot and replayed the records
+written before it a second time, and a failed checkpoint append was
+swallowed under a plain `OK SAVE`. Now a bind record that cannot be
+appended refuses the snapshot before the rename (`ERROR wal: SAVE refused:
+…; nothing renamed`), and a checkpoint that cannot be appended is named in
+the reply (`OK SAVE … WARN wal: checkpoint not written (…)`) — recovery is
+unaffected, the snapshot is bound. The checkpoint remains for older
+readers. A snapshot older than the log's last checkpoint (the
+startup path pointing at an older file) now gets the logged records since
+it replayed, not skipped; the boot still warns, because the ticks since it
+are not in the log.
+
+**No snapshot loaded: the whole log (2026-10-20).** When
+startup loads no snapshot — `DAGDB_STARTUP_LOAD` unset, or set to a file
+not written yet — the engine is empty and replay starts at the log's
+header, ignoring every `CHECKPOINT` and `SNAPSHOT_BIND`: those mark where
+some OTHER snapshot's contents end (a `SAVE` to another path), and that
+snapshot is not the base. In older builds such a start replayed only the
+records after the last checkpoint onto the empty engine. The boot says so
+when the log holds a bind record or a checkpoint past epoch 0:
+`WAL: no snapshot loaded — the whole log was replayed over the empty engine; …`.
+
+**A torn append is never applied, and nothing follows it.**
+A record is appended with `write(2)`; a crash, or a write that fails, can
+leave its first k bytes. The appender keeps one invariant: the log ends at
+a record boundary whenever an append starts. A write that fails after k
+bytes cuts the log back to the record's start (fsynced) before the error is
+returned (`ERROR wal: append: io: write record: k/n errno=…; the partial
+record cut from the log …`); if that cut itself fails, the appender refuses
+every later append, so no record is ever written after the torn bytes. A
+crash leaves them as the log's tail: replay drops a record whose declared
+length runs past the file's end (`truncatedAtOffset`), and the next start
+cuts them before its first append (`WAL: cut <n> byte(s) at offset <o>: …`).
+An `IMPORT MORTON` written as several records (`IMPORT_PART`… then
+`IMPORT_MORTON`, above 2 GiB) is one unit: a failure part-way cuts the log
+back to its first part, and parts a crash left without their closing record
+are cut at the next start — left in place, a later import would stage them
+on replay. In older builds the torn bytes stayed and the next record was
+appended inside the torn record's declared length, so the next replay read
+the later records misaligned (applied with garbage, skipped, or trapped).
+The model is the one a kill or a failed write gives: a record's bytes reach
+the file as a prefix. A power loss that persists a record's later pages
+without its earlier ones is not detectable without a per-record checksum,
+which this format does not carry.
+
+**What the WAL does not carry.** `TICK` (and `TICK UNTIL_STABLE`,
+`TICK_SYNC`) writes no record: a restart recovers tick-computed truth only
+as far as the last durable snapshot. Each tick
+command that ran (TICK, TICK_SYNC, TICK UNTIL_STABLE, EVAL) appends one
+advisory 13-byte `TICK_NOTE` carrying the tick total. It is written
+unsynced: it reaches the disk with the next synced write, a
+`SAVE` or a checkpoint, so a kill -9 loses none and a power loss can lose
+the latest. The boot says what was lost, after replay, relative to the state
+it recovered: `WAL: at least <L> ticks were not recovered
+(highest logged total <T>, recovered tick count <S>); the recovered truth is
+the pre-tick state; earlier restarts, a command interrupted before it
+replied, and a power loss can each hide more` (T the highest total among the
+notes after the loaded snapshot's position, S the recovered tick count, 0
+with no snapshot, L = T − S); `WAL: no lost ticks logged (highest logged
+total <T>, recovered tick count <S>; earlier restarts, an interrupted
+command, or a power loss can hide ticks)` when L = 0; and
+`WAL: tick history unknown` when the log holds no note (a v1–v4 log), never
+"0 lost" (with the reason when a total cannot be set against S, e.g. one
+above the u32 tick counter's range, or a `COUNTER_DROP` in the window:
+`WAL: tick history unknown (the tick counter moved within this window
+without a durable rebase: a load whose rebase failed)`). STATUS is unchanged. TILED TICK's per-tile `flush.wal` is not
+covered. The four loaders that replace the
+engine's state from a file — `LOAD`, `LOAD JSON`, `LOAD CSV`,
+`BACKUP RESTORE` — write no record either. Instead (since 2026-10-19),
+with the WAL on and `DAGDB_STARTUP_LOAD` set, a successful load ends with
+`SAVE`'s own durable snapshot to the startup path (its bind record and
+`CHECKPOINT`, below), so recovery restarts from the loaded state, and the reply ends
+`wal_base=<path>`. In older builds a restart rebuilt on the snapshot from
+before the load, and every later record — the relative ones above all
+(`SET_LUTS … MAP`, a `RANK` selection, `SET_TRUTH RANK … FILL`) — landed
+on the wrong base. With the WAL on and no `DAGDB_STARTUP_LOAD`, a restart
+replays the whole log over an empty engine (below); that
+recovers neither a `SAVE`, a `TICK` nor a loader, and the loaders behave as
+before there. `IMPORT
+MORTON` is logged (`0x4B`/`0x4C`) and needs no snapshot.
 
 The five version-2 opcodes are the combinational-edge and bulk writes that
 used to bypass the log entirely, against this file's own promise that every
@@ -110,19 +284,28 @@ and `truncatedAtOffset`:
   or a twin id the registry rejects), `unknownOpcode`. `.line` renders it as
   `bad_length=<n> out_of_range=<n> unknown_opcode=<n>`.
 
+- `boundAtOffset`, `boundEpoch`, `bindRecords` — the bind
+  record that started the window (nil when the last checkpoint did), its
+  epoch, and how many well-formed bind records the log holds.
+
 Startup recovery prints the count on every boot and the histogram whenever
-it is non-zero:
+it is non-zero, and says when the snapshot's own bind record started the
+window:
 
 ```
   WAL: replayed 12 records past epoch 4 (log v2, skipped=0)
   WAL: skipped 3 record(s) — bad_length=2 out_of_range=1 unknown_opcode=0
+  WAL: the window starts after the snapshot's own bind record (offset 865, epoch 1), not the last checkpoint
+  WAL: no snapshot loaded — the whole log was replayed over the empty engine; its checkpoints (last epoch 0) and 1 bind record(s) belong to snapshots this start did not load
+  WAL: cut 6 byte(s) at offset 821: a record cut short (its declared length runs past the end of the file) — replay did not apply them; the next record starts at a record boundary
 ```
 
 **Truncate refuses while an appender is open.** `DagDBWAL.truncate` renames
 a fresh inode over the path; a live `Appender` holds an `O_APPEND`
 descriptor on the old one and would keep writing to an unlinked file.
 Release the appender first. The daemon's own sequence never needs it — a
-durable snapshot writes a `CHECKPOINT` into the live log instead.
+durable snapshot writes a `SNAPSHOT_BIND` record and a `CHECKPOINT` into the
+live log instead.
 
 ---
 
@@ -190,7 +373,7 @@ by name at construction (`HexGrid.validated(width:height:)`, or
 | Path | Purpose | Lifetime |
 |---|---|---|
 | `/tmp/dagdb.sock` | Unix domain socket the daemon listens on. | While daemon runs. Gone on clean shutdown. |
-| `/tmp/dagdb_shm_file` | Shared-memory query-result buffer. Client reads `Int32` / tuple records starting at offset 8. | While daemon runs. Recreated every startup. |
+| the `--shm-file` path | Shared-memory query-result buffer. Client reads `Int32` / tuple records starting at offset 8. | While daemon runs. Recreated every startup. |
 | `/tmp/dagdb.log` | Daemon stdout+stderr (launchd plist config). | Appended to; rotate manually if it grows. |
 
 None of these are inside the repo. None should be touched by `git`.
@@ -203,8 +386,8 @@ these envs:
 | Env | Value | Effect |
 |---|---|---|
 | `DAGDB_DATA_ROOT` | `~/dag_databases` | `guardPath()` rejects any client-supplied path outside this root. Single source of truth for DB storage on this machine. |
-| `DAGDB_WAL` | `~/dag_databases/live.wal` | Appends mutation WAL on every `SET`/`CONNECT`/`LOAD`. Replayed on next daemon start. |
-| `DAGDB_AUTOSAVE` | `~/dag_databases/auto.dags` | Writes a `.dags` snapshot on SIGTERM / graceful exit and checkpoints the WAL after it. NOT loaded by itself — pair it with `DAGDB_STARTUP_LOAD`. |
+| `DAGDB_WAL` | `~/dag_databases/live.wal` | Appends a record for the logged writes (`SET`, `CONNECT`, the bulk verbs, `SET_LUTS`, `SET_TRUTH … FILL`, `IMPORT MORTON`, the ternary writes, the twin registry ops; the opcode table above) before applying them; `TICK` and the four loaders (`LOAD`, `LOAD JSON`, `LOAD CSV`, `BACKUP RESTORE`) write none — see "What the WAL does not carry" above. Replayed on next daemon start, past the loaded snapshot's own bind record (without one, the last checkpoint); with no snapshot loaded, the whole log. A record a crash or a failed write cut short is never applied, and nothing is appended after it. |
+| `DAGDB_AUTOSAVE` | `~/dag_databases/auto.dags` | On SIGTERM / SIGINT writes a durable `.dags` snapshot (bind record + checkpoint, as `SAVE`) and exits. It runs only between commands: the command in flight completes, a command not yet started is refused (`ERROR shutdown: the daemon is shutting down; the command was not run`), then the WAL barrier, the snapshot, the exit. In older builds a raw signal handler ran it inside the interrupted command (a half-applied state snapshotted and bound; inside a WAL append, a libdispatch trap and no snapshot). NOT loaded by itself — pair it with `DAGDB_STARTUP_LOAD`. |
 | `DAGDB_STARTUP_LOAD` | `~/dag_databases/auto.dags` | (2026-09-09, opt-in) Loads this snapshot at startup, before WAL replay, so a restart after `SAVE`/autosave needs no operator `LOAD`. Missing file = start empty; unreadable or outside the data root = the daemon refuses to start (exit 2). Point it at the file the last `SAVE`/autosave wrote. |
 
 All of them point inside `~/dag_databases/`. Change them in the plist
@@ -215,7 +398,8 @@ and `launchctl unload && launchctl load` to pick up new values.
 Live under `~/Library/LaunchAgents/`, not in git:
 
 - `com.dagdb.daemon.plist` — supervises the daemon, points at
-  `dagdb/.build/release/dagdb-daemon --grid 1024`.
+  `dagdb/.build/release/dagdb-daemon --grid 1024 --shm-file <path>`
+  (`--shm-file` is required).
 - `com.dagdb.mcpo.plist` — supervises `mcpo` (the MCP HTTP bridge).
 
 ### Biology and Loom plugins
@@ -224,7 +408,7 @@ Plugin runtime writes (user-configurable; defaults below):
 
 | File | Used by | Default |
 |---|---|---|
-| `<workspace>/dagdb_ingest_ctx.json` | Loom ingest-context persistence (the T4 adapter). | Home dir, outside repo. |
+| `<workspace>/dagdb_ingest_ctx.json` | Loom ingest-context persistence (the Loom adapter). | Home dir, outside repo. |
 | `dagdb/plugins/loom/_backfill_out/` | Backfill debug output. | **Gitignored.** |
 
 ---
@@ -308,11 +492,14 @@ echo "BACKUP RESTORE /Users/you/dag_databases/loom_chain/" \
   | nc -U /tmp/dagdb.sock
 ```
 
-Continuous durability is already on via the plist's `DAGDB_WAL` and
-`DAGDB_AUTOSAVE`. You don't need to issue `SAVE` unless you want a
-named snapshot. For the state to come back on the next start without an
-operator `LOAD`, the daemon also needs `DAGDB_STARTUP_LOAD` set to the
-autosave path (opt-in since 2026-09-09).
+Continuous durability comes from the plist's `DAGDB_WAL` and
+`DAGDB_AUTOSAVE`, within what the WAL carries (the opcode table above):
+the write verbs are logged, `TICK` is not, so after a hard kill the ticks since the last
+durable snapshot are not recovered — `SAVE` to the startup path after
+ticks you want to keep. For the state to come back on the next start
+without an operator `LOAD`, the daemon also needs `DAGDB_STARTUP_LOAD`
+set to the autosave path (opt-in since 2026-09-09); with it set, the four
+loaders move recovery's base to the state they loaded.
 
 ### Verifying before push
 
@@ -405,7 +592,13 @@ length nobody derives is a length nobody checks.
 `BACKUP COMPACT` writes its new base from the chain's own replayed
 tip, at the chain's own tick count; it does not read or change the
 live engine, so a compaction cannot inherit a mutation the chain does
-not hold.
+not hold. Before it writes or deletes anything, the daemon's `BACKUP
+COMPACT` asks that tip every rule `BACKUP RESTORE` asks — the back-edge
+list's range and CONNECT BACK's rules, the slots against the
+persistence rule, the register flags against the list, the ternary
+rules — in RESTORE's order and words (`nothing written` for `nothing
+restored`): it refuses exactly the chains RESTORE refuses,
+so a refused chain never becomes restorable by being compacted.
 
 **Format 1 is refused, not migrated.** It sized the rank segment at 4
 bytes per node — the complete ranks of nodes `0..<N/2`, none of the
@@ -422,12 +615,12 @@ via `*.dags`.
 
 ## Shared memory record layouts
 
-Query results land at `/tmp/dagdb_shm_file` after an 8-byte header
+Query results land in the daemon's `--shm-file` after an 8-byte header
 (`[u32 count][u32 reserved]`). Record shapes per command:
 
 | DSL | Record bytes | Fields |
 |---|---|---|
-| `NODES`, `EVAL`, `TRAVERSE` | 24 (v3, post-u64) | `u64 node`, `u64 rank`, `u8 truth`, `u8 type`, 6 pad |
+| `NODES`, `EVAL`, `TRAVERSE` | 24 (v3, post-u64) | `u64 node`, `u64 rank`, `u8 truth`, `u8 type`, `u8 mode` (byte 18), 5 pad (bytes 19–23, written 0) |
 | `BFS_DEPTHS` | 4 | `i32 depth` (indexed by node, not by match) |
 | `SELECT` | 4 | `i32 node` |
 | `ANCESTRY` | 8 | `i32 node`, `i32 depth` |

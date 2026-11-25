@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Prep hand for docs/contracts/KERNELS_GATES_FROZEN.md.
+"""Reference fixture generator for the kernel and cross-convolution checks.
 
 Computes the frozen cross-convolution residual R for every trial in the
-sealed W1 records against the sealed W1 kernels, reproduces the court's
-gate lines (G0..G3, cal reference), and writes the residual fixture
+sealed records (`w1_records.json`) against the sealed kernels
+(`w1_kernels.json`), reproduces the court's check lines (printed as G0_R
+through G3_quartiles, and the cal reference), and writes the residual fixture
 dagdb/Tests/Fixtures/w1_residuals_v1.json plus a byte-identical copy of
 the sealed kernels file with sha256 sidecars for both.
 

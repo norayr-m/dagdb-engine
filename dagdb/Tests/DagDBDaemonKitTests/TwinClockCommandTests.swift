@@ -2,7 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// the interface phase — daemon-level tests for the real RINGS/CLOCK/GEAR verbs
+/// Daemon-level tests for the real RINGS/CLOCK/GEAR verbs
 /// (DagDBCommandHandler+TwinClocks.swift). The rings fixture (gear 6,
 /// rings 4, cells 8, spikes at ticks 3/250/500/1200 over 1500 ticks) is
 /// reused verbatim from GearedRingsTests.testSignedRecallAcrossOrders.
@@ -96,7 +96,7 @@ final class TwinClockCommandTests: XCTestCase {
         let f = try HandlerFixture(side: 4)
         XCTAssertEqual(f.handler.handle("CLOCK OPEN"), "OK CLOCK OPEN id=c00000001 tick=0")
         let reply = f.handler.handle("GEAR OPEN c00000001 g 3/7")
-        XCTAssertEqual(reply, "OK GEAR OPEN id=g00000001 clock=c00000001 name=g ratio=3/7", reply)
+        XCTAssertEqual(reply, "OK GEAR OPEN id=g00000001 clock=c00000001 name=\"g\" ratio=3/7", reply)
     }
 
     func testGearOpenUnknownClockIsNotFound() throws {
@@ -128,7 +128,7 @@ final class TwinClockCommandTests: XCTestCase {
     func testGearLatchExactTickValueAndPhase() throws {
         let f = try HandlerFixture(side: 4)
         _ = f.handler.handle("CLOCK OPEN")
-        XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g 1/5"), "OK GEAR OPEN id=g00000001 clock=c00000001 name=g ratio=1/5")
+        XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g 1/5"), "OK GEAR OPEN id=g00000001 clock=c00000001 name=\"g\" ratio=1/5")
         for i in 1...12 {
             let reply = f.handler.handle("CLOCK ADVANCE c00000001 1 VALUE \(i)")
             XCTAssertTrue(reply.hasPrefix("OK CLOCK ADVANCE"), reply)
@@ -144,8 +144,8 @@ final class TwinClockCommandTests: XCTestCase {
     func testClockCloseCascadesGearsAndGearStateNotFoundAfter() throws {
         let f = try HandlerFixture(side: 4)
         _ = f.handler.handle("CLOCK OPEN")
-        XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g1 3/7"), "OK GEAR OPEN id=g00000001 clock=c00000001 name=g1 ratio=3/7")
-        XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g2 1/5"), "OK GEAR OPEN id=g00000002 clock=c00000001 name=g2 ratio=1/5")
+        XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g1 3/7"), "OK GEAR OPEN id=g00000001 clock=c00000001 name=\"g1\" ratio=3/7")
+        XCTAssertEqual(f.handler.handle("GEAR OPEN c00000001 g2 1/5"), "OK GEAR OPEN id=g00000002 clock=c00000001 name=\"g2\" ratio=1/5")
 
         let close = f.handler.handle("CLOCK CLOSE c00000001")
         XCTAssertEqual(close, "OK CLOCK CLOSE id=c00000001 gears_closed=2 hooks_closed=0", close)

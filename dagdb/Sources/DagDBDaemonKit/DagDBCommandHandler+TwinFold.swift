@@ -1,10 +1,10 @@
-/// FOLD verb family — gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md. A
+/// FOLD verb family. A
 /// pure computation over the daemon's CURRENT lanes (neighbors, edge
 /// weights, nodeValue-as-leak, rank): `LadderFold.Object(engine:grid:)`
 /// reads the fabric, `LadderFold.run` folds it, and the handler keeps only
 /// the last `LadderFold.Result` (`lastFold`) — nothing is minted, nothing
 /// is persisted, no WAL, no registry entry. Every FOLD verb is read-only,
-/// RUN included (§F4: "Reader sessions may run every FOLD verb").
+/// RUN included ("Reader sessions may run every FOLD verb").
 ///
 /// FOLD RUN's shm-fits guard runs BEFORE `LadderFold.run` — the kept-set
 /// size is predicted by replaying just the active-set bookkeeping of the
@@ -30,6 +30,35 @@ extension DagDBCommandHandler {
             current -= 1
         }
         return active.count
+    }
+
+    /// The library's work in ns, walked ring by
+    /// ring from maxRank down exactly as `LadderFold.run` folds (ring = rank ==
+    /// current, keep = rank < current; it refuses at the first empty ring, so the
+    /// walk stops there): a·N² for the dense operator; per fold a·m² (the block
+    /// fill over the active set m = ka + kb) + b·ka²·kb (the scalar Schur loop) +
+    /// c·kb³ (dgesv); per tier recorded (a CHECK level, and keepRank: "final")
+    /// a·k² + 3·c·k³ (the Double lift and three solves). Called only when
+    /// `LadderFold.violation` is nil (no rank above maxRank).
+    func foldWorkNs(rank: [Int], maxRank: Int, keepRank: Int, checkpoints: [Int]) -> AdmitCount {
+        let a = Self.alloc1aFoldFillNs, b = Self.alloc1aFoldSchurNs, c = Self.alloc1aFoldSolveNs
+        var count: [Int: Int] = [:]
+        for r in rank where r > keepRank { count[r, default: 0] += 1 }
+        let tiers = Set(checkpoints)
+        let n = Double(rank.count)
+        var ns = a * n * n
+        var active = rank.count
+        var current = maxRank
+        while current > keepRank {
+            let kb = count[current] ?? 0
+            if kb == 0 { break }
+            let m = Double(active), B = Double(kb), K = Double(active - kb)
+            ns += a * m * m + b * K * K * B + c * B * B * B
+            active -= kb
+            current -= 1
+            if tiers.contains(current) || current == keepRank { ns += a * K * K + 3 * c * K * K * K }
+        }
+        return Self.nsCount(ns)
     }
 
     /// `result.tiers` keys sorted "as the runner orders them": numeric
@@ -66,18 +95,43 @@ extension DagDBCommandHandler {
                 return "ERROR out_of_range: checkpoint levels must be strictly between keepRank \(keepRank) and maxRank \(maxRank)"
             }
 
+            // The projection's loop, (maxRank - keepRank) x N filter steps.
+            if let e = admit("FOLD RUN", bytes: AdmitCount(8 + Self.alloc1aFoldObjectPerNode) * AdmitCount(nodeCount),
+                             what: "the projection's active list and LadderFold.Object, (8 + 168)*N",
+                             work: [AdmitWork(units: "filter steps ((maxRank - keepRank) x N)",
+                                              needed: AdmitCount(maxRank - keepRank) * AdmitCount(nodeCount),
+                                              cap: Self.alloc1aFoldFilterStepCap)]) { return e }
+
             let object = LadderFold.Object(engine: engine, grid: grid)
 
             // Predict k before doing any O(k^3) work, per the file header.
             let projectedKept = foldProjectedKeptCount(rank: object.rank, maxRank: maxRank, keepRank: keepRank)
-            let projectedBytes = 8 + projectedKept * projectedKept * 4
+            // A checked product; only nodeCount held it.
+            guard let projectedBytes = checkedProduct(projectedKept, projectedKept, 4).flatMap({ checkedSum(8, $0) }) else {
+                return "ERROR out_of_range: FOLD RUN result bytes 8 + k*k*4 (k=\(projectedKept)) overflow Int;"
+                    + " nothing written"
+            }
             guard projectedBytes <= shmCapacityBytes else {
                 return "ERROR out_of_range: FOLD RUN result \(projectedBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
 
             let schedule = LadderFold.Schedule(maxRank: maxRank, keepRank: keepRank, checkpoints: checkpoints)
             let sources = LadderFold.Sources(f1: f1, f2: f2, f3: f3)
-            // F5 · alpha's throwing door. `run` reports a refusal as an
+            // The library's dense operator over all N and its folds. A run
+            // the library refuses at its own argument check allocates nothing; it is not charged.
+            if LadderFold.violation(object: object, schedule: schedule, sources: sources) == nil {
+                // The peak from the allocations live at it, CHECK's tier buffers included.
+                let n = AdmitCount(object.nodeCount)
+                let coef = checkpoints.isEmpty ? Self.alloc1aFoldPeakPerN2 : Self.alloc1aFoldPeakPerN2Check
+                if let e = admit("FOLD RUN", bytes: AdmitCount(coef) * n * n + AdmitCount(Self.alloc1aFoldObjectPerNode) * n,
+                                 what: checkpoints.isEmpty ? "the dense operator and a fold's blocks, \(coef)*N^2 + 168*N"
+                                                           : "the dense operator, a fold's blocks and a CHECK tier, \(coef)*N^2 + 168*N",
+                                 work: [AdmitWork(units: "fold work ns (a*N^2 + per fold a*m^2 + b*ka^2*kb + c*kb^3 + per tier a*k^2 + 3*c*k^3)",
+                                                  needed: foldWorkNs(rank: object.rank, maxRank: maxRank,
+                                                                     keepRank: keepRank, checkpoints: checkpoints),
+                                                  cap: Self.alloc1aFoldWorkCapNs)]) { return e }
+            }
+            // The throwing door. `run` reports a refusal as an
             // empty result plus a stderr line, which this handler printed as
             // `OK FOLD RUN kept=0`; `runChecked` throws instead, so the
             // refusal reaches the wire and no empty result is left behind in
@@ -86,10 +140,10 @@ extension DagDBCommandHandler {
             do {
                 result = try LadderFold.runChecked(object: object, schedule: schedule, sources: sources)
             } catch let e as LadderFold.FoldError {
-                guard case .refused(let why) = e else { return "ERROR bad_value: FOLD RUN refused: \(e)" }
+                guard case .refused(let why) = e else { return Reply.errorLine("bad_value", verb: "FOLD RUN refused", e) }
                 return "ERROR bad_value: FOLD RUN refused: \(why)"
             } catch {
-                return "ERROR bad_value: FOLD RUN refused: \(error)"
+                return Reply.errorLine("bad_value", verb: "FOLD RUN refused", error)
             }
             lastFold = result
 
@@ -118,7 +172,7 @@ extension DagDBCommandHandler {
         case .foldTier(let level, let which):
             guard let result = lastFold else { return "ERROR not_found: no fold result yet" }
             guard let tier = result.tiers[level] else {
-                return "ERROR not_found: no checkpoint '\(level)'"
+                return "ERROR not_found: no checkpoint \(Reply.quoted(level))"
             }
             let vec: [Double]
             switch which {

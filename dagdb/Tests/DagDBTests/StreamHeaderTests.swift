@@ -2,7 +2,7 @@ import XCTest
 @testable import DagDB
 
 final class StreamHeaderTests: XCTestCase {
-    /// W1's sealed regime, translated: 3 kHz comb, 1.5 kHz band, 2048-sample
+    /// The sealed recordings' regime (`DAGDB_W1_RECORDS`), translated: 3 kHz comb, 1.5 kHz band, 2048-sample
     /// window at 3 kHz (~0.6827 s), echo held beyond the record, dt = 1/24000.
     private func w1Like() -> StreamHeader {
         StreamHeader(signalBandHz: 1500, tauWindowSec: 0.6827, combRateHz: 3000,

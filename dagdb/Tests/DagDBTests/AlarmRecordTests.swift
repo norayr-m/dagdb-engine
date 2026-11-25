@@ -1,8 +1,8 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — AlarmRecord / SealedCourt, no fixture needed. Numbers copied
-/// verbatim from the sealed literals (plan §"Sealed literals").
+/// AlarmRecord / SealedCourt, no fixture needed. Numbers copied
+/// verbatim from the sealed literals.
 final class AlarmRecordTests: XCTestCase {
 
     // MARK: - Index mapping

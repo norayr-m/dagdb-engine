@@ -1,8 +1,8 @@
 import Foundation
 
-/// Per-frame budget layout — twin spec line 5, the knapsack primitive.
+/// Per-frame budget layout — the knapsack primitive.
 ///
-/// The decision letters were frozen and sealed twice (allocator court,
+/// The decision rules were frozen and sealed twice (allocator court,
 /// successor court) and are load-bearing: a legal optimizer with a different
 /// tie-break breaks sealed theorems. Shipped here as code, verbatim:
 ///
@@ -65,7 +65,7 @@ public struct BudgetLayout: Equatable, Codable {
 
     public enum LayoutError: Error { case tooManyClaimedPockets(Int) }
 
-    /// Finding 52: a claim whose pocket or class index is outside this
+    /// A claim whose pocket or class index is outside this
     /// layout's shape. `allocate` now refuses it by name instead of
     /// indexing `minTier`/`cost` out of bounds. A separate type from
     /// `LayoutError` so existing exhaustive switches over that enum stay
@@ -121,7 +121,7 @@ public struct BudgetLayout: Equatable, Codable {
 
     /// Lay out one frame's budget over the frame's (lag-paired) claims.
     public func allocate(claims: [Claim], budget: Double) throws -> Layout {
-        // Finding 52: `claimError` is the validator written for exactly the
+        // `claimError` is the validator written for exactly the
         // two bounds this method indexes on — call it before touching
         // either, so a bad claim is a named throw, never a trap.
         for c in claims {

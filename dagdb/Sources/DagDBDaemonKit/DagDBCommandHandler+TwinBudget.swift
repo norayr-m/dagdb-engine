@@ -1,15 +1,15 @@
-/// XCONV / BUDGET verb family — real implementation (interface phase, 2026-09).
+/// XCONV / BUDGET verb family.
 ///
 /// XCONV CHECK is read-only: it reads four contiguous f32 vectors out of shm
 /// (a, b, kA, kB — the two records and the two path kernels) and runs the
-/// sealed W1 identity check (`CrossConvolutionCheck.check`), never touching
+/// sealed cross-convolution identity check (`CrossConvolutionCheck.check`), never touching
 /// the twin registries or the WAL.
 ///
 /// BUDGET follows the same WAL-first pattern as STREAM/RECORD
 /// (DagDBCommandHandler+TwinStreams.swift): OPEN/SEALED validate → mint an
 /// id via `twin.nextId(prefix:)` → `appendTwinWAL` (abort on failure) →
 /// `twin.apply` → `OK …`. ALLOCATE/INFO/LIST never mutate — ALLOCATE reads
-/// the sealed decision letters straight out of `BudgetLayout.allocate`,
+/// the sealed decision rules straight out of `BudgetLayout.allocate`,
 /// validating every claim through `BudgetLayout.claimError` first so a bad
 /// pocket/class index or an oversized claimed-pocket set returns
 /// `ERROR out_of_range` instead of trapping.
@@ -26,9 +26,9 @@ extension DagDBCommandHandler {
             guard nA >= 0, nB >= 0, kA >= 0, kB >= 0, warmup >= 0 else {
                 return "ERROR out_of_range: XCONV CHECK counts must be non-negative"
             }
-            // D3 · every one of these offsets is a product/sum of unbounded
+            // Every one of these offsets is a product/sum of unbounded
             // wire integers. Compute them with overflow-reporting ops so the
-            // capacity guard below is reachable (audit B finding 23).
+            // capacity guard below is reachable.
             guard let totalElements = checkedSum(nA, nB, kA, kB),
                   let payloadBytes = checkedProduct(totalElements, 4),
                   let neededBytes = checkedSum(8, payloadBytes),
@@ -42,8 +42,12 @@ extension DagDBCommandHandler {
             let bOffset = aOffset + aBytes
             let kAOffset = bOffset + bBytes
             let kBOffset = kAOffset + kABytes
-            guard neededBytes <= shmCapacityBytes,
-                  let a = readFloats(count: nA, at: aOffset),
+            guard neededBytes <= shmCapacityBytes else {
+                return "ERROR out_of_range: XCONV CHECK input \(neededBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
+            }
+            // Capacity, then the mark, then the read.
+            if let r = shm1FrameRefusal(.xconvCheck, count: totalElements) { return r }
+            guard let a = readFloats(count: nA, at: aOffset),
                   let b = readFloats(count: nB, at: bOffset),
                   let kATaps = readFloats(count: kA, at: kAOffset),
                   let kBTaps = readFloats(count: kB, at: kBOffset) else {
@@ -66,7 +70,7 @@ extension DagDBCommandHandler {
             guard nPockets >= 0, nTiers >= 0, nClasses >= 0 else {
                 return "ERROR out_of_range: BUDGET OPEN dimensions must be non-negative"
             }
-            // D3 · `nPockets * nTiers * 8` traps on overflow; so does the sum.
+            // `nPockets * nTiers * 8` traps on overflow; so does the sum.
             guard let cells = checkedProduct(nPockets, nTiers),
                   let costBytes = checkedProduct(cells, 8),
                   let minTierBytes = checkedProduct(nClasses, 4),
@@ -74,8 +78,28 @@ extension DagDBCommandHandler {
                 return overflowRefusal("BUDGET OPEN input",
                                        "nPockets=\(nPockets) nTiers=\(nTiers) nClasses=\(nClasses)")
             }
-            guard neededBytes <= shmCapacityBytes,
-                  let flatCost = readDoubles(count: cells, at: 8),
+            guard neededBytes <= shmCapacityBytes else {
+                return "ERROR out_of_range: BUDGET OPEN input \(neededBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
+            }
+            // The 20-pocket cap, before the frame check and the
+            // table build. With nTiers = 0 every byte count above is 8 + 4c for any
+            // p, so `cost.reserveCapacity(nPockets)` and the per-pocket loop ran on
+            // a wire p (2^62 trapped) before BudgetLayout.validationError's cap.
+            guard nPockets <= BudgetLayout.maxClaimedPockets else {
+                return "ERROR out_of_range: BUDGET OPEN pockets \(nPockets) not in 0...\(BudgetLayout.maxClaimedPockets);"
+                    + " nothing written"
+            }
+            // Capacity, then the mark (p·t f64 costs,
+            // then c u32 minTiers), then the read. The count p·t + c is overflow-reporting,
+            // though both terms fit the capacity checked above.
+            if let r = shm1FrameRefusal(.budgetOpen, nPockets, times: nTiers, plus: nClasses) { return r }
+            // The count cap, then the layout's bytes and its staging (the frame's reads, the
+            // per-pocket rows, the Int classes, the WAL record).
+            if let e = admitTwinCreate("BUDGET OPEN", prefix: "b",
+                                       bytes: Self.alloc1bLayoutBytes(pockets: nPockets, tiers: nTiers, classes: nClasses)
+                                           + Self.alloc1bMargin * (24 * Double(cells) + 16 * Double(nClasses)),
+                                       what: "a layout, 1.1*(1.17*(8*p*t + 8*c) + 600 B), and its staging, 1.1*(24*p*t + 16*c)") { return e }
+            guard let flatCost = readDoubles(count: cells, at: 8),
                   let minTierRaw = readU32s(count: nClasses, at: 8 + costBytes) else {
                 return "ERROR out_of_range: BUDGET OPEN input \(neededBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
@@ -99,6 +123,11 @@ extension DagDBCommandHandler {
 
         case .budgetSealed:
             let layout = SealedCourt.makeLayout()
+            // The count cap, then the layout's bytes.
+            if let e = admitTwinCreate("BUDGET SEALED", prefix: "b",
+                                       bytes: Self.alloc1bLayoutBytes(pockets: layout.cost.count, tiers: layout.cost.first?.count ?? 0,
+                                                                      classes: layout.minTier.count),
+                                       what: "a layout, 1.1*(1.17*(8*p*t + 8*c) + 600 B)") { return e }
             let id = twin.nextId(prefix: "b")
             let op = TwinOp.layoutOpen(id: id, cost: layout.cost, minTier: layout.minTier)
             if let err = appendTwinWAL(op) { return err }
@@ -110,13 +139,13 @@ extension DagDBCommandHandler {
 
         case .budgetAllocate(let id, let budget, let claimsIn):
             guard budget.isFinite else { return "ERROR bad_value: budget must be finite" }
-            guard let layout = twin.layouts.get(id) else { return "ERROR not_found: \(id)" }
+            guard let layout = twin.layouts.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             var claims: [BudgetLayout.Claim] = []
             claims.reserveCapacity(claimsIn.count)
             for c in claimsIn {
                 let claim = BudgetLayout.Claim(pocket: c.pocket, classIndex: c.classIndex)
-                if let err = layout.claimError(claim) {
-                    return "ERROR out_of_range: \(err)"
+                if let why = layout.claimError(claim) {
+                    return "ERROR out_of_range: \(why)"
                 }
                 claims.append(claim)
             }
@@ -129,7 +158,7 @@ extension DagDBCommandHandler {
                     return "ERROR out_of_range: tooManyClaimedPockets(\(n))"
                 }
             } catch {
-                return "ERROR io: \(error)"
+                return Reply.errorLine("io", error)
             }
             let served = result.servedPockets.map(String.init).joined(separator: ",")
             let purchases = result.purchases
@@ -141,14 +170,16 @@ extension DagDBCommandHandler {
             )
 
         case .budgetInfo(let id):
-            guard let layout = twin.layouts.get(id) else { return "ERROR not_found: \(id)" }
+            guard let layout = twin.layouts.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             return twinResponse(
                 "BUDGET INFO", sessionId: sessionId,
                 "id=\(id) pockets=\(layout.cost.count) tiers=\(layout.cost.first?.count ?? 0) classes=\(layout.minTier.count)"
             )
 
         case .budgetClose(let id):
-            guard twin.layouts.get(id) != nil else { return "ERROR not_found: \(id)" }
+            guard twin.layouts.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
+            // The dependency check before the WAL.
+            if let e = twin.closeRefusal(id) { return twinBudgetErrorLine(e) }
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinBudgetErrorLine(error) }
@@ -169,11 +200,11 @@ extension DagDBCommandHandler {
 
     // MARK: - shm readers for f64 / u32 (BUDGET OPEN's cost table + minTier
     // vector; XCONV CHECK reuses the shared f32 `readFloats` from +Twin.swift;
-    // `readDoubles` itself moved to +Twin.swift 2026-09-10 (K3's XCONV SEALED
+    // `readDoubles` itself moved to +Twin.swift 2026-09-10 (XCONV SEALED
     // needs it too) — kept as a shared, non-private helper there now).
 
     private func readU32s(count: Int, at byteOffset: Int) -> [UInt32]? {
-        guard count >= 0, byteOffset >= 0, byteOffset + count * 4 <= shmCapacityBytes else { return nil }
+        guard shmReadFits(count: count, elementSize: 4, at: byteOffset) else { return nil }
         let ptr = shmBase.advanced(by: byteOffset).bindMemory(to: UInt32.self, capacity: max(1, count))
         return (0..<count).map { ptr[$0] }
     }
@@ -181,17 +212,16 @@ extension DagDBCommandHandler {
     /// `TwinState.TwinError` renders via its own `description`; any other
     /// thrown error falls back to `ERROR io:`. Duplicated from
     /// +TwinStreams.swift's private `twinErrorLine` — file-scoped `private`
-    /// helpers don't cross extension files, and T8.2/T8.4 are parallel-safe
-    /// disjoint-file tasks (plan §ordering), so this stays a local copy
-    /// rather than widening another task's file. `BUDGET CLOSE` on a layout
+    /// helpers don't cross extension files, so this stays a local copy
+    /// rather than widening another file's helper. `BUDGET CLOSE` on a layout
     /// a live hook depends on throws `.badValue("hook <h> depends on
-    /// <id>")` (gate H5) — mapped to `ERROR forbidden:`, not `bad_value`,
+    /// <id>")` — mapped to `ERROR forbidden:`, not `bad_value`,
     /// per the hook grammar's refusal line.
     private func twinBudgetErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
-            case .notFound(let s): return "ERROR not_found: \(s)"
-            case .badId(let s): return "ERROR bad_value: \(s)"
+            case .notFound(let s): return "ERROR not_found: \(Reply.quoted(s))"
+            case .badId(let s): return "ERROR bad_value: \(Reply.quoted(s))"
             case .badValue(let s):
                 if s.contains("depends on") { return "ERROR forbidden: \(s)" }
                 return "ERROR bad_value: \(s)"
@@ -199,6 +229,6 @@ extension DagDBCommandHandler {
             case .io(let s): return "ERROR io: \(s)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 }

@@ -1,13 +1,12 @@
 import XCTest
 @testable import DagDB
 
-/// C10 · fixtures that reach the edge —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// Fixtures that reach the edge.
 ///
 /// Every file here is built byte by byte from the layout documented at the
 /// top of `DagDBSnapshot.swift`. No old writer is kept alive to produce
 /// them: a fixture written by the code it is meant to police cannot fail,
-/// which is exactly what audit A found for v1…v6 (finding 46) — 23 snapshot
+/// which is exactly what an internal audit of the engine core found for v1…v6 — 23 snapshot
 /// tests, all of them round-tripping through today's v7 writer.
 final class CoreDurabilityFixtureTests: XCTestCase {
 

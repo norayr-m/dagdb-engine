@@ -2,8 +2,8 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// B3 of the backup rank-width contract: the same fingerprint as the library
-/// test, driven entirely over the DSL, plus the reply fields the contract adds
+/// The backup rank-width fix, driven entirely over the DSL: the same
+/// fingerprint as the library test, plus the reply fields the fix adds
 /// (`rank_bytes` on RESTORE, `format` on APPEND and INFO) and the refusal a
 /// format-1 chain earns on the wire.
 final class BackupRankWidthDaemonTests: XCTestCase {
@@ -39,19 +39,19 @@ final class BackupRankWidthDaemonTests: XCTestCase {
     }
 
     /// Reply lines carry a wall-clock `elapsed=` field. Compare everything
-    /// around it exactly.
+    /// around it exactly. The field is the volatile tail, after the deterministic ones.
     private func assertReply(
         _ actual: String, head: String, tail: String,
         file: StaticString = #filePath, line: UInt = #line
     ) {
+        // Exact, but for the elapsed value (the volatile set): the reply is
+        // head + tail + " elapsed=<n>ms" and nothing else.
         let parts = actual.components(separatedBy: " elapsed=")
-        guard parts.count == 2, let msEnd = parts[1].range(of: "ms") else {
-            XCTFail("reply has no elapsed field: \(actual)", file: file, line: line)
+        guard parts.count == 2, parts[1].range(of: "^[0-9]+(\\.[0-9]+)?ms$", options: .regularExpression) != nil else {
+            XCTFail("reply's tail is not exactly elapsed=<n>ms: \(actual)", file: file, line: line)
             return
         }
-        XCTAssertEqual(parts[0], head, file: file, line: line)
-        XCTAssertEqual(
-            String(parts[1][msEnd.upperBound...]), tail, file: file, line: line)
+        XCTAssertEqual(parts[0], head + tail, file: file, line: line)
     }
 
     private var legacySentence: String {
@@ -78,7 +78,7 @@ final class BackupRankWidthDaemonTests: XCTestCase {
         let appended = h.handle("BACKUP APPEND \(dir)")
         XCTAssertTrue(appended.hasPrefix("OK BACKUP_APPEND bytes="), appended)
         XCTAssertTrue(
-            appended.hasSuffix("/00001.diff format=2"),
+            Reply.withoutVolatile(appended).hasSuffix("/00001.diff\" format=2"),
             "APPEND reply must end with the diff path then format=2: \(appended)")
 
         XCTAssertEqual(h.handle("SET 0 RANK 5"),  "OK SET node=0 rank=5")
@@ -126,7 +126,7 @@ final class BackupRankWidthDaemonTests: XCTestCase {
 
         XCTAssertEqual(
             h.handle("BACKUP RESTORE \(dir)"),
-            "ERROR io: backup diff 00001.diff has no sha256 sidecar; re-create the backup")
+            "ERROR io: backup diff \"00001.diff\" has no sha256 sidecar; re-create the backup")
     }
 
     func testLegacyChainRefusedOverDSLAndNamedByInfo() throws {

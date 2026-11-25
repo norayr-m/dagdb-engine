@@ -2,7 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// the interface phase — daemon-level tests for the real XCONV/BUDGET verbs
+/// Daemon-level tests for the real XCONV/BUDGET verbs
 /// (DagDBCommandHandler+TwinBudget.swift). The XCONV fixture is rebuilt
 /// in-test from CrossConvolutionCheckTests' reference NamedStream seed
 /// (draw order: 64 source samples, then 6 kA taps, then 9 kB taps) so a[69]
@@ -59,6 +59,7 @@ final class TwinBudgetCommandTests: XCTestCase {
         writeFloats(b, at: bOff, into: f)
         writeFloats(kA, at: kAOff, into: f)
         writeFloats(kB, at: kBOff, into: f)
+        shm1Header(f.shm, count: a.count + b.count + kA.count + kB.count, verb: .xconvCheck)
         return (aOff, bOff, kAOff, kBOff)
     }
 
@@ -70,6 +71,7 @@ final class TwinBudgetCommandTests: XCTestCase {
         writeDoubles(flat, at: 8, into: f)
         let minTierBytesOffset = 8 + flat.count * 8
         writeU32s(minTier.map { UInt32($0) }, at: minTierBytesOffset, into: f)
+        shm1Header(f.shm, count: flat.count + minTier.count, verb: .budgetOpen)
     }
 
     /// Same literal table as BudgetLayoutTests.layoutEngine(): only the
@@ -261,6 +263,7 @@ final class TwinBudgetCommandTests: XCTestCase {
         writeFloats([0, 0, 0], at: 20, into: f)
         writeFloats([1], at: 32, into: f)
         writeFloats([1], at: 36, into: f)
+        shm1Header(f.shm, count: 8, verb: .xconvCheck)
         let checkReply = f.handler.handle("READER \(rid) XCONV CHECK 3 3 1 1 1")
         XCTAssertTrue(checkReply.hasPrefix("OK XCONV CHECK session=\(rid)"), checkReply)
 

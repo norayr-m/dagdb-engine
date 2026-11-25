@@ -1,6 +1,6 @@
 """rankPolicy protocol + three default implementations.
 
-T2 from sprint ticket list. Shipped 2026-04-20.
+Shipped 2026-04-20.
 
 Core DagDB enforces `rank(src) > rank(dst)` on insert. It never
 computes rank. This module owns rank assignment for biology-style
@@ -19,8 +19,11 @@ Three defaults cover the regimes we know about today:
 
 All three return a numpy uint64 array of length `node_count`. Rank is
 u64 engine-wide (since 2026-04-21). SET_RANKS_BULK reads a u64 vector
-from shared memory, so these arrays go on the wire as-is — a uint32
-array would be half the width the daemon reads and corrupt the ranks.
+from shared memory, so these arrays go on the wire as-is (as the payload at
+offset 8, after the client-protocol-2 header [u32 count = node_count][u32
+0x314D4801], SET_RANKS_BULK's verb-bound mark; see docs/wiki/dsl.md, Input
+frames) — a uint32 array would be half the width the daemon reads and
+corrupt the ranks.
 
 Amateur engineering project. Errors likely. No competitive claims.
 """

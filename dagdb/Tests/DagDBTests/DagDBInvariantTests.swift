@@ -2,7 +2,7 @@ import XCTest
 @testable import DagDB
 
 /// Acceptance tests for the load-bearing engine invariants the rest of
-/// the system assumes but nothing was pinning (Fable review T3/M2/M3/M4):
+/// the system assumes but nothing was pinning:
 ///   - the GPU shader evaluates an arbitrary LUT6 identically to the
 ///     reference Boolean semantics (slot-packing correctness);
 ///   - the hex 7-colouring is race-free (no two adjacent nodes share a

@@ -14,11 +14,11 @@ Tools:
   dagdb_clear_edges       — clear combinational edges into a node
   dagdb_connect_back      — register a typed BACK_EDGE (synchronous-circuit register)
   dagdb_clear_back_edges  — remove BACK_EDGEs into a node
-  dagdb_graph             — graph info
+  dagdb_graph_info        — graph info (+ ternary_nodes= trits=-:a 0:b +:c)
   dagdb_hex               — ASCII hex table view
   dagdb_show              — full ASCII visualization
 
-  Twin (the interface phase — twin-spec primitives, daemon-global registries):
+  Twin (twin-spec primitives, daemon-global registries):
   dagdb_stream_open/next/state/close       — named PCG stream generator
   dagdb_header_check                       — comb-record admissibility check
   dagdb_record_open/slice/replay/verify    — replayable draw-slice ledger
@@ -28,14 +28,19 @@ Tools:
   dagdb_xconv_check                        — cross-convolution residual check
   dagdb_budget_sealed/open/allocate        — sealed/custom budget-layout allocator
   dagdb_alarm_load/frame/court/successor/corrupt — alarm-stream fixture + courts
-  dagdb_bank_open/generate/fit/noise/bench/info    — spec 8 waveform mouth (frozen bank, W = bank × coefficients)
+  dagdb_bank_open/generate/fit/noise/bench/info    — waveform mouth (frozen bank, W = bank × coefficients)
   dagdb_view_load/reflex/rung/ceiling/features/info — alarm-set derived views over the sealed cortex v4 world
-  dagdb_kernel_load/info + dagdb_xconv_sealed      — per-path kernel storage + the court's sealed cross-convolution residual (gates K3/K4)
-  dagdb_hook_open/step/state/ledger/info   — attention hook: the sealed allocator court as a ticked process (gate H5)
+  dagdb_kernel_load/info + dagdb_xconv_sealed      — per-path kernel storage + the court's sealed cross-convolution residual
+  dagdb_hook_open/step/state/ledger/info   — attention hook: the sealed allocator court as a ticked process
   dagdb_twin_list/dagdb_twin_close         — cross-registry list/close by id prefix
-  dagdb_fold_run/kept/source/tier/info     — gate F4 tier-ladder fold over the CURRENT fabric lanes (no registry, nothing persisted)
+  dagdb_fold_run/kept/source/tier/info     — tier-ladder fold over the CURRENT fabric lanes (no registry, nothing persisted)
 
-  Tiled (steps one and two, gate T5 + ticking across tiles — NOT a twin registry):
+  Ternary:
+  dagdb_set_mode/set_ttable/set_thresh/set_trit/get_trit — one node's mode, table, thresholds, trit
+  dagdb_ttable_define/preset/get                         — the shared table library
+  dagdb_set_modes_bulk/set_ttable_ids_bulk/set_thresh_bulk/ttable_bulk — bulk through the result file
+
+  Tiled (steps one and two, queries + ticking across tiles — NOT a twin registry):
   dagdb_save_tiled                            — split the daemon's CURRENT graph into tile files by rank range
   dagdb_tiled_open/bfs/select/status/close    — cross-tile router: load-on-demand tiles, BFS/ancestry/select across them
   dagdb_tiled_tick/get_truth                  — advance the world across tiles (durable, per-tile flush) / read one node's truth
@@ -45,6 +50,7 @@ Requires: pip install mcp
 Daemon must be running: ./dagdb start --data sample_db/
 """
 
+import errno
 import re
 import socket
 import json
@@ -66,7 +72,7 @@ except ImportError:
 
 DAEMON_SOCK = os.environ.get("DAGDB_SOCK", "/tmp/dagdb.sock")
 
-# Gate D4, audit B findings 1 and 27. The daemon frames a command at
+# The daemon frames a command at
 # MAX_COMMAND_BYTES plus a newline; a line that reaches the cap without a
 # newline is refused, never parsed. Before that fix the daemon answered OK
 # over the truncated prefix, so this client could not tell a complete
@@ -76,7 +82,7 @@ TOO_LONG = f"ERROR too_long: command exceeds {MAX_COMMAND_BYTES} bytes"
 
 def query_daemon(cmd: str) -> str:
     """Send a command to the daemon and return the response."""
-    # Reject control characters (Fable review S3, defense-in-depth). The
+    # Reject control characters (defense-in-depth). The
     # daemon contract is one command per connection; an embedded newline in a
     # path argument could smuggle a second command line. Legitimate commands
     # and paths never contain control chars.
@@ -89,7 +95,14 @@ def query_daemon(cmd: str) -> str:
         s.settimeout(10)
         s.connect(DAEMON_SOCK)
         s.sendall((cmd.strip() + "\n").encode())
-        s.shutdown(socket.SHUT_WR)
+        # The daemon stops reading at the newline, answers and closes; when it
+        # closes first, macOS reports ENOTCONN here although the whole reply is
+        # waiting in the socket.
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except OSError as e:
+            if e.errno != errno.ENOTCONN:
+                raise
         response = b""
         while True:
             chunk = s.recv(4096)
@@ -101,12 +114,11 @@ def query_daemon(cmd: str) -> str:
     except Exception as e:
         return f"ERROR: {e}"
 
-# Twin registries (interface phase, 2026-09). Ids are minted by the daemon as "<letter>%08x"
-# from a per-registry counter (§0.14): s stream, t record, n rings, c
-# clock, g gear, b budget layout, a alarm set, w wave bank (spec 8, the interface phase),
-# v derived-view set (spec line 4 second view family), k kernel pair
-# (spec line 6 second half, gates K3/K4), h attention hook (gate H5,
-# docs/contracts/HOOK_GATES_FROZEN.md). Wrappers below validate any id
+# Twin registries. Ids are minted by the daemon as "<letter>%08x"
+# from a per-registry counter: s stream, t record, n rings, c
+# clock, g gear, b budget layout, a alarm set, w wave bank,
+# v derived-view set (alarm-set derived views), k kernel pair,
+# h attention hook. Wrappers below validate any id
 # argument against this shape client-side, before touching the socket — a
 # malformed id can never be a legitimate reply from any registry, so there
 # is nothing to gain by round-tripping it to the daemon.
@@ -129,7 +141,9 @@ mcp = FastMCP("dagdb", instructions="""
 DagDB is a 6-bounded ranked DAG database running on Apple Silicon GPU.
 Use these tools to query and manipulate the graph.
 The daemon must be running (./dagdb start --data sample_db/).
-Nodes have: id, rank (0=root, higher=leaves), truth (0/1/2), LUT6 gate type.
+Nodes have: id, rank (0=root, higher=leaves), truth (0/1/2), LUT6 gate type —
+or a ternary mode (TTABLE / TTHRESH) that reads and writes trits -1/0/+1,
+stored in the truth byte as 0/2/1.
 Edges connect lower-rank nodes to higher-rank nodes (max 6 per node).
 """)
 
@@ -149,7 +163,9 @@ def dagdb_query(command: str) -> str:
 
     Lifecycle/inspect: STATUS | TICK <n> | GRAPH INFO | VALIDATE
     Read: NODES [AT RANK <n>] [WHERE <field><op><val>] | GET <node> TRUTH |
-          EVAL [WHERE ...] [RANK <lo> TO <hi>] | TRAVERSE FROM <n> DEPTH <d> |
+          EVAL [WHERE ...] (roots only; a RANK clause is refused: "ERROR dsl_parse:
+          EVAL takes no RANK clause ...", read other ranks with NODES AT RANK) |
+          TRAVERSE FROM <n> DEPTH <d> |
           BFS_DEPTHS FROM <seed> [BACKWARD] | ANCESTRY FROM <n> DEPTH <d> |
           SIMILAR_DECISIONS TO <n> DEPTH <d> K <k> [AMONG TRUTH <t>] |
           SELECT truth <k> rank <lo>-<hi> | DISTANCE <metric> <loA>-<hiA> <loB>-<hiB>
@@ -157,16 +173,35 @@ def dagdb_query(command: str) -> str:
             CONNECT FROM <src> TO <dst> | CONNECT BACK FROM <src> TO <dst> |
             CLEAR <n> EDGES | CLEAR <n> BACK_EDGES |
             COMPOSE <NOT|AND|OR|XOR> <src1> [<src2>] INTO <dst>
-    Bulk install (vector at shm offset 8): SET_RANKS_BULK (u64[N]) |
-            SET_LUTS_BULK (u64[N]) | SET_NEIGHBORS_BULK (int32[N*6])
+    Ternary: SET <n> MODE BINARY|TTABLE|TTHRESH [NOSKIP] |
+            SET <n> TTABLE <tid> | SET <n> THRESH <lo> <hi> | SET <n> TRIT -1|0|1 |
+            GET <n> TRIT | TTABLE DEFINE <tid> <729 chars of - 0 +> |
+            TTABLE PRESET <tid> <name> <k> | TTABLE GET <tid>
+    Bulk install (a client frame: [u32 count][u32 0x314D4800 | code] at shm bytes 0..7,
+            the vector at offset 8; count N unless named): SET_RANKS_BULK (code 1, u64[N]) |
+            SET_LUTS_BULK (2, u64[N]) | SET_NEIGHBORS_BULK (3, int32[N*6], count N nodes) |
+            SET_MODES_BULK (4, u8[N]) | SET_TTABLE_IDS_BULK (5, u16[N]) |
+            SET_THRESH_BULK (6, f32[2N] lo/hi pairs, count N) |
+            TTABLE_BULK <first> <count> (7, u8[729*count], count = the tables) |
+            CONNECT_BACK_BULK (8, 8-byte rows u32 src, u32 dst; count = the rows) |
+            SET_TRUTH_BULK (9, 8-byte rows u32 node, u8 value, 3 zero pad; count = the rows)
+    Input frames (client_protocol 2; STATUS carries client_protocol=2): every verb
+        that reads input from the shm (the 9 above and XCONV CHECK 10, XCONV SEALED 11,
+        BUDGET OPEN 12, BANK GENERATE 13, BANK FIT 14) reads only a frame its client wrote,
+        [u32 count][u32 0x314D4800 | code] little-endian at bytes 0..7 (0x314D4801 ...
+        0x314D480E), count in the verb's elements. A frame without that header (a previous
+        result left in the shm, a never-written shm) or marked for another verb is refused as
+        "ERROR stale_frame: ...", a marked frame with another count as "ERROR bad_value: <VERB>
+        frame count <n>, the verb reads <count>"; nothing is written either way. The mark
+        survives commands that write no shm, so the same verb may resend its frame.
     Persistence: SAVE <path> [COMPRESSED] | LOAD <path> |
             SAVE JSON <path> | LOAD JSON <path> | SAVE CSV <dir> | LOAD CSV <dir> |
             EXPORT MORTON <dir> | IMPORT MORTON <dir> |
             BACKUP INIT|APPEND|RESTORE|COMPACT|INFO <dir>
     MVCC: OPEN_READER | READER <id> <inner read-only cmd> | CLOSE_READER <id> | LIST_READERS
 
-    Twin (twin-spec primitives, the interface phase; ids are "<letter>%08x" from a
-        per-registry counter; registries are daemon-global (§0.13) — a
+    Twin (twin-spec primitives; ids are "<letter>%08x" from a
+        per-registry counter; registries are daemon-global — a
         READER session may run only the verbs marked * below, everything
         else replies "ERROR forbidden:"):
         STREAM OPEN <name> <stateHi> <stateLo> <incHi> <incLo> |
@@ -181,9 +216,10 @@ def dagdb_query(command: str) -> str:
         CLOCK OPEN | CLOCK ADVANCE <id> [<n>] [VALUE <f>] | CLOCK STATE <id> * |
         CLOCK CLOSE <id> (cascades to its gears) | CLOCK LIST *
         GEAR OPEN <clockId> <name> <num>/<den> | GEAR STATE <id> * | GEAR CLOSE <id>
-        XCONV CHECK <nA> <nB> <kA> <kB> <warmup> * (shm in: f32 a,b,kA,kB at offset 8)
-        BUDGET OPEN <nPockets> <nTiers> <nClasses> (shm in: f64 cost row-major +
-            u32 minTier at offset 8) |
+        XCONV CHECK <nA> <nB> <kA> <kB> <warmup> * (shm in: [u32 nA+nB+kA+kB][u32 0x314D480A]
+            at 0..7, f32 a,b,kA,kB at offset 8)
+        BUDGET OPEN <nPockets> <nTiers> <nClasses> (shm in: [u32 nPockets*nTiers+nClasses]
+            [u32 0x314D480C] at 0..7, f64 cost row-major + u32 minTier at offset 8) |
         BUDGET SEALED | BUDGET ALLOCATE <id> <budget> <pocket>:<class> ... * |
         BUDGET INFO <id> * | BUDGET CLOSE <id> | BUDGET LIST *
         ALARM LOAD <path> [SHA <hex64>] | ALARM INFO <id> * | ALARM LIST * |
@@ -196,9 +232,11 @@ def dagdb_query(command: str) -> str:
             numbers ⇒ WaveBank.Spec.referenceNyquistSafe, the repaired bank; all seven
             or none; a spec whose top harmonic reaches/exceeds Nyquist (fs/2) is
             refused with ERROR bad_value unless ALIASED is appended) |
-        BANK GENERATE <id> <M> * (shm in: f32 C[K*M] row-major at offset 8; shm out:
+        BANK GENERATE <id> <M> * (shm in: [u32 K*M][u32 0x314D480D] at 0..7, f32 C[K*M]
+            row-major at offset 8; shm out:
             [u32 T*M][u32 4] header + f32 W[T*M] row-major) |
-        BANK FIT <id> * (shm in: f32 x[T] at offset 8; shm out: [u32 K][u32 4]
+        BANK FIT <id> * (shm in: [u32 T][u32 0x314D480E] at 0..7, f32 x[T] at offset 8;
+            shm out: [u32 K][u32 4]
             header + f32 coefficients[K]) |
         BANK NOISE <id> <seed> <n> * | BANK BENCH <id> <M> <reps> * |
         BANK INFO <id> * | BANK CLOSE <id> | BANK LIST *
@@ -208,9 +246,8 @@ def dagdb_query(command: str) -> str:
             header + f32 standardized features) |
         VIEW INFO <id> * | VIEW LIST * | VIEW CLOSE <id>
 
-    Tiled (steps one AND two — gate T5, docs/contracts/TILING_GATES_FROZEN.md,
-        and ticking across tiles, docs/contracts/TICKING_GATES_FROZEN.md —
-        NOT a twin registry: a router is never persisted, never WAL-logged,
+    Tiled (steps one AND two — cross-tile queries, and ticking across
+        tiles — NOT a twin registry: a router is never persisted, never WAL-logged,
         never part of a snapshot; the tile directory on disk written by
         SAVE TILED IS the durable state, and TILED OPEN only rebuilds an
         in-memory view of it (recovering any dangling flush and completing
@@ -248,7 +285,7 @@ def dagdb_query(command: str) -> str:
         pre-fetch thread (optional — changes no result if added), the
         cold tier, the 10^11 run.
 
-    Fold (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md — a pure
+    Fold (a pure
         computation over the daemon's CURRENT fabric lanes: neighbors, edge
         weights, nodeValue-as-leak, rank; nothing persisted, no WAL, no
         registry, no id — every verb below is read-only, RUN included (*
@@ -288,7 +325,8 @@ def dagdb_traverse(node: int, depth: int = 2) -> str:
 
 @mcp.tool()
 def dagdb_set_truth(node: int, value: int) -> str:
-    """Set the truth state of a node. 0=FALSE, 1=TRUE, 2=UNDEFINED."""
+    """Set the truth byte of a node. 0=FALSE, 1=TRUE, 2=UNDEFINED. A binary node also
+    takes 3..255 (Loom event codes); a ternary node only 0..2 (use dagdb_set_trit)."""
     return query_daemon(f"SET {node} TRUTH {value}")
 
 @mcp.tool()
@@ -308,6 +346,13 @@ def dagdb_compose_lut(op: str, src1: int, dst: int, src2: int = -1) -> str:
     Op is one of: AND, OR, XOR (binary — require src2 ≥ 0), NOT (unary — src2 ignored).
     Caller is responsible for the assumption that src1, src2, dst share a common
     input vector — the engine just performs the bitwise op on the 64-bit LUT integers.
+
+    Ternary: when the sources are TTABLE nodes the
+    compose is pointwise on their tables — AND → min, OR → max, NOT → negation —
+    the result is appended to the library and dst (a TTABLE node) points at it:
+    "OK COMPOSE op=<op> src1=<a> src2=<b> dst=<d> ttable=<new tid>". Refused by
+    name: XOR on tables, a TTHRESH source, a TTABLE source beside a binary one,
+    binary sources aimed at a ternary dst, table sources aimed at a non-TTABLE dst.
 
     Useful for: graph-simplification at insert time (collapse a fused subtree's
     function into a single node's LUT before tick), offline composition of policies
@@ -348,7 +393,8 @@ def dagdb_clear_back_edges(node: int) -> str:
 
 @mcp.tool()
 def dagdb_graph_info() -> str:
-    """Get graph statistics: node count, true count, nodes per rank."""
+    """Get graph statistics: node count, true count, nodes per rank, then over the
+    ternary nodes "ternary_nodes=<n> trits=-:<a> 0:<b> +:<c>"."""
     return query_daemon("GRAPH INFO")
 
 @mcp.tool()
@@ -358,12 +404,20 @@ def dagdb_eval() -> str:
     Returns: "OK EVAL rows=<k> tick=<t> scope=roots nodes_computed=<n>"
     plus "ranks=<r> bound=<M>" when the graph reaches past the configured
     rank bound. EVAL ticks the WHOLE graph and reports only rank-0 roots —
-    scope=roots is that disclosure."""
+    scope=roots is that disclosure.
+
+    On a graph that fails rank order (a self-loop slot, or a source not
+    strictly above its destination in rank) EVAL is refused, as rank-mode
+    TICK is: "ERROR invalid_graph: EVAL refused, validation: <violation>
+    (VALIDATE names it; TICK_SYNC is defined on this graph)". Nothing is
+    ticked, no rows are written, and the tick count is unchanged."""
     return query_daemon("EVAL")
 
 @mcp.tool()
 def dagdb_save(path: str, compressed: bool = False) -> str:
-    """Snapshot the full graph state (rank, truth, LUT6, edges) to a binary .dags file.
+    """Snapshot the full graph state (every persisted lane and the ternary table library)
+    to a binary .dags file: v7 for a graph with no ternary content, v8 otherwise (and
+    whenever the body outgrows v7's u32 length field).
     Uses direct GPU-buffer write; fast at scale (~10 GB/s on Apple Silicon).
 
     Args:
@@ -375,19 +429,27 @@ def dagdb_save(path: str, compressed: bool = False) -> str:
 
 @mcp.tool()
 def dagdb_load(path: str) -> str:
-    """Restore a previously saved .dags snapshot. Validates DAG invariants after memcpy.
+    """Restore a previously saved .dags snapshot (v1–v8; a file older than v8 loads as a
+    binary graph). Validates DAG invariants and every ternary rule before committing.
     Errors if grid or node count mismatches the running daemon."""
     return query_daemon(f"LOAD {path}")
 
 @mcp.tool()
 def dagdb_export_morton(dir: str) -> str:
-    """Export 6 Morton-ordered raw buffer files (rank, truth, nodeType, lut_low, lut_high, neighbors)
-    into the given directory for bulk interop with external tools."""
+    """Export every persisted lane as Morton-ordered raw files into the given directory
+    for bulk interop with external tools — 16 files: the 11 the build wrote before the
+    ternary lanes (rank, truth, nodeType, lut_low, lut_high, neighbors, edge_weights,
+    activation, node_value, is_register, back_edges) plus mode.bin (u8), ttable_id.bin
+    (u16), thr_lo.bin and thr_hi.bin (f32) and ttables.bin (729 bytes per table).
+    A state any ternary rule refuses is refused here by name, nothing written."""
     return query_daemon(f"EXPORT MORTON {dir}")
 
 @mcp.tool()
 def dagdb_import_morton(dir: str) -> str:
-    """Inverse of export — read 6 per-buffer files from the directory back into the engine."""
+    """Inverse of export. The six body files are required; edge_weights, activation,
+    node_value, back_edges and the five ternary files are optional (absent ⇒ their
+    defaults: BINARY nodes, an empty library). Every ternary rule is checked before
+    anything is committed."""
     return query_daemon(f"IMPORT MORTON {dir}")
 
 @mcp.tool()
@@ -398,26 +460,29 @@ def dagdb_validate() -> str:
 
 @mcp.tool()
 def dagdb_save_json(path: str) -> str:
-    """Save engine state as JSON (dagdb-json v1 schema). Mirrors the six engine
-    buffers directly — binary-vs-JSON round-trips match byte-for-byte."""
+    """Save engine state as JSON (dagdb-json v2): v1's six buffers plus the edge weights,
+    activation, node value, back edges, the four ternary lanes and the table library
+    (f32 lanes as their bit patterns) — round-trips match byte-for-byte."""
     return query_daemon(f"SAVE JSON {path}")
 
 @mcp.tool()
 def dagdb_load_json(path: str) -> str:
-    """Load engine state from a dagdb-json file. Validates DAG invariants before
-    committing to live buffers."""
+    """Load engine state from a dagdb-json file: v2 carries every lane and refuses an
+    out-of-range value by name; v1 loads as a binary graph (ternary lanes reset, library
+    emptied). Validates DAG invariants before committing to live buffers."""
     return query_daemon(f"LOAD JSON {path}")
 
 @mcp.tool()
 def dagdb_save_csv(dir: str) -> str:
-    """Save engine state as two CSV files (nodes.csv + edges.csv) in the given
-    directory. edges.csv only lists present edges — diff-friendly."""
+    """Save engine state as CSV in the given directory: nodes.csv + edges.csv exactly as
+    v1 (edges.csv only lists present edges — diff-friendly), plus lanes.csv, weights.csv,
+    back_edges.csv and ttables.csv (v2)."""
     return query_daemon(f"SAVE CSV {dir}")
 
 @mcp.tool()
 def dagdb_load_csv(dir: str) -> str:
-    """Load engine state from nodes.csv + edges.csv in the given directory.
-    Validates DAG invariants before committing."""
+    """Load engine state from a CSV directory. With lanes.csv it is v2 (every lane and the
+    library); without, v1, loaded as a binary graph. Validates DAG invariants before committing."""
     return query_daemon(f"LOAD CSV {dir}")
 
 @mcp.tool()
@@ -429,7 +494,9 @@ def dagdb_backup_init(dir: str) -> str:
 @mcp.tool()
 def dagdb_backup_append(dir: str) -> str:
     """Append an incremental XOR-diff (NNNNN.diff) against the chain's current
-    tip. Single-bit mutations produce diffs far smaller than the base."""
+    tip. Single-bit mutations produce diffs far smaller than the base. The diff is
+    format 3 when a ternary lane or the library changed since the tip, format 2
+    otherwise; the reply's format= says which (BACKUP INFO's format= is the first diff's)."""
     return query_daemon(f"BACKUP APPEND {dir}")
 
 @mcp.tool()
@@ -500,7 +567,7 @@ def dagdb_hive_query(
     rank_hi: int = -1,
     limit: int = 100,
 ) -> str:
-    """Agent-friendly hive-node filter. Delegates to the secondary
+    """Agent-friendly node filter. Delegates to the secondary
     index (SELECT truth k rank lo-hi) when `truth` is given with a
     rank range, otherwise falls back to a full-range scan.
 
@@ -528,7 +595,7 @@ def dagdb_select_by_truth_rank(truth: int, rank_lo: int, rank_hi: int) -> str:
     """Fast secondary-index lookup. Returns matching node IDs via shared
     memory as an Int32 array at offset 8, length `matches`.
 
-    Typical hive-query shape:
+    Typical query shape:
         dagdb_select_by_truth_rank(truth=2, rank_lo=N-100, rank_hi=N)
         → all dialogue_turn events in the last 100 inserts.
 
@@ -540,16 +607,19 @@ def dagdb_select_by_truth_rank(truth: int, rank_lo: int, rank_hi: int) -> str:
     Reader sessions (OPEN_READER / READER envelope) use their own local
     index rebuilt per call since the snapshot buffers are static.
 
-    Python client reads /tmp/dagdb_shm_file, skips 8 header bytes, maps
+    Python client reads the daemon's --shm-file, skips 8 header bytes, maps
     Int32[matches] for the node IDs."""
     return query_daemon(f"SELECT truth {truth} rank {rank_lo}-{rank_hi}")
 
 @mcp.tool()
 def dagdb_open_reader() -> str:
-    """Open a snapshot-on-read MVCC session. The daemon memcpys the six
-    engine buffers into an independent DagDBEngine at call time; subsequent
-    queries against this session id see that frozen point-in-time view
-    regardless of writes on the primary.
+    """Open a snapshot-on-read MVCC session. The daemon copies all fourteen
+    persisted lanes (the ten it copied before the ternary build — rank, truth,
+    nodeType, lut low/high, neighbors, edge weights, activation, node value,
+    registers with the back-edge list — plus mode, table id and the two
+    thresholds) and the table library into an independent DagDBEngine at call
+    time; subsequent queries against this session id see that frozen
+    point-in-time view regardless of writes on the primary.
 
     Returns: "OK OPEN_READER id=<hex> tick=<n> open_sessions=<k>"
 
@@ -573,12 +643,20 @@ def dagdb_reader_query(session_id: str, command: str) -> str:
     """Run a read-only DSL command against a reader session's snapshot engine.
 
     Allowed inner commands: GRAPH INFO, NODES, TRAVERSE, BFS_DEPTHS,
-    DISTANCE, VALIDATE, STATUS, and the read-only twin verbs STREAM
+    DISTANCE, VALIDATE, STATUS, GET <n> TRUTH|TRIT, TTABLE GET <tid>
+    (every ternary mutating verb is refused), and the read-only twin verbs STREAM
     STATE/LIST, HEADER CHECK, RECORD REPLAY/VERIFY/INFO/LIST, RINGS
     RECALL/INFO/LIST, CLOCK STATE/LIST, GEAR STATE, XCONV CHECK, BUDGET
     ALLOCATE/INFO/LIST, ALARM INFO/LIST/FRAME/COURT/SUCCESSOR/CORRUPT.
     Writes are rejected — including every twin verb that opens, mutates,
-    or closes a registry (twin registries are daemon-global, §0.13).
+    or closes a registry (twin registries are daemon-global).
+
+    The input verbs a reader may run (XCONV CHECK, XCONV SEALED, BANK
+    GENERATE, BANK FIT) read a client frame, as on the primary: the header
+    [u32 count][u32 0x314D4800 | code] at shm bytes 0..7 (codes 10, 11,
+    13, 14: 0x314D480A, 0x314D480B, 0x314D480D, 0x314D480E), the payload at
+    offset 8; an unmarked frame or one marked for another verb is refused as
+    "ERROR stale_frame: ...", nothing written (see dagdb_query).
 
     Example:
         dagdb_reader_query("r5f4e1234", "BFS_DEPTHS FROM 42")
@@ -597,11 +675,15 @@ def dagdb_set_ranks_bulk() -> str:
 
     Caller workflow (Python):
         1. Compute ranks via a rankPolicy (see dagdb/plugins/biology/).
-        2. Write the resulting numpy uint64 array (length nodeCount) to
-           /tmp/dagdb_shm_file starting at byte offset 8.
+        2. Write the header [u32 nodeCount][u32 0x314D4801] (little-endian;
+           0x314D4800 | 1, SET_RANKS_BULK's code) at bytes 0..7 of
+           the daemon's --shm-file, then the resulting numpy uint64 array
+           (length nodeCount) starting at byte offset 8.
         3. Call this tool. Daemon reads the vector and memcpys into
            rankBuf. No per-insert validation — run dagdb_validate
-           afterwards if you need invariant checking.
+           afterwards if you need invariant checking. A frame without the
+           header, or marked for another verb, is refused as "ERROR
+           stale_frame: ...", nothing written.
 
     Much faster than per-node SET <id> RANK <r> for bulk ingestion:
     one DSL round-trip instead of N."""
@@ -615,9 +697,14 @@ def dagdb_set_luts_bulk() -> str:
     Caller workflow (Python):
         1. Build a numpy uint64 array (length nodeCount) of 64-bit LUT
            truth tables — one per node's Boolean function.
-        2. Write it to /tmp/dagdb_shm_file starting at byte offset 8.
+        2. Write the header [u32 nodeCount][u32 0x314D4802] (0x314D4800 | 2,
+           SET_LUTS_BULK's code) at bytes 0..7 of the daemon's --shm-file, then
+           the array starting at byte offset 8 (an unmarked frame, or one
+           marked for another verb, is refused as "ERROR stale_frame: ...").
         3. Call this tool. The daemon splits each u64 into low/high u32
-           and commits. No WAL — pair with dagdb_save for durability.
+           and commits. The whole vector is WAL-logged (opcode 0x15) before
+           the commit when the daemon runs with DAGDB_WAL, so a replay
+           restores it; dagdb_save remains the snapshot.
 
     The fast path for compiling microcircuits (see the
     microcircuit-compilation wiki page): three bulk verbs
@@ -633,7 +720,11 @@ def dagdb_set_neighbors_bulk() -> str:
     Caller workflow (Python):
         1. Build a numpy int32 array of length nodeCount * 6 — six input
            slots per node, row-major. -1 marks an empty slot.
-        2. Write it to /tmp/dagdb_shm_file starting at byte offset 8.
+        2. Write the header [u32 nodeCount][u32 0x314D4803] (0x314D4800 | 3,
+           SET_NEIGHBORS_BULK's code; the count is nodes, not slots) at bytes
+           0..7 of the daemon's --shm-file, then the array starting at byte
+           offset 8 (an unmarked frame, or one marked for another verb, is
+           refused as "ERROR stale_frame: ...").
         3. Call this tool. The daemon memcpys into neighborsBuf.
 
     Every element must be -1 or a valid node id: the WHOLE vector is
@@ -641,10 +732,112 @@ def dagdb_set_neighbors_bulk() -> str:
     table exactly as it was and the refusal names the first offender. The
     read is size-checked against the mapping first.
 
-    Still bypasses the BACK_EDGE/register invariant CONNECT enforces — the
-    reply says so ("validation=skipped skipped=back_edge_register_fanin
-    recheck=VALIDATE"); run dagdb_validate afterwards."""
+    Under the slot model a slot into a register (a BACK_EDGE
+    destination) is refused as CONNECT refuses it, nothing written
+    ("ERROR schema: SET_NEIGHBORS_BULK slot <i> (node <n> dir <d>):
+    back_edge_violation: ..."). Duplicate sources, slot self-loops and rank
+    inversions are installed; the rank order is not checked, and the reply
+    says so ("rank_order=unchecked recheck=VALIDATE"); run dagdb_validate
+    afterwards for the rank-mode DAG property."""
     return query_daemon("SET_NEIGHBORS_BULK")
+
+# ── The native ternary tick ──
+# A node in TTABLE or TTHRESH mode reads its inputs as trits −1/0/+1 (byte 0 → −1,
+# 1 → +1, 2 and Loom codes ≥ 3 → 0; an absent slot → 0) and writes a trit (−1 as 0,
+# 0 as 2, +1 as 1). Registers stay BINARY. Every refusal is
+# "ERROR bad_value: ternary: <reason>".
+
+@mcp.tool()
+def dagdb_set_mode(node: int, kind: str, noskip: bool = False) -> str:
+    """Set a node's mode: BINARY (today's LUT6), TTABLE (729-entry table lookup) or
+    TTHRESH (weighted trit sum against thrLo/thrHi). NOSKIP (ternary kinds only):
+    no direct −1 → +1 step; an opposite step writes 0. A ternary kind is refused on a
+    register, on a node holding a truth byte ≥ 3, and (TTABLE) on a node whose table id
+    is not below the library size.
+    Returns: "OK SET node=<n> mode=<KIND> noskip=<0|1>"."""
+    return query_daemon(f"SET {node} MODE {kind.upper()}" + (" NOSKIP" if noskip else ""))
+
+@mcp.tool()
+def dagdb_set_ttable(node: int, tid: int) -> str:
+    """Point a node at library table `tid` (must be below the library size).
+    Returns: "OK SET node=<n> ttable=<tid>"."""
+    return query_daemon(f"SET {node} TTABLE {tid}")
+
+@mcp.tool()
+def dagdb_set_thresh(node: int, lo: float, hi: float) -> str:
+    """Set a TTHRESH node's thresholds (finite, lo ≤ hi). The node outputs +1 if its
+    weighted sum s > hi, −1 if s < lo, 0 otherwise (equality gives 0).
+    Returns: "OK SET node=<n> thresh=<lo>,<hi>"."""
+    return query_daemon(f"SET {node} THRESH {lo!r} {hi!r}")
+
+@mcp.tool()
+def dagdb_set_trit(node: int, trit: int) -> str:
+    """Write a trit (−1, 0 or 1) as the node's truth byte (0, 2 or 1).
+    Returns: "OK SET node=<n> trit=<t>"."""
+    return query_daemon(f"SET {node} TRIT {trit}")
+
+@mcp.tool()
+def dagdb_get_trit(node: int) -> str:
+    """Read a node's truth byte as a trit (any node; a Loom code reads as 0).
+    Returns: "OK GET node=<n> trit=<t>"."""
+    return query_daemon(f"GET {node} TRIT")
+
+@mcp.tool()
+def dagdb_ttable_define(tid: int, table: str) -> str:
+    """Define table `tid` from 729 characters of '-', '0', '+' (the output trit for
+    input index Σ 3^d·(t_d + 1)). tid ≤ the library size (overwrite or append; a gap
+    is refused). Returns: "OK TTABLE DEFINE tid=<tid> tables=<size>"."""
+    return query_daemon(f"TTABLE DEFINE {tid} {table}")
+
+@mcp.tool()
+def dagdb_ttable_preset(tid: int, name: str, k: int) -> str:
+    """Define table `tid` from a preset over slots 0..k−1: TMIN (Kleene AND), TMAX
+    (Kleene OR), TSUM (sign of the sum), TCONS (all equal and non-zero → that value),
+    TCONST-1 / TCONST0 / TCONST+1 (k = 1…6); TID and TNEG (k = 1).
+    Returns: "OK TTABLE PRESET tid=<tid> name=<NAME> k=<k> tables=<size>"."""
+    return query_daemon(f"TTABLE PRESET {tid} {name.upper()} {k}")
+
+@mcp.tool()
+def dagdb_ttable_get(tid: int) -> str:
+    """Read table `tid` back as 729 characters of '-', '0', '+'.
+    Returns: "OK TTABLE GET tid=<tid> table=<729 chars>"."""
+    return query_daemon(f"TTABLE GET {tid}")
+
+@mcp.tool()
+def dagdb_set_modes_bulk() -> str:
+    """Commit a u8[nodeCount] mode vector written to the result-row file at offset 8,
+    after the header [u32 nodeCount][u32 0x314D4804] at bytes 0..7 (code 4; an unmarked
+    or foreign frame is "ERROR stale_frame: ...", nothing written)
+    (numpy uint8; bits 0–1 kind, bit 2 NOSKIP). The whole vector is checked before a
+    byte is written; WAL-logged. Returns: "OK SET_MODES_BULK nodes=<n> ternary=<count>"."""
+    return query_daemon("SET_MODES_BULK")
+
+@mcp.tool()
+def dagdb_set_ttable_ids_bulk() -> str:
+    """Commit a u16[nodeCount] table-id vector written at offset 8, after the header
+    [u32 nodeCount][u32 0x314D4805] at bytes 0..7 (code 5; an unmarked or foreign frame is
+    "ERROR stale_frame: ...", nothing written) (numpy uint16; every
+    id below the library size). WAL-logged. Returns: "OK SET_TTABLE_IDS_BULK nodes=<n>"."""
+    return query_daemon("SET_TTABLE_IDS_BULK")
+
+@mcp.tool()
+def dagdb_set_thresh_bulk() -> str:
+    """Commit an f32[2·nodeCount] threshold vector (lo, hi pairs) written at offset 8,
+    after the header [u32 nodeCount][u32 0x314D4806] at bytes 0..7 (code 6; the count is
+    the pairs; an unmarked or foreign frame is "ERROR stale_frame: ...", nothing written)
+    (numpy float32; finite, lo ≤ hi). WAL-logged. Returns: "OK SET_THRESH_BULK nodes=<n>"."""
+    return query_daemon("SET_THRESH_BULK")
+
+@mcp.tool()
+def dagdb_ttable_bulk(first: int, count: int) -> str:
+    """Write `count` tables starting at id `first` from u8[729·count] at offset 8,
+    after the header [u32 count][u32 0x314D4807] at bytes 0..7 (code 7; the count is the
+    tables; an unmarked or foreign frame is "ERROR stale_frame: ...", nothing written)
+    (numpy uint8, each byte 0, 1 or 2 — the truth-byte encoding of the output trit).
+    first ≤ the library size. WAL-logged. The vector rides the result file (8 + 24·nodeCount
+    bytes), so one call carries at most ⌊24·nodeCount / 729⌋ tables; more is refused by name.
+    Returns: "OK TTABLE_BULK first=<f> count=<c> tables=<size>"."""
+    return query_daemon(f"TTABLE_BULK {first} {count}")
 
 @mcp.tool()
 def dagdb_bfs_depths(seed: int, backward: bool = False) -> str:
@@ -656,7 +849,7 @@ def dagdb_bfs_depths(seed: int, backward: bool = False) -> str:
     Set backward=True to follow only inputs[] (the DAG's rank-increasing
     direction).
 
-    The Python client reads the shm file at /tmp/dagdb_shm_file and maps
+    The Python client reads the daemon's result file (its --shm-file) and maps
     it as numpy.int32[nodeCount] starting at byte 8. -1 = unreachable, 0
     = seed, positive = BFS depth.
 
@@ -668,7 +861,7 @@ def dagdb_bfs_depths(seed: int, backward: bool = False) -> str:
     return query_daemon(f"BFS_DEPTHS FROM {seed}{suffix}")
 
 # --------------------------------------------------------------------
-# Twin primitives (interface phase, 2026-09). See dagdb_query's "Twin:" block for the full
+# Twin primitives. See dagdb_query's "Twin:" block for the full
 # grammar and the id-prefix map. Every wrapper below is one query_daemon
 # call; id arguments are validated client-side first (see _bad_twin_id).
 # --------------------------------------------------------------------
@@ -903,10 +1096,13 @@ def dagdb_gear_state(id: str) -> str:
 
 @mcp.tool()
 def dagdb_xconv_check(nA: int, nB: int, kA: int, kB: int, warmup: int) -> str:
-    """Read-only. Caller must first write Float32 arrays a, b, kA, kB to
-    /tmp/dagdb_shm_file starting at byte offset 8 (a has nA samples, b has
+    """Read-only. Caller must first write the header [u32 nA+nB+kA+kB]
+    [u32 0x314D480A] (0x314D4800 | 10, XCONV CHECK's code) at bytes 0..7 of
+    the daemon's --shm-file, then Float32 arrays a, b, kA, kB starting at byte
+    offset 8 (a has nA samples, b has
     nB, kernel kA has kA taps, kernel kB has kB taps — lengths must match
-    the counts passed here) before calling this tool. Checks that
+    the counts passed here) before calling this tool; an unmarked or
+    foreign frame is "ERROR stale_frame: ...", nothing read. Checks that
     convolving a with kernel kA and b with kernel kB agree (after
     discarding the first `warmup` samples) — the smoother-reproducing-
     across-the-bridge check from the summer's E2v2 work.
@@ -917,18 +1113,21 @@ def dagdb_xconv_check(nA: int, nB: int, kA: int, kB: int, warmup: int) -> str:
 @mcp.tool()
 def dagdb_xconv_sealed(id: str, n: int, warmup: int = 0) -> str:
     """Read-only: the court's FROZEN sealed cross-convolution residual
-    (docs/contracts/KERNELS_GATES_FROZEN.md, gates K1-K3) against a loaded
+    against a loaded
     kernel pair `id` (from dagdb_kernel_load) — window [warmup, n) on both
     numerator and denominator, one-sided denominator max|yAB|+1e-300,
     float64 end to end. This is NOT dagdb_xconv_check (the "patrol check"
     above): that one compares over the full convolution length instead of
     the record window, a symmetric denominator instead of one-sided, and
     Float32 records/taps instead of Float64 — it stays as the standing
-    cheap check, unchanged; this tool is the contract's finding.
+    cheap check, unchanged; this tool is the sealed formula.
 
-    Caller must first write Float64 arrays a, b (each `n` samples) to
-    /tmp/dagdb_shm_file starting at byte offset 8: a[0..n), then b[0..n)
-    (rowSize 8, no gap between the two).
+    Caller must first write the header [u32 2n][u32 0x314D480B]
+    (0x314D4800 | 11, XCONV SEALED's code) at bytes 0..7 of
+    the daemon's --shm-file, then Float64 arrays a, b (each `n` samples)
+    starting at byte offset 8: a[0..n), then b[0..n) (rowSize 8, no gap
+    between the two). An unmarked or foreign frame is "ERROR stale_frame:
+    ...", nothing read.
 
     `warmup`: 0 (default) means "use the pair's own warmup" — derived from
     TAU/SIGMA if the pair was loaded with them, else its declared WARMUP,
@@ -959,12 +1158,15 @@ def dagdb_budget_sealed() -> str:
 
 @mcp.tool()
 def dagdb_budget_open(n_pockets: int, n_tiers: int, n_classes: int) -> str:
-    """Open a custom budget layout. Caller must first write to
-    /tmp/dagdb_shm_file starting at byte offset 8: Float64 `cost`,
+    """Open a custom budget layout. Caller must first write the header
+    [u32 n_pockets*n_tiers + n_classes][u32 0x314D480C] (0x314D4800 | 12,
+    BUDGET OPEN's code) at bytes 0..7 of the daemon's --shm-file, then
+    starting at byte offset 8: Float64 `cost`,
     row-major [n_pockets][n_tiers], followed by UInt32 `minTier`,
     length n_classes (the minimum tier index a claim of that class must
     reach to count as served). Ragged, non-finite, or out-of-range input
-    is rejected with "ERROR bad_value".
+    is rejected with "ERROR bad_value"; an unmarked or foreign frame with
+    "ERROR stale_frame: ...", nothing opened.
 
     Returns: "OK BUDGET OPEN id=b%08x pockets=<p> tiers=<t> classes=<c>"."""
     return query_daemon(f"BUDGET OPEN {n_pockets} {n_tiers} {n_classes}")
@@ -988,7 +1190,7 @@ def dagdb_budget_allocate(id: str, budget: float, claims: list) -> str:
 def dagdb_alarm_load(path: str, sha256: str = None) -> str:
     """Load an alarm-stream fixture (alarm registry, prefix 'a') — the
     JSON dict of AlarmRecord entries (quiet/liar/deep/drift + the cal0
-    control) described in §0 of the twin-spec plan. `path` is checked
+    control). `path` is checked
     against the daemon's guardPath (must be inside its data root). Pass
     `sha256` (the 64-hex-char pinned digest, e.g.
     AlarmFixture.sealedSHA256) to fail loudly on any mismatch rather than
@@ -997,8 +1199,8 @@ def dagdb_alarm_load(path: str, sha256: str = None) -> str:
     Returns: "OK ALARM LOAD id=a%08x records=<n> control=<0|1> sha256=<hex>
     quiet=<n> liar=<n> deep=<n> drift=<n> ears=A<a>/B<b>/C<c>" or
     "ERROR io: <reason>" (missing file, outside data root, or sha256
-    mismatch — an unexpected fixture is a finding, never a silent skip,
-    per §0.16)."""
+    mismatch — an unexpected fixture is a finding, never a silent
+    skip)."""
     suffix = f" SHA {sha256}" if sha256 else ""
     return query_daemon(f"ALARM LOAD {path}{suffix}")
 
@@ -1030,13 +1232,13 @@ def dagdb_alarm_court(id: str, budget: float) -> str:
 
 @mcp.tool()
 def dagdb_alarm_successor(id: str, budget: float, eps_m: float, eps_s: float, eps_n: float) -> str:
-    """Read-only: the successor object's counting-hand totals over the
+    """Read-only: the successor object's counting-reference totals over the
     corruption-model ε lattice (epsM = liar-ear-swap knob, epsS =
     drift-goes-unread knob, epsN = phantom-claim knob) at one budget point.
 
     Returns: "OK ALARM SUCCESSOR id=<id> budget=<b> misses_alloc=<m1>
     misses_greedy=<m2> cost_alloc=<c1> cost_greedy=<c2> ..." (the gate-2
-    table fields; exactness depends on loop-order fidelity, §0.10)."""
+    table fields; exactness depends on loop-order fidelity)."""
     err = _bad_twin_id(id)
     if err:
         return err
@@ -1065,11 +1267,9 @@ def dagdb_alarm_corrupt(id: str, idx: int, eps_m: float, eps_s: float, eps_n: fl
     return query_daemon(f"ALARM CORRUPT {id} {idx} {eps_m} {eps_s} {eps_n}")
 
 # --------------------------------------------------------------------
-# VIEW (alarm-set derived views, spec line 4 second view family). One
+# VIEW (alarm-set derived views). One
 # loaded cortex v4 world per open id (view registry, prefix 'v'); REFLEX/
-# RUNG/CEILING/FEATURES read the sealed frame set — see
-# docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md gate V6 for the reply
-# shapes and the gated numbers they reproduce.
+# RUNG/CEILING/FEATURES read the sealed frame set.
 # --------------------------------------------------------------------
 
 @mcp.tool()
@@ -1091,15 +1291,17 @@ def dagdb_view_load(path: str, sha256: str = None) -> str:
 
 @mcp.tool()
 def dagdb_view_reflex(id: str, S: int) -> str:
-    """Read-only: the amended-letter reflex over the 300 sealed test
+    """Read-only: the reflex over the 300 sealed test
     frames at station-subset size S (1..8) — per-candidate least-squares
     fit against the S-station arrivals, tie rule at 1e-9 relative
     tolerance.
 
     Returns: "OK VIEW REFLEX id=<id> S=<S> reflex=<n> oracle=<n>
     tie_min=<n> tie_median=<d> tie_max=<n> frames_with_tie=<n>
-    near_edge=<n>" (reflex/oracle/tie_*/frames_with_tie are gate V1-V3's
-    numbers; near_edge is printed only, the V1 honest-clause floor)."""
+    near_edge=<n>" (the tests pin reflex/oracle/tie_*/frames_with_tie to
+    the sealed reference values; near_edge, the number of candidate
+    residuals within 10x the tie tolerance of the tie edge summed over the
+    frames, is printed only)."""
     err = _bad_twin_id(id)
     if err:
         return err
@@ -1112,8 +1314,8 @@ def dagdb_view_rung(id: str, S: int) -> str:
     centroid (Euclidean, exact ties keep the lowest index). Centroids are
     recomputed from the 6966 train frames on every call.
 
-    Returns: "OK VIEW RUNG id=<id> S=<S> hits=<n> min_margin=<d>" (hits is
-    gate V4's number)."""
+    Returns: "OK VIEW RUNG id=<id> S=<S> hits=<n> min_margin=<d>" (the
+    tests pin hits to the sealed reference value)."""
     err = _bad_twin_id(id)
     if err:
         return err
@@ -1126,8 +1328,8 @@ def dagdb_view_ceiling(id: str, S: int) -> str:
     classes (unique + groups under the < 1.0 transitive-closure relation).
 
     Returns: "OK VIEW CEILING id=<id> S=<S> identifiable=<n> of=129
-    ceiling=<%.6f> exact_twin_pairs=<n> unique=<n> groups=<n>" (gate V5's
-    numbers)."""
+    ceiling=<%.6f> exact_twin_pairs=<n> unique=<n> groups=<n>" (the tests
+    pin these to the sealed reference values)."""
     err = _bad_twin_id(id)
     if err:
         return err
@@ -1162,10 +1364,9 @@ def dagdb_view_info(id: str) -> str:
     return query_daemon(f"VIEW INFO {id}")
 
 # --------------------------------------------------------------------
-# Kernel: per-path kernel storage (spec line 6, second half). One loaded
+# Kernel: per-path kernel storage. One loaded
 # (kA, kB) pair per open id (kernel registry, prefix 'k'), persisted BY
-# REFERENCE (path + sha256) — see docs/contracts/KERNELS_GATES_FROZEN.md
-# gates K3/K4. dagdb_xconv_sealed (above, beside dagdb_xconv_check) is the
+# REFERENCE (path + sha256). dagdb_xconv_sealed (above, beside dagdb_xconv_check) is the
 # court's residual over a loaded pair.
 # --------------------------------------------------------------------
 
@@ -1173,7 +1374,7 @@ def dagdb_view_info(id: str) -> str:
 def dagdb_kernel_load(path: str, sha256: str = "", tau_a: float = 0.0, tau_b: float = 0.0,
                        sigma: float = 0.0, warmup: int = 0) -> str:
     """Load a per-path kernel pair (kernel registry, prefix 'k') — a JSON
-    file shaped like the sealed W1 kernels fixture: kA, kB (equal-length
+    file shaped like the sealed kernels fixture (Tests/Fixtures/w1_kernels.json): kA, kB (equal-length
     Double arrays, the root->A / root->B impulse responses), fs, and
     window_samples/ear_index_A/ear_index_B. `path` is checked against the
     daemon's guardPath (must be inside its data root).
@@ -1185,7 +1386,7 @@ def dagdb_kernel_load(path: str, sha256: str = "", tau_a: float = 0.0, tau_b: fl
     `tau_a`/`tau_b`/`sigma`: the pair's path delays (seconds, from the tree
     metric — NOT read from the kernels file) and the source bank's
     Gaussian envelope sigma (seconds). All three zero (default) means
-    "omit TAU/SIGMA" — the pair then has no derived warmup (K4) and
+    "omit TAU/SIGMA" — the pair then has no derived warmup and
     dagdb_xconv_sealed needs an explicit warmup. Give all three together
     (any nonzero) to derive warmup = ceil((|tau_a-tau_b| + 3*sigma)*fs).
 
@@ -1222,7 +1423,7 @@ def dagdb_kernel_info(id: str) -> str:
     return query_daemon(f"KERNEL INFO {id}")
 
 # --------------------------------------------------------------------
-# Hook: the attention hook (gate H5, docs/contracts/HOOK_GATES_FROZEN.md)
+# Hook: the attention hook
 # — the sealed allocator court (AllocatorCourt.run) as a daemon-global
 # ticked process. One open hook per id (hook registry, prefix 'h'), bound
 # to an alarm set + budget layout (SEALED default) + frame budget + lag
@@ -1292,7 +1493,7 @@ def dagdb_hook_step(id: str, n: int) -> str:
 def dagdb_hook_state(id: str) -> str:
     """Read-only: a hook's live ArmResult snapshot, kept in sync frame by
     frame as it steps — bit-for-bit equal to AllocatorCourt.run's batch
-    replay at every frame (gate H1).
+    replay at every frame.
 
     Returns: "OK HOOK STATE id=<id> t=<t> done=<0|1> served=<s>
     misses=<m> cost=<c> dummy=<n> dominated=<n> max_spend_ratio=<r>
@@ -1306,7 +1507,7 @@ def dagdb_hook_state(id: str) -> str:
 @mcp.tool()
 def dagdb_hook_ledger(id: str, from_: int = 0, count: int = 0) -> str:
     """Read-only: rows [from_, from_+count) of a hook's per-frame ledger
-    (gate H2) — DERIVED, never stored; rebuilt by re-stepping. Leaving both
+    — DERIVED, never stored; rebuilt by re-stepping. Leaving both
     `from_` and `count` at 0 (the default) returns every row.
 
     shm layout: [u32 count][u32 40] header at offset 0, then `count`
@@ -1339,7 +1540,7 @@ def dagdb_hook_info(id: str) -> str:
     return query_daemon(f"HOOK INFO {id}")
 
 # --------------------------------------------------------------------
-# BANK (spec 8, the waveform mouth, the interface phase). One frozen bank of T×K atoms
+# BANK (the waveform mouth). One frozen bank of T×K atoms
 # per open id (bank registry, prefix 'w'); GENERATE is one matrix product
 # W = Φ·C, FIT is a least-squares solve for the coefficients that best
 # reproduce a target waveform in the bank's span.
@@ -1384,8 +1585,11 @@ def dagdb_bank_open(name: str, T: int = 0, fs: float = 0, f0: float = 0,
 def dagdb_bank_generate(id: str, M: int) -> str:
     """Read-only (writes shm only, same class as RECORD REPLAY): generate M
     waveform columns as one matrix product W = Φ·C. Caller must first write
-    Float32 coefficients C, K*M values row-major (C[k*M+m]), to
-    /tmp/dagdb_shm_file starting at byte offset 8.
+    the header [u32 K*M][u32 0x314D480D] (0x314D4800 | 13, BANK GENERATE's
+    code) at bytes 0..7 of the daemon's --shm-file, then Float32 coefficients
+    C, K*M values row-major (C[k*M+m]), starting at byte offset 8. An
+    unmarked or foreign frame is "ERROR stale_frame: ...", nothing read.
+    The output below clears the mark, so every call writes its frame anew.
 
     shm out: [u32 T*M][u32 4] header, then Float32 W, T*M values row-major
     (W[t*M+m]). Read with numpy.frombuffer(..., dtype=np.float32, count=T*M)
@@ -1403,8 +1607,12 @@ def dagdb_bank_generate(id: str, M: int) -> str:
 @mcp.tool()
 def dagdb_bank_fit(id: str) -> str:
     """Read-only: least-squares fit c* = argmin ‖x − Φc‖ for a target
-    waveform against the bank's atoms. Caller must first write Float32
-    target x, T values, to /tmp/dagdb_shm_file starting at byte offset 8.
+    waveform against the bank's atoms. Caller must first write the header
+    [u32 T][u32 0x314D480E] (0x314D4800 | 14, BANK FIT's code) at bytes 0..7
+    of the daemon's --shm-file, then Float32 target x, T values, starting at
+    byte offset 8. An unmarked or foreign frame is "ERROR stale_frame: ...",
+    nothing read. The output below clears the mark, so every call writes
+    its frame anew.
 
     shm out: [u32 K][u32 4] header, then Float32 coefficients, K values.
 
@@ -1418,7 +1626,7 @@ def dagdb_bank_fit(id: str) -> str:
 
 @mcp.tool()
 def dagdb_bank_noise(id: str, seed: int, n: int) -> str:
-    """Read-only: the out-of-bank noise law (spec 8 gate G3) — n
+    """Read-only: the out-of-bank noise law — n
     independent-ish Gaussian-noise probes, each fit against the bank, with
     the residual's theoretical expectation sqrt(1 - K/T) for comparison.
     `seed` (>= 0) advances a fixed PCG stream that many draws before
@@ -1434,8 +1642,8 @@ def dagdb_bank_noise(id: str, seed: int, n: int) -> str:
 
 @mcp.tool()
 def dagdb_bank_bench(id: str, M: int, reps: int) -> str:
-    """Read-only: GENERATE throughput benchmark (spec 8 gate G6, printed,
-    not gated) — best of `reps` timed calls to generate M columns, after
+    """Read-only: GENERATE throughput benchmark (printed,
+    not checked) — best of `reps` timed calls to generate M columns, after
     one untimed warm-up call. M clamped to [1, 100000], reps to [1, 20].
 
     Returns: "OK BANK BENCH id=<id> M=<M> reps=<reps> best_ms=<f>
@@ -1460,7 +1668,7 @@ def dagdb_bank_info(id: str) -> str:
     return query_daemon(f"BANK INFO {id}")
 
 # --------------------------------------------------------------------
-# FOLD (gate F4, docs/contracts/FOLD_API_GATES_FROZEN.md) — the tier-ladder
+# FOLD — the tier-ladder
 # fold (Kron/Schur elimination of a rank ring at a time, operator stored to
 # Float32 between folds, solves in Float64) over the daemon's CURRENT
 # fabric lanes. No registry, no id, no WAL — the handler keeps only the
@@ -1557,8 +1765,7 @@ def dagdb_fold_info() -> str:
     return query_daemon("FOLD INFO")
 
 # --------------------------------------------------------------------
-# Tiled — steps one (gate T5, docs/contracts/TILING_GATES_FROZEN.md) AND
-# two (ticking across tiles, docs/contracts/TICKING_GATES_FROZEN.md).
+# Tiled — steps one (cross-tile queries) AND two (ticking across tiles).
 # Cross-tile query routers over tile directories split from the daemon's
 # CURRENT engine by rank range. Deliberately NOT a twin registry: a router
 # is never persisted, never WAL-logged, never part of a snapshot — the
@@ -1572,8 +1779,7 @@ def dagdb_fold_info() -> str:
 # instead. Ticking (TILED TICK) is now built — durable per-tile flush,
 # BEGIN/COMMIT each round, crash recovery and partial-round completion at
 # open. Remaining, not yet built: the pre-fetch thread (optional — changes
-# no result if added), the cold tier, thermal pauses, the 10^11 run
-# (docs/contracts/TICKING_GATES_FROZEN.md's "Not promised" list).
+# no result if added), the cold tier, thermal pauses, the 10^11 run.
 # --------------------------------------------------------------------
 
 @mcp.tool()
@@ -1628,7 +1834,7 @@ def dagdb_tiled_bfs(id: str, global_id: int, depth: int, back: bool = False) -> 
         id: router id from `dagdb_tiled_open`.
         global_id: the packed GlobalNodeID (raw u64: tile in the high 24
             bits, local node id in the low 40) — NOT a plain engine index.
-        depth: 0...12 (§6.1's cap; use `dagdb_tiled_select` for wider
+        depth: 0...12 (the router's cap; use `dagdb_tiled_select` for wider
             rank-range sweeps instead of a deep BFS).
         back: True for backward-only (inputs) expansion, matching
             ANCESTRY/BFS_DEPTHS BACKWARD's convention.

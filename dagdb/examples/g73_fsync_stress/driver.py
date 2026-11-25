@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""G73 fsync/durability kill-9 stress probe.
+"""fsync/durability kill-9 stress probe.
 
 Runs a SCRATCH DagDB daemon on its OWN unix socket (never the prod
 /tmp/dagdb.sock), drives a ~1k ops/s SET-TRUTH write loop under the
@@ -67,9 +67,10 @@ def start_daemon(sockpath, walpath, dataroot):
     env["DAGDB_WAL_FSYNC"] = f"grouped:{GROUP_N}:{GROUP_MS}"
     env["DAGDB_DATA_ROOT"] = dataroot          # legacy path guard; NOT prod
     env.pop("DAGDB_ENV", None)                 # keep grouped policy in effect
+    # --shm is refused by name; the result-row file is --shm-file (required), beside the WAL.
     proc = subprocess.Popen(
-        [DAEMON, "--grid", str(GRID), "--socket", sockpath, "--shm",
-         "/dagdb_g73_" + str(os.getpid())],
+        [DAEMON, "--grid", str(GRID), "--socket", sockpath, "--shm-file",
+         os.path.join(os.path.dirname(walpath), "dagdb_g73_shm_" + str(os.getpid()))],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return proc
 

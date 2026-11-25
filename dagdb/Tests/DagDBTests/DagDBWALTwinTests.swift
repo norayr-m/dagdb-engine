@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — WAL opcodes 0x20–0x2B for twin registry ops: `TwinWALCodec`
+/// WAL opcodes 0x20–0x2B for twin registry ops: `TwinWALCodec`
 /// encode/decode and `DagDBWAL.replay(twin:)`. Fixtures reused verbatim
 /// from `TwinRegistryTests` (itself reused from `TwinCodableStreamTests` /
 /// `TwinCodableClockRingsTests` / `AlarmFixtureTests`).
@@ -204,7 +204,7 @@ final class DagDBWALTwinTests: XCTestCase {
         XCTAssertEqual(fresh.views.get("v00000001")?.ref.path, "/fake/cortex_v4_world.npz")
     }
 
-    // MARK: - kernelLoad codec round trip (gates K3/K4)
+    // MARK: - kernelLoad codec round trip
 
     func testKernelLoadCodecRoundTripWithOptionals() throws {
         let op = TwinOp.kernelLoad(
@@ -231,7 +231,7 @@ final class DagDBWALTwinTests: XCTestCase {
 
     func testKernelLoadCodecRoundTripWithSomeOptionals() throws {
         // A mix: declaredWarmup only, no TAU/SIGMA — the "WARMUP n given,
-        // no TAU/SIGMA" load shape (K4: derived=0).
+        // no TAU/SIGMA" load shape (no derived warmup: derived=0).
         let op = TwinOp.kernelLoad(
             id: "k00000003", path: "/x.json", sha256: "deadbeef",
             tauA: nil, tauB: nil, sigmaSource: nil, declaredWarmup: 42
@@ -399,7 +399,7 @@ final class DagDBWALTwinTests: XCTestCase {
         XCTAssertNotNil(twin.streams.get("s00000002"), "post-checkpoint op must replay")
     }
 
-    // MARK: - hookOpen/hookStep codec round trip (HOOK_GATES_FROZEN.md, H3)
+    // MARK: - hookOpen/hookStep codec round trip
 
     func testHookOpsCodecRoundTrip() throws {
         let withBoth = TwinOp.hookOpen(

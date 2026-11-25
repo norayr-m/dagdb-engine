@@ -124,7 +124,7 @@ Per node today, DagDB tracks:
 | `lut6Low/High` (u32×2) | 8 | Read every tick (gate eval) | **Hot** — resident |
 | `neighbors` (i32 × 6) | 24 | Read every tick | **Hot** — resident |
 | `edgeWeights` (f32 × 6) | 24 | Weighted mode only | Cold unless weighted |
-| Secondary index | varies | Rare (SELECT / hive queries) | Cold, page on demand |
+| Secondary index | varies | Rare (SELECT / ancestry queries) | Cold, page on demand |
 
 Hot footprint per node: ~42 B (rank + truth + LUT + neighbors).
 UMA ceiling 128 GB → ~3 × 10⁹ nodes can be hot *simultaneously*.
@@ -152,8 +152,7 @@ Each tile lives on disk as a directory:
 
 ### 4.1 `body.dags` layout
 
-> **AMENDMENT (docs/contracts/TILING_GATES_FROZEN.md, "Prior work
-> (frozen)" paragraph, 2026-09-10).** `body.dags` is the CURRENT
+> **Update (2026-09-10).** `body.dags` is the CURRENT
 > `DagDBSnapshot` format at whatever version the running daemon
 > writes (v7 as of 2026-09-10: lanes + the twin section, a superset of
 > the v3 body below) — NOT a format frozen at v3. A tile is written
@@ -163,19 +162,17 @@ Each tile lives on disk as a directory:
 > written, kept for illustration, not a version pin. Likewise,
 > `meta.json`/`manifest.json` (§4.3) use the scaffold's Codable
 > camelCase keys (`rankLo`, `crossingsOut`, …), not this section's
-> earlier snake_case examples — the scaffold's Codable is the letter,
-> this spec's key names are a shape. The rest of this section (byte
+> earlier snake_case examples — the scaffold's Codable keys are the ones
+> written; this spec's key names only show the shape. The rest of this section (byte
 > layout, tile-local IDs, the `-2` cross-tile sentinel) is unchanged.
 
-> **AMENDMENT (docs/contracts/TICKING_GATES_FROZEN.md, step two,
-> 2026-09-10).** A ticked tile's `body.dags` — and its manifest entry's
-> `bodySHA256`/`tickEpoch` — changes every world tick; see that
-> contract's mechanism letter and amendment 1 for the write-time
-> ordering (BEGIN, body, halo strip, meta, manifest entry, COMMIT) this
-> section's static description doesn't cover.
+> **Update (ticking, step two, 2026-09-10).** A ticked tile's `body.dags` — and its manifest entry's
+> `bodySHA256`/`tickEpoch` — changes every world tick. The write-time
+> ordering is BEGIN, body, halo strip, meta, manifest entry, COMMIT;
+> this section's static description doesn't cover it (see §7.2).
 
 Unchanged from the current `DagDBSnapshot` v3 format at the time this
-spec was written (see the amendment above for what "current" means
+spec was written (see the 2026-09-10 update above for what "current" means
 today):
 
 ```
@@ -224,8 +221,7 @@ doesn't match the router's current epoch. The router refuses
 to tick tile A against a halo_lower/halo_upper whose
 `tick_epoch` is older than A's own last-ticked epoch.
 
-> **AMENDMENT (subsystems bounds, audit C findings 1 and 14,
-> 2026-09-12).** Two corrections to this strip.
+> **Update (bounds pass, 2026-09-12).** Two corrections to this strip.
 >
 > - **The version is now refused, not ignored.** Version 1 is the only
 >   version of THIS format; the reader used to parse any version with
@@ -271,7 +267,7 @@ offset  bytes  field
                           + u8 type + 5 pad
 ```
 
-**Which byte a reader takes** (ticking gates, AMENDMENT 8). One
+**Which byte a reader takes.** One
 file serves two readers, and before v2 they contradicted each
 other on its single byte:
 
@@ -335,8 +331,7 @@ foreign tiles". `crossings_in` is the symmetric "here's who
 expects my halo strips". Both are sorted by (foreign_tile_id,
 foreign_local_id) for binary-search lookup at hot path.
 
-> **AMENDMENT (subsystems bounds, audit C findings 2, 4-7 and 12,
-> 2026-09-12) — three counts, one truth.** A tile's node count is
+> **Update (bounds pass, 2026-09-12) — three counts, one truth.** A tile's node count is
 > written in three independent places: the manifest entry's
 > `nodeCount`, `meta.json`'s `node_count_local`, and `body.dags`'s own
 > 32-bit header field. Nothing compared them: the tile-local engine
@@ -670,9 +665,8 @@ propagation (the one that was mid-flush). Recover by
 re-running the interrupted tile tick; rank monotonicity
 guarantees no duplicate state.
 
-> **AMENDMENT (docs/contracts/TICKING_GATES_FROZEN.md, step two,
-> amendments 1–3, 2026-09-10).** Built as described above, with three
-> refinements the contract makes exact: the `TILE_FLUSH_BEGIN` record
+> **Update (ticking, step two, 2026-09-10).** Built as described above, with three
+> refinements: the `TILE_FLUSH_BEGIN` record
 > carries the mode as a third field (`<tile_id> <epoch> <rank|sync>`),
 > so recovery needs nothing outside the tile directory; the tile-epoch
 > authority is the MANIFEST's per-tile `tickEpoch` (not a single
@@ -685,7 +679,7 @@ guarantees no duplicate state.
 > flush and then completing that partial round before it will answer
 > a query, a reader refusing to open at all over a torn world.
 >
-> **AMENDMENT 4 (same contract, letter 1, 2026-09-11).** `SAVE TILED`
+> **Update (2026-09-11).** `SAVE TILED`
 > writes ONE epoch everywhere — the saved tick count `k` goes on the
 > manifest entry, `meta.json`, the `body.dags` header AND both parity
 > strips (parity `k mod 2` at `k`; the other parity carries the same
@@ -694,7 +688,7 @@ guarantees no duplicate state.
 > once, instead of refusing `haloStale` over a `k − 1` strip that was
 > never written.
 >
-> **AMENDMENT 8 (same contract, 2026-09-11).** A parity strip entry
+> **Update (2026-09-11).** A parity strip entry
 > carries TWO truth bytes, `truth_pre` and `truth_post` (§4.2.1), and
 > the strip format version is 2. One file serves a rank-mode reader at
 > `k` (which wants a register's pre-latch value) and a sync-mode reader
@@ -708,7 +702,7 @@ guarantees no duplicate state.
 > previous-parity strip. An independent parser must read both bytes and
 > take the one its own mode calls for.
 
-> **AMENDMENT (subsystems bounds, audit C findings 9-11, 2026-09-12).**
+> **Update (bounds pass, 2026-09-12).**
 > Three corrections to the per-tile WAL and the epoch it carries.
 >
 > - **A torn `flush.wal` is torn, not clean.** The file is unfsynced
@@ -732,8 +726,20 @@ guarantees no duplicate state.
 >   load of the whole world. The flush now refuses by name, before the
 >   BEGIN record is appended, so a refused flush leaves the wal
 >   untouched. **Widening that header field to 64 bits is a
->   core-format letter for a later window**, recorded here rather than
+>   core-format change left for later**, recorded here rather than
 >   done under a bounds pass.
+
+> **Update (2026-10-23).** A torn LAST record —
+> no newline after it — is now recovered by a writer open, not
+> refused: each record is one `write(2)`, and the flush goes on only
+> after the append returns, so a record cut off mid-write is an
+> append that never started its step. The writer open reads the wal
+> without it, cuts it once its plan has passed, and recovers per the
+> records before it. Every other torn form (an unknown verb, a
+> three-field BEGIN, a BEGIN at epoch 0) and a torn last record seen
+> by a tile load outside a writer open are still refused by name. A
+> `flush.wal` that is present but unreadable is refused by name too
+> (it used to read as clean).
 
 **What we don't promise**: surviving simultaneous crashes of
 both the source and target tile of a halo. If tile A is
@@ -830,3 +836,5 @@ what the spec claimed. Numbers speak. Ego doesn't.
 
 If anything here turns out to be wrong when built, the spec
 itself is stale; the build is the source of truth.
+
+— `dag-2026-04-21-01`

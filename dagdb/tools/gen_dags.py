@@ -25,8 +25,20 @@ Format (matches DagDBSnapshot.swift):
 Graph shape: random ranked tree with ≤6 fan-in per aggregator.
 Leaves default to CONST1 (TRUTH=1). Aggregators default to MAJ.
 
+--v8 writes the v8 layout instead: the same 32-byte header with bodyBytes@28 =
+0xFFFFFFFF and a u64 body length after it; the body is rank[N] u64 · truth ·
+nodeType · lut6Low · lut6High · neighbors · mode[N] u8 · ttableId[N] u16 ·
+thrLo[N] f32 · thrHi[N] f32 (53 B/node); then the back-edge section (count
+0), the WGTS section (no lanes), the TERN section ("TERN" · u8 flags · u32
+table count · 729 B per table), the TWIN section (empty) and the ENVS
+trailer (unspecified).
+--ternary (implies --v8) makes every aggregator a TTABLE node reading table
+0 = TSUM over six slots (the sign of the sum of its input trits); leaves stay
+binary CONST1, which ternary readers read as +1.
+
 Usage:
   ./gen_dags.py --grid 4096 --nodes 10000000 --out /tmp/big.dags
+  ./gen_dags.py --grid 64 --nodes 2000 --ternary --out graph_v8.dags
 """
 
 import argparse
@@ -154,12 +166,74 @@ def write_dags(path: str, grid_w: int, grid_h: int, node_cap: int, g: dict):
     return size, elapsed
 
 
+def tsum6_table():
+    """Table bytes of TSUM over six slots: index = Σ 3^d (t_d + 1)."""
+    out = np.empty(729, dtype=np.uint8)
+    for i in range(729):
+        v, s = i, 0
+        for _ in range(6):
+            s += v % 3 - 1
+            v //= 3
+        out[i] = 1 if s > 0 else (0 if s < 0 else 2)   # +1 → 1, −1 → 0, 0 → 2
+    return out
+
+
+def write_dags_v8(path: str, grid_w: int, grid_h: int, node_cap: int, g: dict, ternary: bool):
+    n = node_cap
+    if g["n_total"] > n:
+        raise ValueError(f"graph has {g['n_total']} nodes > capacity {n}")
+
+    def pad(arr, size, dtype, fill=0):
+        out = np.full(size, fill, dtype=dtype)
+        out[:arr.shape[0]] = arr
+        return out
+
+    rank = pad(g["rank"].astype(np.uint64), n, np.uint64)
+    truth = pad(g["truth"], n, np.uint8)
+    nodeType = pad(g["nodeType"], n, np.uint8)
+    lut_low = pad(g["lut_low"], n, np.uint32)
+    lut_high = pad(g["lut_high"], n, np.uint32)
+    neighbors = np.full(n * 6, -1, dtype=np.int32)
+    neighbors[:g["neighbors"].shape[0]] = g["neighbors"]
+    mode = np.zeros(n, dtype=np.uint8)
+    ttable_id = np.zeros(n, dtype=np.uint16)
+    thr = np.zeros(n, dtype=np.float32)
+    library = np.zeros(0, dtype=np.uint8)
+    if ternary:
+        aggregators = np.arange(g["offsets"][1], g["n_total"])
+        mode[aggregators] = 1          # TTABLE
+        library = tsum6_table()
+        truth[aggregators] = 2         # start at 0 (UNDEFINED), a legal ternary byte
+
+    body = b"".join(a.astype(a.dtype.newbyteorder("<")).tobytes() for a in
+                    (rank, truth, nodeType, lut_low, lut_high, neighbors, mode, ttable_id, thr, thr))
+    assert len(body) == 53 * n
+    t0 = time.time()
+    with open(path, "wb") as f:
+        f.write(MAGIC)
+        f.write(struct.pack("<IIIIIII", 8, n, grid_w, grid_h, 0, 0, 0xFFFFFFFF))
+        f.write(struct.pack("<Q", len(body)))
+        f.write(body)
+        f.write(struct.pack("<I", 0))                       # back edges: none
+        f.write(b"WGTS" + bytes([0]))                       # no weight lanes
+        count = len(library) // 729
+        f.write(b"TERN" + bytes([1 if count else 0]) + struct.pack("<I", count))
+        f.write(library.tobytes())
+        f.write(b"TWIN" + struct.pack("<I", 0))             # no twin state
+        f.write(b"ENVS" + bytes([0]))                       # env unspecified
+    elapsed = time.time() - t0
+    return Path(path).stat().st_size, elapsed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--grid", type=int, default=4096, help="grid dimension (NxN)")
     ap.add_argument("--nodes", type=int, default=10_000_000, help="number of leaf nodes")
     ap.add_argument("--fanout", type=int, default=6)
     ap.add_argument("--out", default="/tmp/big.dags")
+    ap.add_argument("--v8", action="store_true", help="write the v8 layout (ternary contract)")
+    ap.add_argument("--ternary", action="store_true",
+                    help="v8 with every aggregator a TTABLE node (TSUM over six slots)")
     args = ap.parse_args()
 
     node_cap = args.grid * args.grid
@@ -172,7 +246,10 @@ def main():
     print(f"  Graph: {g['n_total']:,} total nodes across {g['max_rank']+1} ranks (built in {t_build:.2f}s)")
     print(f"  Rank sizes: {[g['offsets'][i+1] - g['offsets'][i] for i in range(g['max_rank']+1)]}")
 
-    size, elapsed = write_dags(args.out, args.grid, args.grid, node_cap, g)
+    if args.v8 or args.ternary:
+        size, elapsed = write_dags_v8(args.out, args.grid, args.grid, node_cap, g, args.ternary)
+    else:
+        size, elapsed = write_dags(args.out, args.grid, args.grid, node_cap, g)
     print(f"  Wrote {size:,} bytes ({size/1e6:.1f} MB) in {elapsed:.2f}s to {args.out}")
     print(f"  Throughput: {size / elapsed / 1e6:.0f} MB/s")
 

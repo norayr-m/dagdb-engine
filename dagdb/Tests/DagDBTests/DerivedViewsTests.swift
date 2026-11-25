@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// Alarm-set derived views — gates from `docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md`.
+/// Alarm-set derived views.
 /// Synthetic tests exercise the pure math without the sealed fixture; sealed
 /// tests replay `cortex_v4_world.npz` against the frozen pins — skip
 /// (XCTSkip) when `DAGDB_CORTEX_V4_FIXTURE` is unset, FAIL (never skip) if
@@ -99,7 +99,7 @@ final class DerivedViewsTests: XCTestCase {
             XCTAssertEqual(summary.tieMax, DerivedViewsTests.v3TieMax[i], "V3 tieMax at S=\(S)")
             XCTAssertEqual(summary.framesWithTie, DerivedViewsTests.v3FramesWithTie[i], "V3 framesWithTie at S=\(S)")
 
-            // Audit C finding 42's receipt on the SEALED fixture: a failed
+            // On the SEALED fixture: a failed
             // least-squares fit is now skipped and counted instead of being
             // scored from a fabricated (alpha, beta) = (0, 0). Nothing is
             // skipped here, which is why none of the literals above can
@@ -124,7 +124,7 @@ final class DerivedViewsTests: XCTestCase {
             XCTAssertNil(rung.refusal, "V4 rung refusal at S=\(S)")
         }
 
-        // Finding 41: the same call one station past the fixture's own
+        // The same call one station past the fixture's own
         // count is refused by name rather than reading into the next
         // candidate's row.
         XCTAssertNotNil(views.reflexSummary(stations: fixture.stations + 1).refusal)

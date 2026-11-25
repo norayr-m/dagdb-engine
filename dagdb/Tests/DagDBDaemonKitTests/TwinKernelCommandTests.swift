@@ -4,10 +4,9 @@ import XCTest
 
 /// Per-path kernel storage and the sealed cross-convolution residual over
 /// the socket — daemon-level tests for KERNEL LOAD/INFO/LIST/CLOSE and
-/// XCONV SEALED (DagDBCommandHandler+TwinKernel.swift). Gate contract:
-/// docs/contracts/KERNELS_GATES_FROZEN.md, gates K3 and K4.
+/// XCONV SEALED (DagDBCommandHandler+TwinKernel.swift).
 ///
-/// Unlike VIEW (which gates on an out-of-repo sealed npz), the kernels
+/// Unlike VIEW (which needs an out-of-repo sealed npz), the kernels
 /// fixture itself (`Tests/Fixtures/w1_kernels.json`, 144,554 bytes) is
 /// IN-REPO and always available — every LOAD/INFO/LIST/CLOSE/replay/
 /// snapshot test below runs unconditionally, sha-checked. Only the two
@@ -47,7 +46,7 @@ final class TwinKernelCommandTests: XCTestCase {
 
     /// Writes little-endian Float64s into shm at `byteOffset` — the input
     /// half of `XCONV SEALED`'s shm layout (rowSize 8), the mirror of
-    /// `readFloatVectorOut` in the sibling command-test files.
+    /// `readFloatVectorOut` in the other command-test files.
     private func writeDoublesIn(_ f: HandlerFixture, _ values: [Double], at byteOffset: Int) {
         let ptr = f.shm.advanced(by: byteOffset).bindMemory(to: Double.self, capacity: max(1, values.count))
         for (i, v) in values.enumerated() { ptr[i] = v }
@@ -103,7 +102,8 @@ final class TwinKernelCommandTests: XCTestCase {
         XCTAssertTrue(sealedNoWarmup.hasPrefix("ERROR bad_value"), sealedNoWarmup)
 
         let sealedWithWarmup = f.handler.handle("XCONV SEALED k00000001 2048 185")
-        XCTAssertTrue(sealedWithWarmup.hasPrefix("OK XCONV SEALED"), sealedWithWarmup)
+        XCTAssertEqual(sealedWithWarmup, "ERROR stale_frame: XCONV SEALED reads a client frame; the shm header is (0, 0), not (4096, 0x314D480B): "
+            + "write [u32 count][u32 0x314D480B] at bytes 0..7, then the payload at 8; nothing written")
     }
 
     // MARK: - XCONV SEALED matches the library directly (a == b synthetic)
@@ -116,6 +116,7 @@ final class TwinKernelCommandTests: XCTestCase {
         let a = pair.kA
         writeDoublesIn(f, a, at: 8)
         writeDoublesIn(f, a, at: 8 + a.count * 8)
+        shm1Header(f.shm, count: 2 * a.count, verb: .xconvSealed)
 
         let reply = f.handler.handle("XCONV SEALED k00000001 2048 185")
         let expected = SealedCrossConvolution.residual(a: a, b: a, pair: pair, warmup: 185)
@@ -142,7 +143,7 @@ final class TwinKernelCommandTests: XCTestCase {
     }
 
     /// The subject is the `warmup < n` guard. The numbers are 100/100 rather
-    /// than 2048/2048 because post-merge follow-up F5 put
+    /// than 2048/2048 because a later fix put
     /// `KernelPair.checkedWarmup` ahead of this guard: a warmup of 2048 is
     /// also at the kernels file's own `window_samples`, so that input is now
     /// refused one step earlier (`ERROR bad_value: XCONV SEALED refused: …`,
@@ -168,7 +169,7 @@ final class TwinKernelCommandTests: XCTestCase {
         loadKernel(f)
         let info = f.handler.handle("KERNEL INFO k00000001")
         XCTAssertTrue(info.contains("id=k00000001"), info)
-        XCTAssertTrue(info.contains("path=\(Self.kernelsPath)"), info)
+        XCTAssertTrue(info.contains("path=\"\(Self.kernelsPath)\""), info)
         XCTAssertTrue(info.contains("sha256=\(Self.kernelsSHA)"), info)
         XCTAssertTrue(info.contains("taps=2048"), info)
         XCTAssertTrue(info.contains("fs=3000"), info)
@@ -221,6 +222,7 @@ final class TwinKernelCommandTests: XCTestCase {
         let (pair, _) = try KernelPair.load(path: Self.kernelsPath, expectedSHA256: Self.kernelsSHA)
         writeDoublesIn(f, pair.kA, at: 8)
         writeDoublesIn(f, pair.kA, at: 8 + pair.kA.count * 8)
+        shm1Header(f.shm, count: 2 * pair.kA.count, verb: .xconvSealed)
         let rid = try openReaderId(f)
 
         let sealedReply = f.handler.handle("READER \(rid) XCONV SEALED k00000001 2048 185")
@@ -343,6 +345,7 @@ final class TwinKernelCommandTests: XCTestCase {
         let (pair, _) = try KernelPair.load(path: Self.kernelsPath, expectedSHA256: Self.kernelsSHA)
         writeDoublesIn(f, trial.a, at: 8)
         writeDoublesIn(f, trial.b, at: 8 + trial.a.count * 8)
+        shm1Header(f.shm, count: 2 * trial.a.count, verb: .xconvSealed)
 
         let reply = f.handler.handle("XCONV SEALED k00000001 \(trial.a.count) 185")
         let expected = SealedCrossConvolution.residual(a: trial.a, b: trial.b, pair: pair, warmup: 185)
@@ -362,9 +365,9 @@ final class TwinKernelCommandTests: XCTestCase {
         try assertXConvSealedMatchesLibrary(trial: trial)
     }
 
-    // MARK: - D3 · wire arithmetic cannot trap
+    // MARK: - Wire arithmetic cannot trap
 
-    /// Audit finding 23 — `XCONV SEALED`'s `inputBytes = 8 + 2 * n * 8` is
+    /// `XCONV SEALED`'s `inputBytes = 8 + 2 * n * 8` is
     /// computed from an unbounded signed `Int` straight off the wire, and
     /// Swift TRAPS on `Int` overflow, so the capacity guard right behind it
     /// never got the chance to refuse.

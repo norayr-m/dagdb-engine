@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — CorruptionModel / SuccessorCourt, no fixture needed. Numbers
+/// CorruptionModel / SuccessorCourt, no fixture needed. Numbers
 /// copied verbatim from `docs/contracts/INTERFACE_PHASE_GATES_FROZEN.md`'s sealed
 /// gate-2 table and cross-checked against
 /// `market/build_pregate_successor.py`'s own enumeration.
@@ -140,7 +140,7 @@ final class CorruptionModelTests: XCTestCase {
         }
     }
 
-    // MARK: - Gate-2 dyadic preview (point 0 only; T4 tests the whole table)
+    // MARK: - Gate-2 dyadic preview (point 0 only; `SealedGateTests` tests the whole table)
 
     func testGate2DyadicPreviewPoint0() throws {
         let B0 = SealedCourt.budgetGrid[0].budget

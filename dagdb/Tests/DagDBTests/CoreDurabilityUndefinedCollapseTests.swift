@@ -1,13 +1,13 @@
 import XCTest
 @testable import DagDB
 
-/// C12(ii) · audit finding 20 — the UNDEFINED collapse, TESTED.
+/// The UNDEFINED collapse, TESTED.
 ///
 /// `eval_lut6` returns one bit, so a node holding `TRUTH_UNDEFINED` (2) is
 /// written back as FALSE (0) by the next tick, in rank mode and in sync mode
-/// alike. The core-durability contract rules tri-valued evaluation out of
-/// scope and calls the collapse "the kernel's semantics, DOCUMENTED". The
-/// audit's own gate asks for "preservation or a documented, TESTED collapse"
+/// alike. The core-durability checks put tri-valued evaluation out of
+/// scope and call the collapse "the kernel's semantics, DOCUMENTED". The
+/// internal audit of the engine core asked for "preservation or a documented, TESTED collapse"
 /// — the documentation existed and nothing checked it. This checks it, so
 /// the doc is verified rather than trusted, and the day someone makes the
 /// kernel tri-valued this test is what tells them the doc must change too.

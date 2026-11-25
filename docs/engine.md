@@ -1,7 +1,7 @@
 # DagDB 4-Cycle Runtime Engine
 
 > **Humble disclaimer.** Amateur engineering project. Research prototype.
-> The numbers here come from a single machine and a single family of runs, with no controlled benchmark: reproduce them with the script in this repository rather than taking them on trust. Numbers
+> We are not HPC professionals and make no competitive claims. Numbers
 > speak. Errors likely.
 
 A forward-only runtime that executes "thoughts" on a DagDB substrate.

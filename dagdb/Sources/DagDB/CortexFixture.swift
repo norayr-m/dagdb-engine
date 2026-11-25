@@ -1,10 +1,8 @@
 import Foundation
 
 /// Loader for the sealed cortex v4 world fixture (`cortex_v4_world.npz`) —
-/// derived-views spec line 4, second view family. By-reference, out of
+/// the second family of derived views. By-reference, out of
 /// repo, SHA-pinned; read only from `DAGDB_CORTEX_V4_FIXTURE`.
-/// Contract: `docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md`, prior-work
-/// paragraph and rulings (a) and (c).
 public struct CortexFixture {
     public static let envVar = "DAGDB_CORTEX_V4_FIXTURE"
     public static let sealedSHA256 =
@@ -69,18 +67,20 @@ public struct CortexFixture {
         case badLayout(String)
     }
 
-    /// Audit C finding 23 (ruling: "the sha pin defaults to the sealed
-    /// constant"): `expectedSHA256` now DEFAULTS to `sealedSHA256`, so a
+    /// The sha pin defaults to the sealed constant: `expectedSHA256`
+    /// DEFAULTS to `sealedSHA256`, so a
     /// caller who says nothing gets the pin the type's own doc promises.
     /// Passing `nil` is an explicit opt-out and prints
     /// `WARN unpinned fixture` once per process.
     private static var warnedUnpinned = false
 
-    public static func load(path: String, expectedSHA256: String? = sealedSHA256) throws -> CortexFixture {
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw FixtureError.fileNotFound(path)
-        }
-        let fileData = try Data(contentsOf: URL(fileURLWithPath: path))
+    /// Read once through `DaemonFile` (see AlarmFixture.load); the SHA pin is checked on this copy and the
+    /// NPZ decoded from the same copy, so the file is not read a second time for the decode.
+    public static func load(path: String, expectedSHA256: String? = sealedSHA256,
+                            admit: ((Int) -> String?)? = nil) throws -> CortexFixture {
+        let fileData: Data
+        do { fileData = try DaemonFile.read(path, admit: admit) }
+        catch DaemonFile.Refusal.missing { throw FixtureError.fileNotFound(path) }
         let actualSHA = DagDBSnapshot.sha256Hex(fileData)
         if let expected = expectedSHA256 {
             if expected != actualSHA {
@@ -95,14 +95,14 @@ public struct CortexFixture {
 
         let entries: [String: NpzReader.Entry]
         do {
-            entries = try NpzReader.entries(path: path)
+            entries = try NpzReader.entries(data: fileData)
         } catch {
-            throw FixtureError.badLayout("npz read failed: \(error)")
+            throw FixtureError.badLayout("npz read failed: \(Reply.errorWords(error))")
         }
 
         func entry(_ name: String) throws -> NpzReader.Entry {
             guard let e = entries[name] else {
-                throw FixtureError.badLayout("missing key '\(name)'")
+                throw FixtureError.badLayout("missing key \(Reply.quoted(name))")
             }
             return e
         }
@@ -115,17 +115,17 @@ public struct CortexFixture {
 
         func f32(_ e: NpzReader.Entry, _ label: String) throws -> [Float] {
             do { return try NpzReader.float32(e) } catch {
-                throw FixtureError.badLayout("\(label): \(error)")
+                throw FixtureError.badLayout("\(label): \(Reply.errorWords(error))")
             }
         }
         func f64(_ e: NpzReader.Entry, _ label: String) throws -> [Double] {
             do { return try NpzReader.float64(e) } catch {
-                throw FixtureError.badLayout("\(label): \(error)")
+                throw FixtureError.badLayout("\(label): \(Reply.errorWords(error))")
             }
         }
         func i64(_ e: NpzReader.Entry, _ label: String) throws -> [Int64] {
             do { return try NpzReader.int64(e) } catch {
-                throw FixtureError.badLayout("\(label): \(error)")
+                throw FixtureError.badLayout("\(label): \(Reply.errorWords(error))")
             }
         }
 

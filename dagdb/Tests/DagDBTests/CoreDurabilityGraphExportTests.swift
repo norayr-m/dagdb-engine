@@ -1,14 +1,14 @@
 import XCTest
 @testable import DagDB
 
-/// C9 · `exportNeighborTable` refuses a node with more than six edges by
-/// name — `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// `exportNeighborTable` refuses a node with more than six edges by
+/// name.
 final class CoreDurabilityGraphExportTests: XCTestCase {
 
     /// `connect` guards the six-slot bound and `validate` reports it, but the
     /// exporter — the path the engine's convenience init actually uses, and
     /// which never calls `validate` — wrote `nb[idx * 6 + dir]` for every
-    /// entry and spilled into the next node's slots (audit A, finding 44).
+    /// entry and spilled into the next node's slots.
     func testExportNeighborTableRefusesASeventhEdge() throws {
         let g = DagDBGraph()
         for k in 0..<8 {

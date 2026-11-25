@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — CortexFixture loader over the derived-views cortex v4 world
+/// CortexFixture loader over the derived-views cortex v4 world
 /// fixture. Synthetic-fixture tests exercise the loader's structural
 /// asserts without the sealed file; sealed-fixture tests replay the real
 /// `cortex_v4_world.npz` and skip (XCTSkip) when `DAGDB_CORTEX_V4_FIXTURE`
@@ -31,7 +31,7 @@ final class CortexFixtureTests: XCTestCase {
     }
 
     /// Full key set, right shapes/dtypes everywhere except M = 8
-    /// (2 classes x 4) where the sealed contract fixes 129*54 = 6966.
+    /// (2 classes x 4) where the sealed fixture holds 129*54 = 6966.
     private func writeSyntheticFixture(trainCount: Int = 8, named name: String = "mini.npz") throws -> String {
         let path = tmpDir + name
         let code = """

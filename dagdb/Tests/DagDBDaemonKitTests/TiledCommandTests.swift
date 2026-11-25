@@ -2,8 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// Handler-level + DSL-grammar tests for the TILED verb family (gate T5,
-/// docs/contracts/TILING_GATES_FROZEN.md). Every numeric expectation
+/// Handler-level + DSL-grammar tests for the TILED verb family. Every numeric expectation
 /// (tile/node/crossing counts, BFS/SELECT results) is computed
 /// independently against the library (`TiledGraphFiles`, `DagDBBFS`,
 /// `TruthRankIndex`) from the SAME fixture engine content, never
@@ -64,7 +63,7 @@ final class TiledCommandTests: XCTestCase {
         )
         XCTAssertEqual(
             saveReply,
-            "OK SAVE TILED dir=\(graphDir) tiles=\(report.tiles) nodes=\(report.nodes) crossings=\(report.crossings)",
+            "OK SAVE TILED dir=\"\(graphDir)\" tiles=\(report.tiles) nodes=\(report.nodes) crossings=\(report.crossings)",
             "handler's SAVE TILED summary must match the library's own WriteReport"
         )
         return Built(fixture: f, root: root, graphDir: graphDir, report: report)
@@ -252,7 +251,7 @@ final class TiledCommandTests: XCTestCase {
         }
     }
 
-    // MARK: - T4: torn tile body refused, recorded in STATUS
+    // MARK: - Torn tile body refused, recorded in STATUS
 
     func testTornTileBodyIsRefusedAndRecordedInStatus() throws {
         let built = try buildSide44()
@@ -261,7 +260,7 @@ final class TiledCommandTests: XCTestCase {
 
         // Find a seed + depth that the UNTILED engine's own BFS proves
         // crosses into tile 1 (rather than assuming one — boundaries have
-        // guaranteed crossings per the gate contract, but the exact depth
+        // guaranteed crossings, but the exact depth
         // needed depends on the random draw).
         let seedEngineIndex = TiledFixture.seeds(for: try TiledFixture.generate(side: 44))[0]
         let bfsResult = try DagDBBFS.bfsDepthsUndirected(
@@ -337,11 +336,11 @@ final class TiledCommandTests: XCTestCase {
         XCTAssertTrue(h.handle("READER \(rid) TILED TICK x00000001 1").hasPrefix("ERROR forbidden"))
     }
 
-    /// D5/D9 · the check above could not fail on finding 19: it asserted
+    /// The check above could not fail here: it asserted
     /// only WHICH verbs return `OK` versus `ERROR forbidden`, never what a
     /// reader's query does to the router. `tickLoad`/`load` mutate
     /// `tickResident`/`tickLru` and increment `loadCount`/`evictCount` —
-    /// the very counters `TILED STATUS` reports. The ruling: tile residency
+    /// the very counters `TILED STATUS` reports. The decision: tile residency
     /// is a CACHE, not graph state, so the TILED queries stay reader-allowed
     /// and the counters are DOCUMENTED as router-wide. This test pins that
     /// documented behaviour, with the expectation derived from the primary's
@@ -479,7 +478,7 @@ final class TiledCommandTests: XCTestCase {
         }
     }
 
-    // MARK: - TILED TICK / TILED GET grammar (ticking gates W5)
+    // MARK: - TILED TICK / TILED GET grammar
 
     func testParseTiledTickDefaults() {
         guard case .tiledTick(let id, let n, let sync) = DSLParser.parse("TILED TICK x00000001") else {
@@ -555,10 +554,10 @@ final class TiledCommandTests: XCTestCase {
         }
     }
 
-    // MARK: - W5: daemon ticks vs TILED ticks
+    // MARK: - Daemon ticks vs TILED ticks
 
-    /// Small fixed-seed RNG (seed 1) for the 64-node sample the W5 gate
-    /// asks for — deterministic across runs, not the system RNG.
+    /// Small fixed-seed RNG (seed 1) for the 64-node sample the comparison
+    /// draws — deterministic across runs, not the system RNG.
     private struct SeededRNG: RandomNumberGenerator {
         private var state: UInt64
         init(seed: UInt64) { state = seed &+ 0x9E37_79B9_7F4A_7C15 }
@@ -678,9 +677,9 @@ final class TiledCommandTests: XCTestCase {
         XCTAssertEqual(routerTruth, h.engine.readTruthStates())
     }
 
-    // MARK: - AMENDMENT 4, letter 1: SAVE TILED writes ONE EPOCH everywhere
+    // MARK: - SAVE TILED writes ONE EPOCH everywhere
 
-    /// The four places the contract names, parsed in this test's own code
+    /// The four places that record the epoch, parsed in this test's own code
     /// (raw bytes for the body header and the strips, `Codable` only for
     /// the two JSON files) rather than through the writer that produced
     /// them.
@@ -702,7 +701,7 @@ final class TiledCommandTests: XCTestCase {
         return v
     }
 
-    /// One parity-strip entry's two truth bytes (AMENDMENT 8).
+    /// One parity-strip entry's two truth bytes.
     private struct StripValue: Equatable { let pre: UInt8; let post: UInt8 }
 
     /// `DAHA` v2 parity strip: magic(4) version(4)=2 kind(4) count(4)
@@ -747,7 +746,7 @@ final class TiledCommandTests: XCTestCase {
     /// `meta.json`, the `body.dags` header and BOTH parity strips carry
     /// ONE epoch: parity `k mod 2` at `k`, the other parity at `k − 1`
     /// with the SAME truth values (at rest the two differ only in their
-    /// recorded epoch). This is the state the blind verifier found
+    /// recorded epoch). This is the state an independent check found
     /// self-inconsistent — manifest 4, everything else 0 — which made
     /// sync's first world tick look for a `k − 1` strip that was never
     /// written.
@@ -778,7 +777,7 @@ final class TiledCommandTests: XCTestCase {
                     current.values, other.values,
                     "tile \(id): at rest both parity strips carry the same truths (saved \(k))"
                 )
-                // AMENDMENT 8: at rest there is no round and so no latch to
+                // At rest there is no round and so no latch to
                 // be before or after — both truth bytes of every entry in
                 // both parity strips carry the saved truth.
                 for (local, v) in current.values.sorted(by: { $0.key < $1.key }) {
@@ -799,13 +798,13 @@ final class TiledCommandTests: XCTestCase {
         }
     }
 
-    // MARK: - AMENDMENT 4, letter 2: the (mode × saved count × path) grid
+    // MARK: - The (mode × saved count × path) grid
 
     /// Eight cells, none by implication: {rank, sync} × {saved 0, saved 4}
     /// × {library `worldTick`, daemon `TILED TICK`}. Every cell's truth
     /// array is compared against `TiledReference` — the evaluator that
     /// never calls the engine — after the SAME number of ticks. The
-    /// (sync, saved 4, daemon) cell is the one the blind verifier found
+    /// (sync, saved 4, daemon) cell is the one an independent check found
     /// broken and had no test.
     private func runSavedCountGridCell(
         mode: TickMode, savedCount: Int, viaDaemon: Bool
@@ -893,13 +892,13 @@ final class TiledCommandTests: XCTestCase {
     func testW5GridSyncSaved0Daemon() async throws {
         try await runSavedCountGridCell(mode: .sync, savedCount: 0, viaDaemon: true)
     }
-    /// The cell the verifier found broken: `TILED TICK … SYNC` off a graph
+    /// The cell an independent check found broken: `TILED TICK … SYNC` off a graph
     /// `SAVE TILED` wrote from a non-zero daemon tick count.
     func testW5GridSyncSaved4Daemon() async throws {
         try await runSavedCountGridCell(mode: .sync, savedCount: 4, viaDaemon: true)
     }
 
-    // MARK: - W5: SAVE TILED refuses a cross-tile BACK_EDGE
+    // MARK: - SAVE TILED refuses a cross-tile BACK_EDGE
 
     func testW5SaveTiledRefusesCrossTileBackEdge() throws {
         let root = tempDir()
@@ -940,7 +939,7 @@ final class TiledCommandTests: XCTestCase {
         XCTAssertTrue(saveReply2.hasPrefix("OK SAVE TILED"), saveReply2)
     }
 
-    // MARK: - AMENDMENT 3 (D): TILED OPEN completes a partial round
+    // MARK: - TILED OPEN completes a partial round
 
     func testW5TiledOpenCompletesPartialRound() async throws {
         let built = try buildSide44()
@@ -1025,9 +1024,9 @@ final class TiledCommandTests: XCTestCase {
         }
     }
 
-    // MARK: - D2 · the tiled writers check the daemon's own shm
+    // MARK: - The tiled writers check the daemon's own shm
 
-    /// Audit finding 9 — the router's world size is `manifest.globalNodeCount`,
+    /// The router's world size is `manifest.globalNodeCount`,
     /// entirely independent of the `nodeCount` that sized the mapping. Only
     /// ~1.5x nodeCount BFS rows (16 B each) and ~3x nodeCount select ids
     /// (8 B each) fit, and neither writer checked.

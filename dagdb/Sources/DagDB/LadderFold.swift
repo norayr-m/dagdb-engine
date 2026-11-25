@@ -1,10 +1,9 @@
 import Foundation
 import Accelerate
 
-/// LadderFold — the E3 tier ladder (Kron/Schur fold of a rank ring into the
+/// LadderFold — the tier ladder (Kron/Schur fold of a rank ring into the
 /// kept set) promoted from the sealed runner (`E3Ladder/main.swift`, last
-/// arithmetic change 2026-08-26) to a library call, per
-/// docs/contracts/FOLD_API_GATES_FROZEN.md.
+/// arithmetic change 2026-08-26) to a library call.
 ///
 /// CONTROL / RE-DERIVATION: every loop, LAPACK call, Float32 store point,
 /// `Date()` timing point and checkpoint name below is moved verbatim from
@@ -13,12 +12,11 @@ import Accelerate
 /// `f1Node` -> `sources.f1`, etc).
 public enum LadderFold {
 
-    /// Audit C findings 36-39. `run` and `Object.init(engine:grid:)` are
+    /// `run` and `Object.init(engine:grid:)` are
     /// NON-throwing public entry points called from outside this file set,
     /// so the refusal travels two ways: as an appended `refusal` field on
     /// `Object`/`Result` together with a named `ERROR ladder_fold:` line on
-    /// stderr (the contract's general letter allows exactly that in place
-    /// of a throw), and as this thrown, typed error from `runChecked`, the
+    /// stderr in place of a throw, and as this thrown, typed error from `runChecked`, the
     /// door a library caller who wants a throw uses.
     public enum FoldError: Error, Equatable, CustomStringConvertible {
         case refused(String)
@@ -44,15 +42,14 @@ public enum LadderFold {
     // MARK: - Dense symmetric solve (moved verbatim from E3Ladder/main.swift)
 
     /// Library code fed by the engine's own lanes (written by
-    /// `Objects.control`/`Objects.court`, never by daemon/user input) — the
-    /// `precondition` on INFO is unchanged from the sealed runner, which
-    /// relied on the same guarantee (a well-posed symmetric system built
-    /// from the frozen court objects).
-    /// Audit C finding 38: the `precondition(INFO == 0)` here ABORTED the
-    /// process, and `run(object:schedule:sources:)` is public — a
-    /// caller-built `Object` with a singular operator could reach it, not
-    /// only the frozen court objects the header assumed. `nil` on a LAPACK
-    /// failure; the caller turns it into a named refusal.
+    /// `Objects.control`/`Objects.court`, never by daemon/user input). The
+    /// sealed runner relied on that guarantee (a well-posed symmetric system
+    /// built from the frozen court objects) and kept a `precondition(INFO == 0)`,
+    /// which here once ABORTED the process; but `run(object:schedule:sources:)`
+    /// is public — a caller-built `Object` with a singular operator could
+    /// reach it, not only the frozen court objects the header assumed. So
+    /// LAPACK's INFO is returned, and the caller turns a nonzero INFO into a
+    /// named refusal.
     static func solveSym(_ a: [Double], n: Int, rhs: [Double], nrhs: Int) -> (values: [Double], info: Int32) {
         var A = a  // column-major == row-major for symmetric
         var B = rhs
@@ -70,7 +67,7 @@ public enum LadderFold {
         public let adjacency: [[(j: Int, w: Double)]]
         public let rank: [Int]
         public let leak: Double
-        /// Appended field, audit C finding 39: non-nil iff reading the
+        /// Appended field: non-nil iff reading the
         /// engine's lanes produced a value this type cannot hold (a rank
         /// above `Int.max` in the UInt64 rank lane). `run` refuses such an
         /// object instead of folding a silently-wrong rank vector.
@@ -108,7 +105,7 @@ public enum LadderFold {
                 }
                 return row
             }
-            // Audit C finding 39: `Int(rkBack[...])` TRAPPED for any rank
+            // `Int(rkBack[...])` TRAPPED for any rank
             // above `Int.max` — in a PUBLIC initializer reading a lane the
             // caller controls. The conversion is exact-or-refuse now; the
             // refusal names the node and the raw value and travels with the
@@ -201,7 +198,7 @@ public enum LadderFold {
         public let foldedF3: [Float]
         public let tiers: [String: Tier]         // keys "19","15","11","7","final" exactly as the runner names them
         public let log: [Step]
-        /// Appended field, audit C findings 36-39: non-nil iff `run`
+        /// Appended field: non-nil iff `run`
         /// REFUSED — an object above its schedule, an out-of-range source
         /// index, a rank the fold cannot represent, or a singular operator.
         /// Every other field is then empty; `runChecked` throws instead.
@@ -222,11 +219,11 @@ public enum LadderFold {
         public var keptCount: Int { keptNodes.count }
         public var finalBytes: Int { keptNodes.count * keptNodes.count * 4 }
 
-        /// Audit C finding 40: `finalBytes` and `Tier.bytes` are FORMULAS
+        /// `finalBytes` and `Tier.bytes` are FORMULAS
         /// (k²·4, k²·4 + k·3·4) and nothing ever measured them against
         /// bytes actually written — so any test restating the formula is a
         /// check that cannot fail. These two hand back the real payloads
-        /// the price table prices, so the gate can stat a file instead.
+        /// the price table prices, so a test can stat a file instead.
         ///
         /// The final operator, row-major Float32 — exactly what the fabric
         /// stores and what `finalBytes` claims to cost.
@@ -259,9 +256,9 @@ public enum LadderFold {
             return out
         }
         public var totalWallMs: Double { log.reduce(0) { $0 + $1.wallMs } }
-        /// The price list, printed (contract F5): one line per fold
+        /// The price list, printed: one line per fold
         /// (ring, eliminated, kept, wall ms) and one per tier (kept k,
-        /// bytes = k²·4 + k·3·4), then the total. Never gated.
+        /// bytes = k²·4 + k·3·4), then the total. Never asserted on.
         public func priceTable() -> String {
             var lines: [String] = ["fold  ring  eliminated  kept  wall_ms"]
             for st in log {
@@ -309,11 +306,11 @@ public enum LadderFold {
 
     // MARK: - run (moved verbatim from Ladder.run)
 
-    /// Audit C findings 36, 37, 39 — the front door. nil iff `run` can fold
+    /// The front door. nil iff `run` can fold
     /// this object under this schedule from these sources; otherwise a
     /// message naming the value and the true extent.
     ///
-    /// Finding 36 is the "bound below the graph" shape in the fold: the
+    /// This catches the "bound below the graph" shape in the fold: the
     /// loop is bounded by `schedule.maxRank`, but a node whose rank EXCEEDS
     /// it is in neither `ring` (rank == current) nor `keep` (rank <
     /// current), so `active = keep` DROPPED it at the first fold together
@@ -337,7 +334,7 @@ public enum LadderFold {
         if schedule.maxRank <= schedule.keepRank {
             return "maxRank \(schedule.maxRank) must be > keepRank \(schedule.keepRank)"
         }
-        // Finding 36.
+        // A node above the schedule's top rank.
         let objectMax = object.rank.max() ?? 0
         if objectMax > schedule.maxRank {
             let above = object.rank.filter { $0 > schedule.maxRank }.count
@@ -345,7 +342,7 @@ public enum LadderFold {
                 + "\(objectMax): \(above) node(s) sit above the schedule and would be dropped at "
                 + "the first fold, with their rows and columns of the operator"
         }
-        // Finding 37: only `f3` was guarded, and only against negatives.
+        // Source indices: only `f3` was once guarded, and only against negatives.
         for (label, idx) in [("f1", sources.f1), ("f2", sources.f2)] {
             if idx < 0 || idx >= n {
                 return "source \(label) index \(idx) not in [0, \(n))"
@@ -365,7 +362,7 @@ public enum LadderFold {
         return (objectMax, schedule.maxRank, schedule.maxRank - objectMax)
     }
 
-    /// Findings 36-39's throwing door: the fold or a typed refusal, never a
+    /// The throwing entry point: the fold or a typed refusal, never a
     /// dropped ring, a trap, or a process abort.
     public static func runChecked(object: Object, schedule: Schedule, sources: Sources) throws -> Result {
         let result = run(object: object, schedule: schedule, sources: sources)
@@ -416,7 +413,7 @@ public enum LadderFold {
                         f1F: [Float], f2F: [Float], f3F: [Float]) {
             let k = activeSet.count
             let A = opF.map { Double($0) }
-            // Finding 38: a singular tier operator used to abort the
+            // A singular tier operator used to abort the
             // process here; it is a named refusal now.
             let r1 = solveSym(A, n: k, rhs: f1F.map { Double($0) }, nrhs: 1)
             let r2 = solveSym(A, n: k, rhs: f2F.map { Double($0) }, nrhs: 1)
@@ -493,7 +490,7 @@ public enum LadderFold {
             var LDA32 = N32, LDB32 = N32, INFO: __CLPK_integer = 0
             var ipiv = [__CLPK_integer](repeating: 0, count: kb)
             dgesv_(&N32, &NRHS32, &Acm, &LDA32, &ipiv, &Bcm, &LDB32, &INFO)
-            // Finding 38: a singular ring block aborted the process here.
+            // A singular ring block once aborted the process here.
             guard INFO == 0 else {
                 return refusedResult(
                     "fold at ring \(current) is singular: dgesv returned info=\(INFO) over a "

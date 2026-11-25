@@ -8,10 +8,9 @@ import Darwin
 import Glibc
 #endif
 
-/// D4 · FRAMING — gate D4 of `docs/contracts/DAEMON_BOUNDS_GATES_FROZEN.md`,
-/// audit B finding 1. Driven over a REAL AF_UNIX socket, not against the
-/// handler: the defect is in the socket layer, and the socket smoke the
-/// ticking contract also owes has never existed until now.
+/// Framing, a defect an internal audit of the daemon found. Driven over a REAL AF_UNIX socket, not against the
+/// handler: the defect is in the socket layer, and a socket smoke test
+/// had never existed until now.
 ///
 /// The server's accept loop is the daemon's own (`SocketServer`, started
 /// exactly as `main.swift` starts it) running in-process on a temp socket
@@ -99,13 +98,13 @@ final class SocketFramingTests: XCTestCase {
 
     private func line(_ s: String) -> [UInt8] { Array((s + "\n").utf8) }
 
-    // MARK: - the gate
+    // MARK: - Round trips and the over-long command
 
     func testSocketRoundTripsAShortCommand() throws {
         XCTAssertTrue(try send(line("STATUS")).hasPrefix("OK STATUS nodes=16"))
     }
 
-    /// Audit finding 1's own gate: a 5,000-byte `RINGS WRITE` line. The
+    /// The framing defect's own test: a 5,000-byte `RINGS WRITE` line. The
     /// shipped daemon read 4,095 bytes, trimmed, and parsed the PREFIX as a
     /// complete command — answering `OK` over a truncated float list.
     func testOversizedCommandIsRefusedNotTruncated() throws {
@@ -124,7 +123,7 @@ final class SocketFramingTests: XCTestCase {
         // STATUS plus a comment-free pad of spaces is still just STATUS to
         // the tokenizer, and lands exactly on the cap.
         // 4095 written out, not read off `SocketServer.maxCommandBytes` —
-        // the D9 lesson: an expectation taken from the code under test
+        // the lesson of three earlier checks that could not fail: an expectation taken from the code under test
         // compares the bound to itself.
         let pad = String(repeating: " ", count: 4095 - "STATUS".utf8.count)
         let cmd = "STATUS" + pad
@@ -136,7 +135,7 @@ final class SocketFramingTests: XCTestCase {
         XCTAssertEqual(try send(line(overByOne)), "ERROR too_long: command exceeds 4095 bytes")
     }
 
-    /// Post-merge follow-up F7. The over-long tail is NOT drained: the read
+    /// The over-long tail is NOT drained: the read
     /// stops at the cap, the refusal is written, and the descriptor closes.
     /// This server serves ONE command per connection (`handleClient` closes
     /// on return), so "a second command on the same connection" is not a

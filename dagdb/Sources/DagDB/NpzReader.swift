@@ -21,7 +21,7 @@ public enum NpzReader {
         public let data: Data
     }
 
-    public enum NpzError: Error, Equatable {
+    public enum NpzError: Error, Equatable, CustomStringConvertible {
         case notZip
         case compressed(String)
         case badNpyHeader(String)
@@ -29,13 +29,28 @@ public enum NpzReader {
         case badDType(String, expected: String)
         case badShape(String)
         case truncated(String)
-        /// Audit C finding 22: the EOCD member count is u16 and the
+        /// The EOCD member count is u16 and the
         /// central-directory size/offset and per-entry compressed size /
         /// local-header offset are u32. An archive past 4 GiB or 65 535
         /// members stores `0xFFFF` / `0xFFFFFFFF` in those fields and puts
         /// the real value in a zip64 record this reader does not parse.
         /// Named rather than reported as a generic truncation.
         case zip64NotSupported(String)
+
+        /// The words a reply carries (an entry's name and a header's dtype are file text,
+        /// quoted; the other payloads are this reader's own sentences, their names quoted where they are built).
+        public var description: String {
+            switch self {
+            case .notZip: return "npz: not a zip archive"
+            case .compressed(let name): return "npz: entry \(Reply.quoted(name)) is compressed (only stored entries are read)"
+            case .badNpyHeader(let why): return "npz: bad .npy header: \(why)"
+            case .missing(let name): return "npz: missing entry \(Reply.quoted(name))"
+            case .badDType(let found, let expected): return "npz: dtype \(Reply.quoted(found)) is not \(expected)"
+            case .badShape(let why): return "npz: bad shape: \(why)"
+            case .truncated(let why): return "npz: truncated: \(why)"
+            case .zip64NotSupported(let why): return "npz: zip64 not supported: \(why)"
+            }
+        }
     }
 
     private static let localSig: UInt32 = 0x0403_4b50
@@ -86,10 +101,17 @@ public enum NpzReader {
     }
 
     public static func entries(path: String) throws -> [String: Entry] {
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw NpzError.truncated("file not found: \(path)")
-        }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        // Through `DaemonFile` (non-blocking, regular, contained, read once).
+        let data: Data
+        do { data = try DaemonFile.read(path) }
+        catch DaemonFile.Refusal.missing { throw NpzError.truncated("file not found: \(Reply.quoted(path))") }
+        return try entries(data: data)
+    }
+
+    /// The archive's entries from bytes the caller has read once (VIEW LOAD hashes and decodes
+    /// the same copy).
+    public static func entries(data: Data) throws -> [String: Entry] {
+        let data = data.startIndex == 0 ? data : Data(data)
         guard let eocdOff = findEOCD(data) else {
             throw NpzError.notZip
         }
@@ -97,7 +119,7 @@ public enum NpzReader {
         let rawTotalEntries = try u16(data, eocdOff + 10)
         let rawCdSize = try u32(data, eocdOff + 12)
         let rawCdOffset = try u32(data, eocdOff + 16)
-        // Finding 22: zip64 placeholders in the END-OF-CENTRAL-DIRECTORY
+        // Zip64 placeholders in the END-OF-CENTRAL-DIRECTORY
         // record, refused by name (not as a generic truncation).
         if rawTotalEntries == 0xFFFF {
             throw NpzError.zip64NotSupported(
@@ -130,7 +152,7 @@ public enum NpzReader {
             let extraLen = Int(try u16(data, off + 30))
             let commentLen = Int(try u16(data, off + 32))
             let rawLocalOffset = try u32(data, off + 42)
-            // Finding 22: a CENTRAL record carrying a zip64 placeholder —
+            // A CENTRAL record carrying a zip64 placeholder —
             // the real value lives in an extra field this reader does not
             // parse. Named, never silently taken at face value.
             if rawCompSize == 0xFFFF_FFFF || rawLocalOffset == 0xFFFF_FFFF {
@@ -159,14 +181,14 @@ public enum NpzReader {
                 throw NpzError.compressed(c.name)
             }
             guard let sig = try? u32(data, c.localHeaderOffset), sig == localSig else {
-                throw NpzError.truncated("local header signature mismatch for \(c.name)")
+                throw NpzError.truncated("local header signature mismatch for \(Reply.quoted(c.name))")
             }
             let localNameLen = Int(try u16(data, c.localHeaderOffset + 26))
             let localExtraLen = Int(try u16(data, c.localHeaderOffset + 28))
             let payloadStart = data.startIndex + c.localHeaderOffset + 30 + localNameLen + localExtraLen
             let payloadEnd = payloadStart + c.compressedSize
             guard payloadStart >= data.startIndex, payloadEnd <= data.endIndex else {
-                throw NpzError.truncated("payload out of bounds for \(c.name)")
+                throw NpzError.truncated("payload out of bounds for \(Reply.quoted(c.name))")
             }
             let payload = data.subdata(in: payloadStart..<payloadEnd)
 
@@ -180,27 +202,27 @@ public enum NpzReader {
     // MARK: - .npy header
 
     private static func parseNpy(_ data: Data, name: String) throws -> (shape: [Int], descr: String, fortranOrder: Bool, payload: Data) {
-        guard data.count >= 10 else { throw NpzError.badNpyHeader("\(name): too short for .npy magic") }
+        guard data.count >= 10 else { throw NpzError.badNpyHeader("\(Reply.quoted(name)): too short for .npy magic") }
         let magic: [UInt8] = [0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59] // \x93NUMPY
         let base = data.startIndex
         for i in 0..<6 {
             guard data[base + i] == magic[i] else {
-                throw NpzError.badNpyHeader("\(name): bad magic")
+                throw NpzError.badNpyHeader("\(Reply.quoted(name)): bad magic")
             }
         }
         let major = data[base + 6]
         let minor = data[base + 7]
-        // Finding 20: only .npy 1.0, 2.0 and 3.0 exist. Every other major
+        // Only .npy 1.0, 2.0 and 3.0 exist. Every other major
         // (0, 4, 255 …) previously fell through to the 4-byte header-length
         // branch and parsed as if it were v2. Both bytes are now read and
         // refused by name, naming the value found.
         guard major == 1 || major == 2 || major == 3 else {
             throw NpzError.badNpyHeader(
-                "\(name): .npy major version \(major) not supported (only 1, 2 and 3 exist)")
+                "\(Reply.quoted(name)): .npy major version \(major) not supported (only 1, 2 and 3 exist)")
         }
         guard minor == 0 else {
             throw NpzError.badNpyHeader(
-                "\(name): .npy minor version \(major).\(minor) not supported (only x.0 exists)")
+                "\(Reply.quoted(name)): .npy minor version \(major).\(minor) not supported (only x.0 exists)")
         }
         let headerLenFieldSize: Int
         let headerLen: Int
@@ -214,13 +236,13 @@ public enum NpzReader {
         let headerStart = base + 8 + headerLenFieldSize
         let headerEnd = headerStart + headerLen
         guard headerEnd <= data.endIndex else {
-            throw NpzError.badNpyHeader("\(name): header length past end")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): header length past end")
         }
         let headerData = data.subdata(in: headerStart..<headerEnd)
-        // Finding 20: v1/v2 declare latin-1 header dicts, v3 declares utf-8.
+        // v1/v2 declare latin-1 header dicts, v3 declares utf-8.
         let headerEncoding: String.Encoding = (major >= 3) ? .utf8 : .isoLatin1
         guard let headerStr = String(data: headerData, encoding: headerEncoding) else {
-            throw NpzError.badNpyHeader("\(name): header not decodable as \(major >= 3 ? "utf-8" : "latin-1")")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): header not decodable as \(major >= 3 ? "utf-8" : "latin-1")")
         }
 
         let descr = try extractQuoted(headerStr, key: "descr", name: name)
@@ -233,60 +255,60 @@ public enum NpzReader {
 
     private static func extractQuoted(_ header: String, key: String, name: String) throws -> String {
         guard let keyRange = header.range(of: "'\(key)'") else {
-            throw NpzError.badNpyHeader("\(name): missing '\(key)' in header")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): missing '\(key)' in header")
         }
         var rest = header[keyRange.upperBound...]
         guard let colon = rest.firstIndex(of: ":") else {
-            throw NpzError.badNpyHeader("\(name): malformed '\(key)' field")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): malformed '\(key)' field")
         }
         rest = rest[rest.index(after: colon)...]
         guard let quoteStart = rest.firstIndex(where: { $0 == "'" || $0 == "\"" }) else {
-            throw NpzError.badNpyHeader("\(name): '\(key)' value not quoted")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): '\(key)' value not quoted")
         }
         let quoteChar = rest[quoteStart]
         let afterOpen = rest.index(after: quoteStart)
         guard let quoteEnd = rest[afterOpen...].firstIndex(of: quoteChar) else {
-            throw NpzError.badNpyHeader("\(name): '\(key)' unterminated string")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): '\(key)' unterminated string")
         }
         return String(rest[afterOpen..<quoteEnd])
     }
 
     private static func extractBool(_ header: String, key: String, name: String) throws -> Bool {
         guard let keyRange = header.range(of: "'\(key)'") else {
-            throw NpzError.badNpyHeader("\(name): missing '\(key)' in header")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): missing '\(key)' in header")
         }
         var rest = header[keyRange.upperBound...]
         guard let colon = rest.firstIndex(of: ":") else {
-            throw NpzError.badNpyHeader("\(name): malformed '\(key)' field")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): malformed '\(key)' field")
         }
         rest = rest[rest.index(after: colon)...]
         let trimmed = rest.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("True") { return true }
         if trimmed.hasPrefix("False") { return false }
-        throw NpzError.badNpyHeader("\(name): '\(key)' not a bool literal")
+        throw NpzError.badNpyHeader("\(Reply.quoted(name)): '\(key)' not a bool literal")
     }
 
     private static func extractShape(_ header: String, name: String) throws -> [Int] {
         guard let keyRange = header.range(of: "'shape'") else {
-            throw NpzError.badNpyHeader("\(name): missing 'shape' in header")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): missing 'shape' in header")
         }
         let rest = header[keyRange.upperBound...]
         guard let openParen = rest.firstIndex(of: "("),
               let closeParen = rest[openParen...].firstIndex(of: ")") else {
-            throw NpzError.badNpyHeader("\(name): malformed 'shape' tuple")
+            throw NpzError.badNpyHeader("\(Reply.quoted(name)): malformed 'shape' tuple")
         }
         let inner = rest[rest.index(after: openParen)..<closeParen]
         let parts = inner.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         var shape: [Int] = []
         for p in parts {
             guard let v = Int(p) else {
-                throw NpzError.badNpyHeader("\(name): non-integer shape component '\(p)'")
+                throw NpzError.badNpyHeader("\(Reply.quoted(name)): non-integer shape component \(Reply.quoted(String(p)))")
             }
-            // Finding 21: a negative component made `elementCount` negative
+            // A negative component made `elementCount` negative
             // and the payload-size guard then reported a size error instead
             // of naming the bad shape.
             guard v >= 0 else {
-                throw NpzError.badShape("\(name): negative shape component '\(p)'")
+                throw NpzError.badShape("\(Reply.quoted(name)): negative shape component \(Reply.quoted(String(p)))")
             }
             shape.append(v)
         }
@@ -295,7 +317,7 @@ public enum NpzReader {
 
     // MARK: - Typed accessors
 
-    /// Finding 21: `shape.reduce(1, *)` is a non-wrapping multiply — a
+    /// `shape.reduce(1, *)` is a non-wrapping multiply — a
     /// crafted shape such as (2^32, 2^32) TRAPPED the process. Every step
     /// is overflow-reporting now, and the product (and the byte count it
     /// implies) is refused by name instead.
@@ -303,22 +325,22 @@ public enum NpzReader {
         var n = 1
         for d in shape {
             guard d >= 0 else {
-                throw NpzError.badShape("\(name): negative shape component \(d)")
+                throw NpzError.badShape("\(Reply.quoted(name)): negative shape component \(d)")
             }
             let (product, overflow) = n.multipliedReportingOverflow(by: d)
             guard !overflow else {
-                throw NpzError.badShape("\(name): shape \(shape) overflows the element count")
+                throw NpzError.badShape("\(Reply.quoted(name)): shape \(shape) overflows the element count")
             }
             n = product
         }
         return n
     }
 
-    /// `elementCount * itemSize`, overflow-reported (finding 21).
+    /// `elementCount * itemSize`, overflow-reported.
     private static func payloadBytes(_ n: Int, _ itemSize: Int, name: String) throws -> Int {
         let (bytes, overflow) = n.multipliedReportingOverflow(by: itemSize)
         guard !overflow else {
-            throw NpzError.badShape("\(name): \(n) elements x \(itemSize) bytes overflows the payload size")
+            throw NpzError.badShape("\(Reply.quoted(name)): \(n) elements x \(itemSize) bytes overflows the payload size")
         }
         return bytes
     }
@@ -328,12 +350,12 @@ public enum NpzReader {
             throw NpzError.badDType(e.descr, expected: "<f4")
         }
         guard !e.fortranOrder else {
-            throw NpzError.badShape("\(e.name): fortran_order not supported")
+            throw NpzError.badShape("\(Reply.quoted(e.name)): fortran_order not supported")
         }
         let n = try elementCount(e.shape, name: e.name)
         let expectedBytes = try payloadBytes(n, 4, name: e.name)
         guard e.data.count == expectedBytes else {
-            throw NpzError.badShape("\(e.name): payload size \(e.data.count) != \(n) * 4")
+            throw NpzError.badShape("\(Reply.quoted(e.name)): payload size \(e.data.count) != \(n) * 4")
         }
         var result = [Float](repeating: 0, count: n)
         for i in 0..<n {
@@ -348,12 +370,12 @@ public enum NpzReader {
             throw NpzError.badDType(e.descr, expected: "<f8")
         }
         guard !e.fortranOrder else {
-            throw NpzError.badShape("\(e.name): fortran_order not supported")
+            throw NpzError.badShape("\(Reply.quoted(e.name)): fortran_order not supported")
         }
         let n = try elementCount(e.shape, name: e.name)
         let expectedBytes = try payloadBytes(n, 8, name: e.name)
         guard e.data.count == expectedBytes else {
-            throw NpzError.badShape("\(e.name): payload size \(e.data.count) != \(n) * 8")
+            throw NpzError.badShape("\(Reply.quoted(e.name)): payload size \(e.data.count) != \(n) * 8")
         }
         var result = [Double](repeating: 0, count: n)
         for i in 0..<n {
@@ -371,12 +393,12 @@ public enum NpzReader {
             throw NpzError.badDType(e.descr, expected: "<i8")
         }
         guard !e.fortranOrder else {
-            throw NpzError.badShape("\(e.name): fortran_order not supported")
+            throw NpzError.badShape("\(Reply.quoted(e.name)): fortran_order not supported")
         }
         let n = try elementCount(e.shape, name: e.name)
         let expectedBytes = try payloadBytes(n, 8, name: e.name)
         guard e.data.count == expectedBytes else {
-            throw NpzError.badShape("\(e.name): payload size \(e.data.count) != \(n) * 8")
+            throw NpzError.badShape("\(Reply.quoted(e.name)): payload size \(e.data.count) != \(n) * 8")
         }
         var result = [Int64](repeating: 0, count: n)
         for i in 0..<n {

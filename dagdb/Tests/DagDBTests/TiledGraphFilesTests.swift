@@ -1,8 +1,8 @@
 import XCTest
 @testable import DagDB
 
-/// T1 (tile files), T4 (torn/inconsistent tiles), T6 (printed sizes/times) —
-/// `docs/contracts/TILING_GATES_FROZEN.md`. Style follows
+/// Tile files, torn or inconsistent tiles, and printed sizes and times.
+/// Style follows
 /// `TiledGraphRouterTests.swift`.
 final class TiledGraphFilesTests: XCTestCase {
 
@@ -43,7 +43,7 @@ final class TiledGraphFilesTests: XCTestCase {
         XCTAssertEqual(truthMismatch, 0)
         XCTAssertEqual(nbMismatch, 0)
 
-        // AMENDMENT 1, item 1: a node's slots hold HIGHER-rank sources (the
+        // A node's slots hold HIGHER-rank sources (the
         // engine's own inputs convention, `rank(src) > rank(dst)`) — a
         // violation is a target whose rank is <= the node's own rank.
         var edgeCount = 0
@@ -62,7 +62,7 @@ final class TiledGraphFilesTests: XCTestCase {
         XCTAssertEqual(a.maxRank, b.maxRank)
         XCTAssertEqual(a.maxRank, 8)
 
-        // ── AMENDMENT 6, letter 1: the repaired object ──
+        // ── The repaired object ──
 
         // LUTs are identical between the two generations, and every one of
         // them is parity (or complemented parity) over that node's present
@@ -80,9 +80,9 @@ final class TiledGraphFilesTests: XCTestCase {
             for d in 0..<6 where na[i * 6 + d] >= 0 { mask |= 1 << d }
             if mask == 0 { inputlessNodes += 1 }
             // A node WITH inputs whose table is constant is the vacuity
-            // this amendment repairs. A node with none is a source: its
+            // the repaired object removes. A node with none is a source: its
             // parity over an empty mask is the constant `choice`, which is
-            // what the letter's own formula gives.
+            // what the parity formula itself gives.
             let isConstant = (la[i] == 0 && ha[i] == 0) || (la[i] == .max && ha[i] == .max)
             if mask != 0 && isConstant { constantWithInputs += 1 }
             let choice = Int(la[i] & 1)          // bit(0) = (0 + choice) & 1
@@ -126,8 +126,8 @@ final class TiledGraphFilesTests: XCTestCase {
             XCTAssertEqual(present, [Int32(dst)], "S's only present input must be R")
             XCTAssertEqual(la[src] & 1, 1, "S(R=0) must be 1")
             XCTAssertEqual((la[src] >> 1) & 1, 0, "S(R=1) must be 0")
-            // `R` KEEPS its other readers (AMENDMENT 7, finding A rejected
-            // the earlier build's clearing of them): the latch-timing
+            // `R` KEEPS its other readers (clearing them, as an earlier build
+            // did, was wrong): the latch-timing
             // defect they expose is fixed in the ticker, not designed out
             // of the object. `S` must be among them.
             var readers = 0
@@ -141,12 +141,12 @@ final class TiledGraphFilesTests: XCTestCase {
         print("testGeneratorIsDeterministic: side=16 registers=\(a.engine.backEdgeCount)")
     }
 
-    // MARK: - AMENDMENT 6: tile bodies carry their registers
+    // MARK: - Tile bodies carry their registers
 
     /// Every intra-tile back edge survives the split, the body write and
     /// the reload — on both the query path (`loadTile`) and the ticker's
     /// (`loadTileWithGhosts`). A tile writer that dropped them would tick a
-    /// register-free graph and W1/W2 would fail for a reason nothing else
+    /// register-free graph and the world-tick equality tests would fail for a reason nothing else
     /// in the suite names.
     func testTileBodiesCarryRegisters() throws {
         for side in [16, 44] {
@@ -225,7 +225,7 @@ final class TiledGraphFilesTests: XCTestCase {
         }
     }
 
-    // MARK: - T1: write / reload bit-for-bit
+    // MARK: - Write / reload bit-for-bit
 
     func testT1WriteReloadBitForBit() throws {
         for side in [16, 44, 128] {
@@ -307,7 +307,7 @@ final class TiledGraphFilesTests: XCTestCase {
         }
     }
 
-    // MARK: - T1 ruling: every boundary has crossings both ways (T6 printed)
+    // MARK: - Every boundary has crossings both ways (counts printed)
 
     func testEveryBoundaryHasCrossingsBothWays() throws {
         for side in TiledFixture.sides {
@@ -327,7 +327,7 @@ final class TiledGraphFilesTests: XCTestCase {
                 }
             }
         }
-        // Contract-required print: side 44 x 4 tiles.
+        // A required print: side 44 x 4 tiles.
         let object44 = try TiledFixture.generate(side: 44)
         let dir = scratchDir("boundaries-44-4-report")
         defer { removeScratch(dir) }
@@ -339,7 +339,7 @@ final class TiledGraphFilesTests: XCTestCase {
         }
     }
 
-    // MARK: - T4: torn body refused
+    // MARK: - Torn body refused
 
     func testTornBodyRefused() throws {
         let object = try TiledFixture.generate(side: 16)
@@ -364,7 +364,7 @@ final class TiledGraphFilesTests: XCTestCase {
         }
     }
 
-    // MARK: - T4: epoch mismatch refused
+    // MARK: - Epoch mismatch refused
 
     func testEpochMismatchRefused() throws {
         let object = try TiledFixture.generate(side: 16)
@@ -438,7 +438,7 @@ final class TiledGraphFilesTests: XCTestCase {
         print("testHaloFilesParse: side=44 tiles=4 totalUpperEntries=\(totalUpper) totalLowerEntries=\(totalLower)")
     }
 
-    // MARK: - T6: sizes and times
+    // MARK: - Sizes and times
 
     func testT6PrintsSizesAndTimes() throws {
         let object = try TiledFixture.generate(side: 128)

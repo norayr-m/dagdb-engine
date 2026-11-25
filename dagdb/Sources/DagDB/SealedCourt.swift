@@ -1,7 +1,7 @@
 import Foundation
 
-/// Sealed numbers and index mapping for the W2 allocator/successor courts
-/// — twin spec line 4's fixed vocabulary, frozen in
+/// Sealed numbers and index mapping for the sealed allocator/successor courts
+/// — their fixed vocabulary, frozen in
 /// `market/pregate_allocator_v2.json` / `market/court_allocator_runs.json`
 /// / `market/pregate_successor_v1.json`. Nothing here is derived; every
 /// literal is copied from the sealed record. `BudgetLayoutTests.swift`
@@ -85,8 +85,7 @@ public enum SealedCourt {
     }
 
     /// Refusals shared by the two sealed courts and the hook — named,
-    /// typed, and thrown rather than trapped (audit C findings 47, 49,
-    /// 50, 51).
+    /// typed, and thrown rather than trapped.
     public enum CourtError: Error, Equatable, CustomStringConvertible {
         /// A pocket outside the sealed `3…6` vocabulary.
         case pocketOutOfRange(Int)
@@ -118,8 +117,7 @@ public enum SealedCourt {
     }
 
     /// Validating front door: the same mapping as `pocketIndex`, refusing
-    /// a pocket outside `3…6` by name instead of indexing out of bounds
-    /// (finding 47).
+    /// a pocket outside `3…6` by name instead of indexing out of bounds.
     public static func pocketIndexChecked(_ sealedPocket: Int) throws -> Int {
         guard let i = validPocketIndex(sealedPocket) else {
             throw CourtError.pocketOutOfRange(sealedPocket)

@@ -60,8 +60,8 @@ public struct DagNode: Equatable {
 /// enforced on insertion. Breaking it is a fatal error: it breaks Morton
 /// locality, breaks the wave scheduler, and collapses the SpMV throughput
 /// regime (see thesis §5 cascade analysis; DagDB's measured 1M-node
-/// figure is 0.71 GCUPS — the ~14 GCUPS number belongs to the Savanna
-/// sibling CA engine, not this one).
+/// figure is 0.71 GCUPS — the ~14 GCUPS number belongs to Savanna, a
+/// separate CA engine, not this one).
 public final class DagDB {
     public let nodeCount: Int
     public let maxRank: UInt32

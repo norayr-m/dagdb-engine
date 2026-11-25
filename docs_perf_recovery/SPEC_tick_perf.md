@@ -1,6 +1,6 @@
 # SPEC — tick performance recovery (compaction + TICK_SYNC)
 
-Date: 2026-07-07 · Owner: dag · Branch: dag/tick-perf
+Date: 2026-07-07
 
 ## Why
 

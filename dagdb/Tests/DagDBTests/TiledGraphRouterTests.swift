@@ -16,8 +16,7 @@ final class TiledGraphRouterTests: XCTestCase {
     }
 
     /// A small, fast manifest (side 16, 2 tiles) for tests that only need
-    /// SOME valid router (init now reads `manifest.json` — AMENDMENT
-    /// 1-era router contract — so every router-constructing test needs a
+    /// SOME valid router (init now reads `manifest.json`, so every router-constructing test needs a
     /// real graph directory, not a bare `/tmp` path).
     private func smallManifestDir(_ label: String) throws -> (dir: String, name: String) {
         let object = try TiledFixture.generate(side: 16)
@@ -96,7 +95,7 @@ final class TiledGraphRouterTests: XCTestCase {
         XCTAssertEqual(r.localIdOf(max), 0xFF_FFFF_FFFF)
     }
 
-    // MARK: - Stubs still throw notImplemented (out of this contract's scope)
+    // MARK: - Stubs still throw notImplemented (out of scope here)
 
     func testRunQueryStubThrows() async throws {
         let (dir, name) = try smallManifestDir("runquery-stub")
@@ -174,7 +173,7 @@ final class TiledGraphRouterTests: XCTestCase {
         XCTAssertEqual(ids, [])
     }
 
-    // MARK: - T2/T3/T4 shared helpers
+    // MARK: - Shared helpers
 
     /// Sortable, XCTAssertEqual-able (raw global id, depth) pair — Swift
     /// tuples aren't Equatable, so BFS truth/result comparisons go
@@ -204,7 +203,7 @@ final class TiledGraphRouterTests: XCTestCase {
     /// sorted `[DepthPair]` of GLOBAL ids — the single engine's own
     /// `bfsDepthsUndirected`/`bfsDepthsBackward` is unbounded (no depth
     /// parameter), so truncate to `depth` here for a fair comparison
-    /// against the router's bounded walk (T2's letter).
+    /// against the router's bounded walk.
     private func untiledBFSTruth(
         object: TiledFixture.Object, seedEngineIdx: Int, depth: Int, backward: Bool,
         globalOf: [UInt64]
@@ -226,7 +225,7 @@ final class TiledGraphRouterTests: XCTestCase {
         pairs.map { DepthPair(raw: $0.0.raw, depth: Int32($0.1)) }.sorted { $0.raw < $1.raw }
     }
 
-    // MARK: - T2: BFS/ancestry equals untiled, across K and tilings
+    // MARK: - BFS/ancestry equals untiled, across K and tilings
 
     /// Shared body. `depth <= 12`, `tilings` from {2,4,8}. For every
     /// tiling: write ONCE, compute untiled truth ONCE per (seed, depth,
@@ -296,7 +295,7 @@ final class TiledGraphRouterTests: XCTestCase {
         try await runT2BFS(side: 128, tilings: [2, 4, 8], depths: [1, 3, 6, 12], label: "t2bfs128")
     }
 
-    // MARK: - T2: select equals untiled
+    // MARK: - Select equals untiled
 
     func testT2SelectEqualsUntiled() async throws {
         for side in TiledFixture.sides {
@@ -338,7 +337,7 @@ final class TiledGraphRouterTests: XCTestCase {
         }
     }
 
-    // MARK: - T3: residency
+    // MARK: - Residency
 
     func testT3Residency() async throws {
         let side = 128
@@ -387,8 +386,8 @@ final class TiledGraphRouterTests: XCTestCase {
             XCTAssertEqual(loadsAfter, loadsBefore, "query touching only the resident tile must not load")
         }
 
-        // T3 print (not gated): load ms + bytes per tile at side 128, and
-        // the spec §6.6 arithmetic beside them for reference.
+        // Printed, not gated: load ms + bytes per tile at side 128, and the
+        // design-budget arithmetic beside them for reference.
         print("T3 side=128 tiles=8: per-tile load ms / bytes (direct TiledGraphFiles.loadTile, not through the router):")
         for entry in manifest.tiles.sorted(by: { $0.id < $1.id }) {
             let t0 = Date()
@@ -401,7 +400,7 @@ final class TiledGraphRouterTests: XCTestCase {
         print("  write 42 GB / 7 GB/s = 6.0 s; read 42 GB / 7 GB/s = 6.0 s; total tile-swap = 12 s (6 s if pre-fetch overlaps the tick)")
     }
 
-    // MARK: - T4: router refusals recorded
+    // MARK: - Router refusals recorded
 
     func testT4RouterRefusalsRecorded() async throws {
         // Torn body: corrupt the SEED's own tile so the first load() call

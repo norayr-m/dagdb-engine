@@ -60,7 +60,8 @@ dagdb_close_reader(sid)
 
 # Zero-copy numpy view of the depth vector
 import numpy as np
-with open("/tmp/dagdb_shm_file", "rb") as f:
+# SHM_FILE: the path the daemon was started with (--shm-file)
+with open(SHM_FILE, "rb") as f:
     buf = f.read()
 node_count = int.from_bytes(buf[0:4], "little")
 depths = np.frombuffer(buf[8:8 + node_count*4], dtype=np.int32)
@@ -90,10 +91,13 @@ ranks = policy.assign_ranks(
     seq_indices=np.arange(N),
 ).astype(np.uint64)
 
-# 2. Write u64 ranks to shm at offset 8, then bulk-commit in one round-trip
-import mmap
-with open("/tmp/dagdb_shm_file", "r+b") as f:
+# 2. Write the header [u32 N][u32 0x314D4801] (SET_RANKS_BULK's code 1,
+#    the client frame) at bytes 0..7 and the u64 ranks at offset 8, then
+#    bulk-commit in one round-trip
+import mmap, struct
+with open(SHM_FILE, "r+b") as f:
     mm = mmap.mmap(f.fileno(), 8 + N * 8)
+    mm[0:8] = struct.pack("<II", N, 0x314D4801)
     mm[8 : 8 + N * 8] = ranks.tobytes()
     mm.close()
 
@@ -126,7 +130,7 @@ diverge, the most likely cause is an edge that violates the rank
 rule on insert (the validator would have rejected it) or a contact
 pair passed in the wrong order (`p` must be less than `q`).
 
-## Truth-filtered hive queries
+## Truth-filtered queries
 
 Once ingestion is done, the secondary index enables
 `(truth, rank-range)` lookups:

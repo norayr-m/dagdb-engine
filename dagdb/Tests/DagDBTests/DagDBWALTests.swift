@@ -3,8 +3,8 @@ import XCTest
 
 final class DagDBWALTests: XCTestCase {
 
-    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when several checkouts run swift test concurrently in one shared dir).
+    /// Per-test unique temp dir (fixed /tmp names race when several
+    /// checkouts run swift test concurrently in one shared dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {
@@ -150,7 +150,7 @@ final class DagDBWALTests: XCTestCase {
         XCTAssertEqual(t[2], 0, "truncated record does NOT apply")
     }
 
-    /// G73 step-1 acceptance test — deterministic torn-tail fixture.
+    /// Acceptance test for the G73 durability hardening: deterministic torn-tail fixture.
     /// Pins the CURRENT replay truth: a partially-written last record must be
     /// dropped, prior records replay exactly, and the truncation is surfaced at
     /// the byte offset where the torn record begins. No kill, no timing.

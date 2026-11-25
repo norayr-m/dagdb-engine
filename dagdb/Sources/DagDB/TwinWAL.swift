@@ -1,7 +1,7 @@
 import Foundation
 
 /// TwinWALCodec — binary wire format for `TwinOp`, the payload carried by
-/// WAL opcodes 0x20–0x2C (twin registry ops, the interface phase).
+/// WAL opcodes 0x20–0x2C (twin registry ops).
 ///
 /// Format (little-endian throughout, no padding):
 ///   - String:  u16 length + UTF-8 bytes.
@@ -14,13 +14,13 @@ import Foundation
 /// `decode` returns `nil` on ANY length mismatch or invalid-UTF-8 string —
 /// including a trailing byte the encoding for that opcode doesn't account
 /// for. WAL replay treats a `nil` decode as "skip this record," never a
-/// fatal error (interface-phase convention 15 / T6).
+/// fatal error (interface-phase convention 15).
 public enum TwinWALCodec {
     /// Payload size ceiling — guards against a corrupt length prefix
     /// driving an unbounded allocation during decode.
     public static let maxPayloadBytes = 1 << 20
 
-    /// Named refusals on the encode side (findings 55, 56, 58). Decode
+    /// Named refusals on the encode side. Decode
     /// never throws: its contract is `nil` on anything malformed.
     public enum CodecError: Error, Equatable, CustomStringConvertible {
         /// A string whose UTF-8 length will not fit the u16 length field.
@@ -141,7 +141,7 @@ public enum TwinWALCodec {
             opcode = .twinBankOpen
             try writeString(id, &d)
             try writeString(name, &d)
-            // Finding 58: the spec's own validator runs BEFORE any
+            // The spec's own validator runs BEFORE any
             // non-truncating width conversion, so a negative or oversized
             // field refuses by name instead of trapping.
             if let why = WaveBank.validationError(spec) { throw CodecError.badSpec(why) }
@@ -188,6 +188,15 @@ public enum TwinWALCodec {
         case .close(let id):
             opcode = .twinClose
             try writeString(id, &d)
+
+        case .hookSweep(let bindings):
+            // u32 count + count × (clock id, hook id).
+            opcode = .twinHookSweep
+            writeU32(try checkedU32(bindings.count, "hookSweep.count"), &d)
+            for b in bindings {
+                try writeString(b.clockId, &d)
+                try writeString(b.hookId, &d)
+            }
         }
 
         return (opcode, d)
@@ -239,7 +248,7 @@ public enum TwinWALCodec {
             guard let u = readU32() else { return nil }
             return Int32(bitPattern: u)
         }
-        /// Finding 54: a u32 element-count prefix is only believable if the
+        /// A u32 element-count prefix is only believable if the
         /// payload still holds `count * elementSize` bytes. Read it, bound
         /// it against what is actually left, and refuse (nil) before any
         /// `reserveCapacity` — a 20-byte record must never be able to ask
@@ -403,6 +412,17 @@ public enum TwinWALCodec {
             guard let id = readString(), let count = readU32() else { return nil }
             decoded = .hookStep(id: id, count: Int(count))
 
+        case .twinHookSweep:
+            // Each entry is two strings, 4 bytes at least.
+            guard let n = readBoundedCount(elementSize: 4), n >= 1 else { return nil }
+            var bindings: [TwinHookBinding] = []
+            bindings.reserveCapacity(n)
+            for _ in 0..<n {
+                guard let c = readString(), let h = readString() else { return nil }
+                bindings.append(TwinHookBinding(clockId: c, hookId: h))
+            }
+            decoded = .hookSweep(bindings: bindings)
+
         case .twinBankOpen:
             guard let id = readString(), let name = readString(),
                   let samples = readU64(),
@@ -410,7 +430,7 @@ public enum TwinWALCodec {
                   let harmonics = readU32(), let gaborCenters = readU32(), let gaborFreqs = readU32(),
                   let gaborSigmaFrac = readF64()
             else { return nil }
-            // Finding 57: `Int(UInt64)` traps above Int.max, inside a
+            // `Int(UInt64)` traps above Int.max, inside a
             // decoder whose contract is "nil on anything malformed".
             guard samples <= UInt64(Int.max) else { return nil }
             let spec = WaveBank.Spec(samples: Int(samples), sampleRate: sampleRate, f0: f0,
@@ -443,8 +463,98 @@ public enum TwinWALCodec {
         return decoded
     }
 
-    /// The bound behind `readBoundedCount` (finding 54), exposed so the
-    /// gate can drive it directly: `n` elements of `elementSize` bytes are
+    /// The record's name and the id it acts on, for replay's
+    /// named refusals ("TWIN_CLOSE a00000001").
+    public static func recordWord(_ op: TwinOp) -> String {
+        switch op {
+        case .streamOpen(let id, _, _, _, _, _): return "TWIN_STREAM_OPEN \(id)"
+        case .streamState(let id, _, _, _): return "TWIN_STREAM_STATE \(id)"
+        case .recordOpen(let id, _, _, _, _, _, _): return "TWIN_RECORD_OPEN \(id)"
+        case .recordSlice(let id, _): return "TWIN_RECORD_SLICE \(id)"
+        case .ringsOpen(let id, _, _, _): return "TWIN_RINGS_OPEN \(id)"
+        case .ringsWrite(let id, _): return "TWIN_RINGS_WRITE \(id)"
+        case .clockOpen(let id): return "TWIN_CLOCK_OPEN \(id)"
+        case .clockAdvance(let id, let n, _): return "TWIN_CLOCK_ADVANCE \(id) \(n)"
+        case .gearOpen(let id, _, _, _, _): return "TWIN_GEAR_OPEN \(id)"
+        case .layoutOpen(let id, _, _): return "TWIN_LAYOUT_OPEN \(id)"
+        case .alarmLoad(let id, _, _): return "TWIN_ALARM_LOAD \(id)"
+        case .bankOpen(let id, _, _): return "TWIN_BANK_OPEN \(id)"
+        case .viewLoad(let id, _, _): return "TWIN_VIEW_LOAD \(id)"
+        case .kernelLoad(let id, _, _, _, _, _, _): return "TWIN_KERNEL_LOAD \(id)"
+        case .hookOpen(let id, _): return "TWIN_HOOK_OPEN \(id)"
+        case .hookStep(let id, _): return "TWIN_HOOK_STEP \(id)"
+        case .close(let id): return "TWIN_CLOSE \(id)"
+        case .hookSweep(let b): return "TWIN_HOOK_SWEEP " + b.map { "\($0.clockId):\($0.hookId)" }.joined(separator: ",")
+        }
+    }
+
+    /// Why a TWIN_BANK_OPEN payload that PARSES (every field present, nothing
+    /// left over) fails the spec's validation: a samples field above Int.max,
+    /// or `WaveBank.validationError`, whose atom count is overflow-reporting.
+    /// `decode` keeps returning nil for such a payload (nil on anything
+    /// malformed); replay names the refusal through this. nil when the payload
+    /// does not parse (a bad length, bad UTF-8) or when it validates.
+    public static func bankOpenRefusal(payload: Data) -> (id: String, why: String)? {
+        guard payload.count <= maxPayloadBytes else { return nil }
+        let bytes = [UInt8](payload)
+        var off = 0
+        func string() -> String? {
+            guard off + 2 <= bytes.count else { return nil }
+            let len = Int(bytes[off]) | (Int(bytes[off + 1]) << 8)
+            off += 2
+            guard off + len <= bytes.count else { return nil }
+            defer { off += len }
+            return String(bytes: bytes[off..<(off + len)], encoding: .utf8)
+        }
+        func u(_ width: Int) -> UInt64? {
+            guard off + width <= bytes.count else { return nil }
+            var v: UInt64 = 0
+            for i in 0..<width { v |= UInt64(bytes[off + i]) << (i * 8) }
+            off += width
+            return v
+        }
+        guard let id = string(), string() != nil,
+              let samples = u(8), let rate = u(8), let f0 = u(8),
+              let h = u(4), let centers = u(4), let freqs = u(4), let sigma = u(8),
+              off == bytes.count else { return nil }
+        guard samples <= UInt64(Int.max) else { return (id, "samples \(samples) exceeds Int.max") }
+        let spec = WaveBank.Spec(samples: Int(samples), sampleRate: Double(bitPattern: rate),
+                                  f0: Double(bitPattern: f0), harmonics: Int(h), gaborCenters: Int(centers),
+                                  gaborFreqs: Int(freqs), gaborSigmaFrac: Double(bitPattern: sigma))
+        guard let why = WaveBank.validationError(spec) else { return nil }
+        return (id, why)
+    }
+
+    /// Why this log's own replay would refuse the encoded record, or nil. `Appender.twins` asks
+    /// it for every record BEFORE a byte is written, so a record the decoder would drop on replay is refused by
+    /// name instead of acknowledged and then lost at the next restart. The checks are the decoder's own: the
+    /// payload against `maxPayloadBytes` (the one cap both sides read), then `decode` itself on the very bytes
+    /// (the opcode, every field's shape, a count's bound, nothing left over; a bank spec the decoder parses but
+    /// refuses is in its nil too). The record's version (a sweep needs version 6) is `twins`' own check, made
+    /// before anything is written as well.
+    public static func appendRefusal(_ op: TwinOp, opcode: DagDBWAL.Opcode, payload: Data) -> String? {
+        if payload.count > maxPayloadBytes {
+            return "\(recordWord(op)): the record's payload is \(payload.count) bytes, above the \(maxPayloadBytes)-byte"
+                + " cap its replay decodes (TwinWALCodec.maxPayloadBytes), so a restart would drop it"
+        }
+        guard let decoded = decode(opcode: opcode.rawValue, payload: payload) else {
+            return "\(recordWord(op)): its \(payload.count)-byte payload is one the log's replay cannot decode,"
+                + " so a restart would drop it"
+        }
+        // The decoded record must BE the record. A field the wire
+        // format cannot hold as given (a string whose UTF-8 decode drops a leading U+FEFF; a declared WARMUP above
+        // the u32 slot) decoded to a different record, and replay changed acknowledged data. Equality is the
+        // record's own (TwinOp is Equatable); a NaN float, which is never equal to itself, compares by its
+        // printed form, which carries every other field exactly.
+        if decoded != op && "\(decoded)" != "\(op)" {
+            return "\(recordWord(op)): its replay would read back a different record (a field the log cannot hold as"
+                + " given: a string's leading U+FEFF, or a value wider than its 32-bit slot), so a restart would change it"
+        }
+        return nil
+    }
+
+    /// The bound behind `readBoundedCount`, exposed so a test can drive it
+    /// directly: `n` elements of `elementSize` bytes are
     /// believable only if `remaining` bytes are actually left. nil means
     /// the prefix overshoots the payload — refuse before allocating.
     static func boundedCount(_ n: UInt32, elementSize: Int, remaining: Int) -> Int? {
@@ -481,7 +591,7 @@ public enum TwinWALCodec {
         writeU64(v.bitPattern, &d)
     }
 
-    /// Finding 55: a string too long for the u16 length field refuses to
+    /// A string too long for the u16 length field refuses to
     /// encode rather than writing a truncated length beside the full bytes.
     private static func writeString(_ s: String, _ d: inout Data) throws {
         let utf8 = Array(s.utf8)
@@ -523,8 +633,7 @@ public enum TwinWALCodec {
         }
     }
 
-    /// `.hookOpen`'s policy byte: 0 allocator, 1 greedy, 2 uniform (per
-    /// `docs/contracts/HOOK_GATES_FROZEN.md`'s codec letter — NOT the
+    /// `.hookOpen`'s policy byte: 0 allocator, 1 greedy, 2 uniform (NOT the
     /// `Policy.rawValue` string).
     private static func policyByte(_ p: AttentionHook.Policy) -> UInt8 {
         switch p {
@@ -550,7 +659,8 @@ public enum TwinWALCodec {
 extension DagDBWAL.Appender {
     @discardableResult
     public func twin(_ op: TwinOp) throws -> Int {
-        let (opcode, payload) = try TwinWALCodec.encode(op)
-        return try append(opcode: opcode, payload: payload)
+        // Through `twins`, so a TWIN_HOOK_SWEEP upgrades the log
+        // to version 6 on demand; every other twin op is written as before.
+        try twins([op])
     }
 }

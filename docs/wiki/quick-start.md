@@ -20,8 +20,13 @@ First build is ~30 s; subsequent are under 3 s.
 ## Run the daemon
 
 ```
-.build/release/dagdb-daemon --grid 1024 --socket /tmp/dagdb.sock
+mkdir -p ~/.dagdb
+.build/release/dagdb-daemon --grid 1024 --socket /tmp/dagdb.sock --shm-file ~/.dagdb/dagdb_shm
 ```
+
+`--shm-file` is required: the result-row file query results land in (there
+is no default, so they never land in `/tmp`). An unknown flag, `--shm`, or a
+number that does not parse is refused with the usage line.
 
 Grid 1024 gives you 1 048 576 nodes. Start smaller (e.g. `--grid 32`
 for 1024 nodes) if you're just poking around.
@@ -29,16 +34,17 @@ for 1024 nodes) if you're just poking around.
 Optional — enable the write-ahead log:
 
 ```
-DAGDB_WAL=~/.dagdb/live.wal .build/release/dagdb-daemon --grid 1024
+DAGDB_WAL=~/.dagdb/live.wal .build/release/dagdb-daemon --grid 1024 --shm-file ~/.dagdb/dagdb_shm
 ```
 
 Optional — autosnapshot on graceful shutdown, and load it back on the
-next start (both opt-in; without the second one a restart comes up
-empty until you `LOAD`):
+next start (both opt-in; without the second one a restart rebuilds from
+the WAL alone, replayed whole over an empty engine — no `SAVE`, `TICK`
+or `LOAD` comes back — until you `LOAD`):
 
 ```
 DAGDB_AUTOSAVE=~/.dagdb/autosave.dags DAGDB_STARTUP_LOAD=~/.dagdb/autosave.dags \
-  .build/release/dagdb-daemon --grid 1024
+  .build/release/dagdb-daemon --grid 1024 --shm-file ~/.dagdb/dagdb_shm
 ```
 
 See [`data-and-persistence.md`](data-and-persistence.md) for why
@@ -116,15 +122,15 @@ curl -s -X POST http://localhost:8787/dagdb/dagdb_status \
      -H "Content-Type: application/json" -d '{}'
 ```
 
-104 endpoints under `/dagdb/`. See [`mcp.md`](mcp.md).
+116 endpoints under `/dagdb/`. See [`mcp.md`](mcp.md).
 
 ## Run the tests
 
 ```
 cd dagdb
-swift test                                        # 1,052 Swift tests (46 fixture-gated skips), about 13 minutes on an M5 Max
+swift test                                        # 1,540 Swift tests (49 skips: 48 fixture-gated, 1 opt-in), 2026-11-24
 python3 plugins/biology/rank_policies.py          # self-test
-python3 -m pytest plugins/loom                    # 16 adapter tests
+python3 -m pytest plugins/loom                    # 16 adapter tests (2026-11-19)
 ```
 
 ## Where to go next

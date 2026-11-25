@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C8 · Morton export/import carry all ten lanes and the back edges —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// Morton export/import carry all ten lanes and the back edges.
 final class CoreDurabilityMortonTests: XCTestCase {
 
     private var tmpDir: String!

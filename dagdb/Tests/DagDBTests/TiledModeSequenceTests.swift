@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// AMENDMENT 8 — the strip's register byte is two bytes, gates (i) and
-/// (ii) (`docs/contracts/TICKING_GATES_FROZEN.md`).
+/// The strip's register byte is two bytes, checks (i) and (ii).
 ///
 /// (i) **Mode sequences.** One file, `halo_lower.<parity>.bin`, serves two
 ///     readers: a rank-mode reader at round `k` wants a register's
@@ -18,7 +17,7 @@ import XCTest
 /// (ii) **Recovery case (ii) then a rank-mode partial-round completion.**
 ///      A strip rebuilt from a committed body at `k` yields `truthPost`
 ///      directly; `truthPre` for a register is that same source's
-///      `truthPost` in the previous-parity strip. AMENDMENT 7 wrote the
+///      `truthPost` in the previous-parity strip. An earlier fix wrote the
 ///      post-latch byte there and called the gap out of reach for a
 ///      rank-mode reader — it is not: a tile below, completed at round `k`
 ///      from the regenerated strip, reads exactly it.

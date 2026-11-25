@@ -38,6 +38,12 @@ public struct DagDBDelta {
 
         public init(path: String, nodeCount: Int, maxRank: Int,
                     staticState: DagDBState, keyframeInterval: Int = 60) throws {
+            // The format has no mode lane, so a graph with
+            // any non-binary node is refused by name before a byte is written
+            // (on load the format cannot hold one either).
+            if let i = staticState.nodeMode.firstIndex(where: { $0 != 0 }) {
+                throw DeltaError.ternaryNotSupported(node: i, mode: staticState.nodeMode[i])
+            }
             self.url = URL(fileURLWithPath: path)
             self.nodeCount = UInt32(nodeCount)
             self.maxRank = UInt8(maxRank)
@@ -246,8 +252,19 @@ public struct DagDBDelta {
 
     }
 
-    enum DeltaError: Error {
+    public enum DeltaError: Error, CustomStringConvertible {
         case invalidFormat
         case invalidMagic
+        /// `.dagb` carries no mode lane: a non-binary node is refused.
+        case ternaryNotSupported(node: Int, mode: UInt8)
+
+        public var description: String {
+            switch self {
+            case .invalidFormat: return "invalid .dagb format"
+            case .invalidMagic: return "invalid .dagb magic"
+            case let .ternaryNotSupported(node, mode):
+                return "ternary: .dagb refuses a graph with a non-binary node (node \(node), mode \(mode)); the format has no mode lane"
+            }
+        }
     }
 }

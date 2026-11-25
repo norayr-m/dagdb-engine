@@ -2,7 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// the interface phase — daemon-level tests for the real STREAM/HEADER/RECORD verbs
+/// Daemon-level tests for the real STREAM/HEADER/RECORD verbs
 /// (DagDBCommandHandler+TwinStreams.swift) and the twin-state wiring into
 /// WAL replay, snapshot save/load, and the READER read-only path.
 /// Fixtures reused verbatim from TwinCodableStreamTests / NamedStreamTests.
@@ -52,12 +52,12 @@ final class TwinStreamCommandTests: XCTestCase {
 
     func testStreamOpenReturnsIdNameDrawsZero() throws {
         let f = try HandlerFixture(side: 4)
-        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=ref draws=0")
+        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=\"ref\" draws=0")
     }
 
     func testStreamNextDrawsMatchNumpyVectorsAndShm() throws {
         let f = try HandlerFixture(side: 4)
-        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=ref draws=0")
+        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=\"ref\" draws=0")
         let reply = f.handler.handle("STREAM NEXT s00000001 6")
         XCTAssertTrue(reply.hasPrefix("OK STREAM NEXT id=s00000001 n=6 draws=6"), reply)
         XCTAssertEqual(readU64Vector(f), sixNumpyVectors)
@@ -78,10 +78,10 @@ final class TwinStreamCommandTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 0").hasPrefix("ERROR out_of_range"))
     }
 
-    /// D9 · this check could not fail. `tooMany` used to be
+    /// This check could not fail. `tooMany` used to be
     /// `f.handler.nodeCount * 3 + 1` — the SAME expression the handler used
     /// for its bound, so it compared the bound to itself and could never
-    /// detect drift from the real shm capacity (audit B finding 20). The
+    /// detect drift from the real shm capacity. The
     /// limit is now derived from the fixture's OWN buffer size.
     func testStreamNextTooLargeIsOutOfRange() throws {
         let f = try HandlerFixture(side: 4)
@@ -138,7 +138,7 @@ final class TwinStreamCommandTests: XCTestCase {
 
     private func openCourtRecord(_ f: HandlerFixture) {
         let reply = f.handler.handle("RECORD OPEN court \(w1LikeLine()) 0x853c49e6748fea9b 0xda3e39cb94b95bdb 0x5851f42d4c957f2d 0x14057b7ef767814f")
-        XCTAssertEqual(reply, "OK RECORD OPEN id=t00000001 name=court slices=0")
+        XCTAssertEqual(reply, "OK RECORD OPEN id=t00000001 name=\"court\" slices=0")
     }
 
     func testRecordOpenInadmissibleHeaderIsSchemaError() throws {
@@ -180,7 +180,7 @@ final class TwinStreamCommandTests: XCTestCase {
         let appender = try DagDBWAL.Appender(path: walPath, nodeCount: 16)
         let f = try HandlerFixture(side: 4, wal: appender)
 
-        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=ref draws=0")
+        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=\"ref\" draws=0")
         XCTAssertTrue(f.handler.handle("STREAM NEXT s00000001 6").hasPrefix("OK STREAM NEXT"))
 
         let fresh = TwinState()
@@ -208,7 +208,7 @@ final class TwinStreamCommandTests: XCTestCase {
         let appender = try DagDBWAL.Appender(path: walPath, nodeCount: 16)
         let f = try HandlerFixture(side: 4, wal: appender)
 
-        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=ref draws=0")
+        XCTAssertEqual(f.handler.handle(openLine), "OK STREAM OPEN id=s00000001 name=\"ref\" draws=0")
         XCTAssertEqual(f.handler.twin.streams.openCount, 1)
 
         try FileManager.default.removeItem(atPath: dir)

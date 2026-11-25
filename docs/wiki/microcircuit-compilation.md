@@ -45,10 +45,14 @@ will not iterate on.
 The bulk-install primitives:
 
 ```
-SET_RANKS_BULK       u64[nodeCount] rank vector at shm offset 8
-SET_LUTS_BULK        u64[nodeCount] LUT vector at shm offset 8
-SET_NEIGHBORS_BULK   Int32[nodeCount * 6] neighbour vector at shm offset 8
+SET_RANKS_BULK       [u32 nodeCount][u32 0x314D4801] at 0..7, u64[nodeCount] rank vector at shm offset 8
+SET_LUTS_BULK        [u32 nodeCount][u32 0x314D4802] at 0..7, u64[nodeCount] LUT vector at shm offset 8
+SET_NEIGHBORS_BULK   [u32 nodeCount][u32 0x314D4803] at 0..7, Int32[nodeCount * 6] neighbour vector at shm offset 8
 ```
+
+The header is the client frame (client_protocol 2;
+[`dsl.md`](dsl.md) § Input frames): a frame without it, or one marked
+for another verb, is refused as `ERROR stale_frame`, nothing written.
 
 Each takes one shm write + one DSL verb + one daemon-side memcpy.
 For a 1 M-node compiled graph, that is **three shm writes total**
@@ -67,11 +71,11 @@ Recommended compile pipeline:
 
 1. Compiler emits three numpy arrays in memory: `ranks: uint64[N]`,
    `luts: uint64[N]`, `neighbours: int32[N, 6]`.
-2. Memory-map the daemon's shm file at `/tmp/dagdb_shm_file`.
+2. Memory-map the daemon's shm file (the path given to `--shm-file`).
 3. Three rounds:
-   - Write ranks → call `SET_RANKS_BULK`.
-   - Write LUTs → call `SET_LUTS_BULK`.
-   - Write neighbours → call `SET_NEIGHBORS_BULK`.
+   - Write the header `[N][0x314D4801]` and the ranks → call `SET_RANKS_BULK`.
+   - Write the header `[N][0x314D4802]` and the LUTs → call `SET_LUTS_BULK`.
+   - Write the header `[N][0x314D4803]` and the neighbours → call `SET_NEIGHBORS_BULK`.
 4. Optional: run `VALIDATE` once to catch any invariant violation.
 5. Optional: `SAVE` to persist.
 

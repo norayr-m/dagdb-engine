@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C5 · HexGrid files are versioned and every section is length-checked —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// HexGrid files are versioned and every section is length-checked.
 final class CoreDurabilityGridTests: XCTestCase {
 
     private var tmpDir: String!
@@ -48,7 +47,7 @@ final class CoreDurabilityGridTests: XCTestCase {
         XCTAssertTrue(g.verifyColoring())
     }
 
-    // MARK: - F1 · the plain initialiser is the refusing one
+    // MARK: - The plain initialiser is the refusing one
 
     /// `HexGrid.init(width:height:)` itself throws what `validated` throws:
     /// there is no non-throwing door that skips `refusalReason`.

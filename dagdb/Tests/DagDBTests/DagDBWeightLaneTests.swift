@@ -1,7 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// E1 — weight-lane persistence (snapshot v6 + WAL weight opcodes).
+/// Weight-lane persistence (snapshot v6 + WAL weight opcodes).
 ///
 /// The engine has carried `edgeWeights: [Float]` and `activation: [Int16]`
 /// since birth, and the GPU has a weighted tick kernel — but neither lane
@@ -51,7 +51,7 @@ final class DagDBWeightLaneTests: XCTestCase {
     // MARK: - snapshot v6
 
     func testSnapshotVersionIsSix() {
-        XCTAssertEqual(DagDBSnapshot.version, 7)
+        XCTAssertEqual(DagDBSnapshot.version, 8)
     }
 
     func testSnapshotV6RoundtripWeightLanes() throws {

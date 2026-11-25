@@ -65,7 +65,7 @@ in ~1500 ops during Pass 1 backfill).
 
 - Check the daemon is up: `echo STATUS | nc -U /tmp/dagdb.sock`.
 - For scripts, add a single retry inside the write path. Or route
-  failures through the retry queue (T6 pattern):
+  failures through a retry queue:
   ```python
   resp = _dagdb_write_raw(record)
   if not resp.startswith("OK"):
@@ -235,10 +235,15 @@ echo "SAVE /path/outside/the/repo/snap.dags" | nc -U /tmp/dagdb.sock
 # Or enable autosave on the daemon's next start (and load it back at
 # startup — without DAGDB_STARTUP_LOAD a restart starts empty):
 DAGDB_AUTOSAVE=/path/outside/the/repo/auto.dags \
-DAGDB_STARTUP_LOAD=/path/outside/the/repo/auto.dags ./dagdb-daemon --grid 1024
+DAGDB_STARTUP_LOAD=/path/outside/the/repo/auto.dags ./dagdb-daemon --grid 1024 \
+  --shm-file /path/outside/the/repo/dagdb_shm
 
 # Or WAL for continuous durability:
-DAGDB_WAL=/path/outside/the/repo/live.wal ./dagdb-daemon --grid 1024
+DAGDB_WAL=/path/outside/the/repo/live.wal ./dagdb-daemon --grid 1024 \
+  --shm-file /path/outside/the/repo/dagdb_shm
+
+# --shm-file is required; with DAGDB_DATA_ROOT set, the WAL, the
+# autosave and every file a verb names must lie inside it, or the daemon refuses.
 ```
 
 See [`data-and-persistence.md`](data-and-persistence.md) for

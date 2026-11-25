@@ -2,12 +2,10 @@ import Foundation
 import Dispatch
 import Accelerate
 
-/// Alarm-set derived views over the sealed cortex v4 world (spec line 4,
-/// second view family). Reads `CortexFixture` only; every number here is
-/// judged against `docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md` — its
-/// Definitions, the six letters under ruling (e), and gates V1-V5, V7.
+/// Alarm-set derived views over the sealed cortex v4 world (the second
+/// family of derived views). Reads `CortexFixture` only.
 ///
-/// Station subsets (contract): for S in {2, 4, 6, 8}, the first S columns
+/// Station subsets: for S in {2, 4, 6, 8}, the first S columns
 /// of `fixture.tau` / `fixture.tauRaw` and the first S rows of a frame —
 /// both already ordered by `fixture.scan`, so index s in 0..<S means the
 /// same station on both sides without any remapping.
@@ -18,7 +16,7 @@ public struct DerivedViews {
         self.fixture = fixture
     }
 
-    // MARK: - Station-count bound (audit C finding 41)
+    // MARK: - Station-count bound
 
     /// nil iff `S` is a station subset this fixture can serve: `1...stations`
     /// (8 for the sealed cortex v4 world). Above it, `fixture.tau[c*stride + s]`
@@ -47,7 +45,7 @@ public struct DerivedViews {
         FileHandle.standardError.write(Data("ERROR derived_views \(what): \(message)\n".utf8))
     }
 
-    /// Finding 41's refusing door for library callers that want a throw
+    /// The station-count bound's refusing door for library callers that want a throw
     /// rather than a refusal-carrying result.
     public func checkStations(_ S: Int) throws {
         if let violation = stationsViolation(S) {
@@ -55,12 +53,12 @@ public struct DerivedViews {
         }
     }
 
-    // MARK: - Arrivals (ruling: per-station front index, S-subset re-zeroed)
+    // MARK: - Arrivals (per-station front index, S-subset re-zeroed)
 
     public struct Arrivals: Equatable {
         public let raw: [Double]
         public let zeroed: [Double]
-        /// Appended field, audit C finding 41: non-nil iff the call was
+        /// Appended field: non-nil iff the call was
         /// REFUSED (a station count outside the frame / the fixture); `raw`
         /// and `zeroed` are then empty. Never a silently wrong answer.
         public let refusal: String?
@@ -105,7 +103,7 @@ public struct DerivedViews {
         return Arrivals(raw: raw, zeroed: zeroed)
     }
 
-    // MARK: - Reflex (amended letter: 2-parameter fit per candidate, tie rule)
+    // MARK: - Reflex (2-parameter fit per candidate, tie rule)
 
     public struct ReflexDecision: Equatable {
         public let winner: Int
@@ -113,13 +111,12 @@ public struct DerivedViews {
         public let residuals: [Double]
         public let rMin: Double
         public let nearEdge: Int
-        /// Appended field, audit C finding 42: candidates whose
-        /// least-squares fit FAILED and were therefore skipped rather than
-        /// scored from a fabricated (alpha, beta) = (0, 0). `skipped=` is
-        /// what the contract asks be printed; it is carried here and
-        /// totalled in `ReflexSummary.skippedTotal`.
+        /// Appended field: candidates whose least-squares fit FAILED and
+        /// were therefore skipped rather than scored from a fabricated
+        /// (alpha, beta) = (0, 0). The printed `skipped=` is carried here
+        /// and totalled in `ReflexSummary.skippedTotal`.
         public let skipped: Int
-        /// Appended field, audit C finding 41 — see `Arrivals.refusal`.
+        /// Appended field — see `Arrivals.refusal`.
         public let refusal: String?
 
         public init(winner: Int, tiedSet: [Int], residuals: [Double], rMin: Double, nearEdge: Int,
@@ -162,7 +159,7 @@ public struct DerivedViews {
             var A = [Double](repeating: 0, count: S * 2)
             for s in 0..<S { A[s] = fixture.tau[base + s] }          // column 0
             for s in 0..<S { A[S + s] = 1.0 }                        // column 1
-            // Audit C finding 42: a nil `sol` is a LAPACK FAILURE, not a
+            // A nil `sol` is a LAPACK FAILURE, not a
             // fit at the origin. Scoring it from (0, 0) let a failed solve
             // produce a legitimate-looking residual that could win the
             // tie-break. The candidate is skipped (residual +infinity, so
@@ -185,7 +182,7 @@ public struct DerivedViews {
             residuals[c] = r
         }
 
-        // Finding 42: skipped candidates carry +infinity, so the minimum
+        // Skipped candidates carry +infinity, so the minimum
         // is taken over the SCORABLE ones only — otherwise a run in which
         // every solve failed would report every candidate as tied at
         // infinity.
@@ -218,7 +215,7 @@ public struct DerivedViews {
         public let framesWithTie: Int
         public let nearEdgeTotal: Int
         public let wallMs: Double
-        /// Appended fields, audit C findings 41/42.
+        /// Appended fields: the station-count refusal and the skipped-fit count.
         public let skippedTotal: Int
         public let refusal: String?
 
@@ -289,7 +286,7 @@ public struct DerivedViews {
         return Double(sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     }
 
-    // MARK: - Front-aligned energy features (ruling e.2/e.3/e.4)
+    // MARK: - Front-aligned energy features
 
     /// 3*S values, station-major — for each station s in 0..<S: (ii) log
     /// front-window energy ratio, (iii) magnitude-weighted spectral
@@ -363,7 +360,7 @@ public struct DerivedViews {
         public let std: [Double]
         public let centroids: [[Double]]
         public let wallMs: Double
-        /// Appended field, audit C finding 41 — see `Arrivals.refusal`.
+        /// Appended field — see `Arrivals.refusal`.
         public let refusal: String?
 
         public init(mean: [Double], std: [Double], centroids: [[Double]], wallMs: Double,
@@ -434,13 +431,13 @@ public struct DerivedViews {
         return Centroids(mean: mean, std: std, centroids: centroidsArr, wallMs: elapsedMs)
     }
 
-    // MARK: - Geometry-then-energy rung (V4)
+    // MARK: - Geometry-then-energy rung
 
     public struct RungSummary: Equatable {
         public let hits: Int
         public let minMargin: Double
         public let wallMs: Double
-        /// Appended field, audit C finding 41 — see `Arrivals.refusal`.
+        /// Appended field — see `Arrivals.refusal`.
         public let refusal: String?
 
         public init(hits: Int, minMargin: Double, wallMs: Double, refusal: String? = nil) {
@@ -503,7 +500,7 @@ public struct DerivedViews {
         return RungSummary(hits: hits, minMargin: minMargin, wallMs: elapsedMs)
     }
 
-    // MARK: - Arrival-geometry ceiling (V5)
+    // MARK: - Arrival-geometry ceiling
 
     public struct Ceiling: Equatable {
         public let identifiable: Int
@@ -511,7 +508,7 @@ public struct DerivedViews {
         public let groups: Int
         public let ceiling: Double
         public let exactTwinPairs: Int
-        /// Appended field, audit C findings 41 and 44 — see
+        /// Appended field — see
         /// `Arrivals.refusal`. Also carries the refusal for a non-finite
         /// `k = 1/(speed·dt·os)`.
         public let refusal: String?
@@ -537,7 +534,7 @@ public struct DerivedViews {
             return Ceiling(identifiable: 0, unique: 0, groups: 0, ceiling: 0, exactTwinPairs: 0,
                             refusal: violation)
         }
-        // Audit C finding 44: `speed` and `dt` are read off the fixture and
+        // `speed` and `dt` are read off the fixture and
         // `CortexFixture` pins only FS and OS, so a zero or non-finite
         // speed/dt made k infinite — every class size 1 and a ceiling of
         // 1.0, silently. Refused by name, naming the three values.

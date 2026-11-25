@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C2 · a SAVE that returns success can be LOADed —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// A SAVE that returns success can be LOADed.
 final class CoreDurabilitySnapshotTests: XCTestCase {
 
     private var tmpDir: String!

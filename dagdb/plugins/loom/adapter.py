@@ -2,15 +2,13 @@
 loom_to_dagdb.adapter
 ---------------------
 
-Pure-function event → DagNode translator for the event-log-to-DagDB migration
-(adapter ticket).
+Pure-function event → DagNode translator for the event-log-to-DagDB migration.
 
 No DagDB daemon dependency: this module only produces the values that a
 caller will hand to the DagDB Python client. That means it is trivially
-unit-testable and safe to drop into capture_latest.py once T1 (u32 rank
-refactor) ships on Tuesday.
+unit-testable.
 
-Schema (locked 2026-04-20 via Dag's review):
+Schema (locked 2026-04-20 after review):
 - rank       = MAX_RANK - insertCounter()        strictly monotonic, u32
 - truth      = event-type code (per-instance)    1-31 core, 32-255 plugin
 - lut        = LUT6Preset.identity               no compute on event nodes
@@ -81,7 +79,7 @@ class RankPolicy(Protocol):
     """
     Assign DagDB ranks to a batch of nodes.
 
-    Mirrors the Protocol Dag shipped in the biology plugin today. The Loom
+    Mirrors the protocol the biology plugin ships. The Loom
     uses single-node inserts, not batches, but conforms to the same shape so
     that a future unified rank-policy module can host all implementations.
     """
@@ -94,7 +92,7 @@ class LoomInsertCounterPolicy:
     """
     The Loom's rank policy: strict insert-counter. The policy is stateless —
     the caller hands in the current counter value via context. This deviates
-    from Dag's initial sketch (which held the counter internally) to keep
+    from the initial sketch (which held the counter internally) to keep
     the adapter purely functional and easy to test.
 
     Usage:

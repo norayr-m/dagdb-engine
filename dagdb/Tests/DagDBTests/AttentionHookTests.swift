@@ -1,9 +1,10 @@
 import XCTest
 @testable import DagDB
 
-/// `docs/contracts/HOOK_GATES_FROZEN.md` — the attention hook as a ticked
-/// process (twin spec line 6). Mechanics run on a synthetic 5-record mini
-/// fixture; H1/H2/H6 replay the sealed 200-record fixture and skip
+/// The attention hook as a ticked
+/// process. Mechanics run on a synthetic 5-record mini fixture; the sealed
+/// tests (the ledger against the court, the per-frame identities, the
+/// printed spend profile) replay the sealed 200-record fixture and skip
 /// (XCTSkip) when `DAGDB_W2_FIXTURE` is unset — precedent `AlarmFixtureTests
 /// .loadSealedOrSkip` / `SealedGateTests.loadSealedOrSkip`. A present-but-
 /// wrong hash FAILS (the load throws `shaMismatch`), never skips.
@@ -200,7 +201,7 @@ final class AttentionHookTests: XCTestCase {
         }
     }
 
-    // MARK: - Sealed: H1 — ledger equals the court at every grid point
+    // MARK: - Sealed: ledger equals the court at every grid point
 
     private func loadSealedOrSkip() throws -> AlarmFixture {
         guard let path = AlarmFixture.envPath else {
@@ -229,7 +230,7 @@ final class AttentionHookTests: XCTestCase {
         }
     }
 
-    // MARK: - Sealed: H2 — per-frame identities over the full 203 rows
+    // MARK: - Sealed: per-frame identities over the full 203 rows
 
     func testH2IdentitiesOver203Rows() throws {
         let fixture = try loadSealedOrSkip()
@@ -260,7 +261,7 @@ final class AttentionHookTests: XCTestCase {
             XCTAssertEqual(judgedNonQuietOrder, hook.result.servedTrialIds, "policy \(policy)")
         }
 
-        // H5's printed line for the richest point, asserted as data here.
+        // The daemon's result line for the richest point, asserted as data here.
         var allocHook = try AttentionHook(
             params: .init(alarmId: "a00000001", layoutId: nil, budget: budget,
                           delta: SealedCourt.delta, policy: .allocator),
@@ -280,7 +281,7 @@ final class AttentionHookTests: XCTestCase {
         XCTAssertEqual(uniformHook.result.cost, 94400.0)
     }
 
-    // MARK: - Sealed: H6 — printed, not gated
+    // MARK: - Sealed: the spend profile, printed, not checked
 
     func testH6PrintedSpendProfile() throws {
         let fixture = try loadSealedOrSkip()

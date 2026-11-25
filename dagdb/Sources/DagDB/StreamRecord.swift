@@ -1,6 +1,6 @@
 import Foundation
 
-/// Deterministic stream record — twin spec line 3 (deterministic replay).
+/// Deterministic stream record (deterministic replay).
 ///
 /// A record binds an admissible time-domain header (t-zero law) to a named
 /// generator and stores, per slice, the generator state AT ENTRY plus the
@@ -30,13 +30,13 @@ public struct StreamRecord: Equatable, Codable {
     public enum RecordError: Error, Equatable, CustomStringConvertible {
         case inadmissibleHeader([StreamHeader.Violation])
         case sliceOutOfRange(Int)
-        /// Finding 70: `recordSlice` loops `0..<count` and reserves
+        /// `recordSlice` loops `0..<count` and reserves
         /// `count` words on a public, unbounded `Int`.
         case sliceCountOutOfRange(Int)
-        /// Finding 69: the generator's draw counter must account for
+        /// The generator's draw counter must account for
         /// exactly the slices the record carries.
         case sliceAccounting(String)
-        /// Finding 71: quantity 7 of the t-zero law, compared at last.
+        /// Quantity 7 of the t-zero law, compared at last.
         case inadmissibleClockSyncFloor([StreamHeader.ClockSyncViolation])
 
         public var description: String {
@@ -53,11 +53,10 @@ public struct StreamRecord: Equatable, Codable {
     }
 
     /// Ceiling on one slice's draw count — the same 10 000 the daemon's
-    /// tick/advance verbs and the twin replay caps use (finding 70, and
-    /// the replay half of finding 63).
+    /// tick/advance verbs and the twin replay caps use.
     public static let maxSliceCount = 10_000
 
-    /// Finding 69: the slices and the generator must tell one story —
+    /// The slices and the generator must tell one story —
     /// every slice's `count` matches its payload, entry draw counters
     /// chain, and the last slice's end is exactly the generator's own
     /// `draws`. Returns a human-readable reason, or nil when they agree.
@@ -102,7 +101,7 @@ public struct StreamRecord: Equatable, Codable {
     }
 
     /// Birth refuses an inadmissible header — the engine does not carry
-    /// undeclared or self-contradictory streams (spec line 7).
+    /// undeclared or self-contradictory streams.
     public init(header: StreamHeader, generator: NamedStream) throws {
         let v = header.violations()
         guard v.isEmpty else { throw RecordError.inadmissibleHeader(v) }
@@ -174,7 +173,7 @@ public struct StreamRecord: Equatable, Codable {
     }
 
     /// Draw `count` values as the next slice, capturing the entry boundary.
-    /// Finding 70: a negative count (which traps on `0..<count`) or one
+    /// A negative count (which traps on `0..<count`) or one
     /// above `maxSliceCount` (an unbounded allocation) refuses by name.
     @discardableResult
     public mutating func recordSlice(count: Int) throws -> Slice {

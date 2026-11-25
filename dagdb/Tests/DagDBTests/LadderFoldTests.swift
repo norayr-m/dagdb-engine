@@ -2,12 +2,12 @@ import XCTest
 import Foundation
 @testable import DagDB
 
-/// Fold API — docs/contracts/FOLD_API_GATES_FROZEN.md (F1–F3, F5). The gates
+/// Fold API. The checks
 /// are bit-for-bit, no tolerance: any mismatch here is a finding about
 /// arithmetic order, never absorbed by a loosened comparison.
 final class LadderFoldTests: XCTestCase {
 
-    // MARK: - Fixture loading (F1, in-repo, sha-checked, never skips)
+    // MARK: - Fixture loading (the control fixture: in-repo, sha-checked, never skips)
 
     private struct ControlFixture: Decodable {
         let kept_nodes: [Int]
@@ -50,7 +50,7 @@ final class LadderFoldTests: XCTestCase {
         return (engine, grid)
     }
 
-    // MARK: - F1: control, in repo, bit-for-bit
+    // MARK: - Control, in repo, bit-for-bit
 
     func testF1ControlBitForBit() throws {
         let fixture = try Self.loadControlFixture()
@@ -85,7 +85,7 @@ final class LadderFoldTests: XCTestCase {
         }
     }
 
-    // MARK: - F2: court ladders, out of repo, bit-for-bit
+    // MARK: - Court ladders, out of repo, bit-for-bit
 
     private static let envVar = "DAGDB_E3_RUNS"
     private static let pinnedSHA: [String: String] = [
@@ -199,7 +199,7 @@ final class LadderFoldTests: XCTestCase {
         try checkLadder(profile: "G2")
     }
 
-    // MARK: - F3: runner JSON shape matches fixture
+    // MARK: - Runner JSON shape matches fixture
 
     func testF3RunnerJSONShapeMatchesFixture() throws {
         let (engine, grid) = try makeControlEngine()

@@ -1,8 +1,8 @@
-/// DSLParser+Twin — grammar for the nine twin verb families (interface phase, 2026-09).
+/// DSLParser+Twin — grammar for the nine twin verb families.
 /// Routed from DSLParser.parse when the first uppercased token is one of
 /// STREAM HEADER RECORD RINGS CLOCK GEAR XCONV BUDGET ALARM.
 ///
-/// Conventions (plan §0 / T8.1 grammar block):
+/// Conventions:
 ///  - ids/names/paths are read from `rawTokens` (case preserved).
 ///  - verbs are matched against `tokens` (uppercased).
 ///  - integers are u64 decimal or `0x`-prefixed hex.
@@ -264,8 +264,8 @@ extension DSLParser {
                   let warmup = Int(rawTokens[6]) else { return .unknown(input) }
             return .twin(.xconvCheck(nA: nA, nB: nB, kA: kA, kB: kB, warmup: warmup))
         case "SEALED":
-            // XCONV SEALED <id> <n> [<warmup>] — gate K3, the court's
-            // frozen residual (distinct from XCONV CHECK, the patrol check
+            // XCONV SEALED <id> <n> [<warmup>] — the court's
+            // fixed residual (distinct from XCONV CHECK, the patrol check
             // above).
             guard rawTokens.count == 4 || rawTokens.count == 5,
                   let n = Int(rawTokens[3]) else { return .unknown(input) }
@@ -365,8 +365,7 @@ extension DSLParser {
 
     // MARK: - VIEW
 
-    /// docs/contracts/DERIVED_VIEWS_GATES_FROZEN.md, gate V6 — the alarm-set
-    /// derived views over the sealed cortex v4 world. Grammar mirrors ALARM's
+    /// The alarm-set derived views over the sealed cortex v4 world. Grammar mirrors ALARM's
     /// LOAD/INFO/LIST/CLOSE shape; REFLEX/RUNG/CEILING/FEATURES are new.
     private static func parseView(_ rawTokens: [String], _ tokens: [String], _ input: String) -> DSLCommand {
         guard tokens.count >= 2 else { return .unknown(input) }
@@ -413,8 +412,7 @@ extension DSLParser {
 
     // MARK: - KERNEL
 
-    /// docs/contracts/KERNELS_GATES_FROZEN.md, gates K3/K4 — per-path
-    /// kernel storage. Grammar mirrors ALARM/VIEW's LOAD/INFO/LIST/CLOSE
+    /// Per-path kernel storage. Grammar mirrors ALARM/VIEW's LOAD/INFO/LIST/CLOSE
     /// shape; LOAD's optional groups are in a FIXED order: `[SHA <hex64>]
     /// [TAU <τA> <τB> SIGMA <σ>] [WARMUP <n>]` — any other order (or a
     /// group appearing twice) is `.unknown`, never reordered/matched.
@@ -540,7 +538,7 @@ extension DSLParser {
         }
     }
 
-    // MARK: - FOLD (gate F4)
+    // MARK: - FOLD
 
     private static func parseFold(_ rawTokens: [String], _ tokens: [String], _ input: String) -> DSLCommand {
         guard tokens.count >= 2 else { return .unknown(input) }
@@ -603,7 +601,7 @@ extension DSLParser {
         return .twin(.foldRun(maxRank: maxRank, keepRank: keepRank, f1: f1, f2: f2, f3: f3, checkpoints: checkpoints))
     }
 
-    // MARK: - HOOK (gate H5 — docs/contracts/HOOK_GATES_FROZEN.md)
+    // MARK: - HOOK
 
     /// Grammar mirrors ALARM/VIEW/KERNEL's LOAD/INFO/LIST/CLOSE shape;
     /// OPEN's optional groups are in a FIXED order: `[DELTA <d>] [POLICY

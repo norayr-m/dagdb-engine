@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C3 · VALIDATE covers what the engine evaluates —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`.
+/// VALIDATE covers what the engine evaluates.
 ///
 /// One directly injected violation per invariant.
 final class CoreDurabilityValidateTests: XCTestCase {
@@ -92,7 +91,7 @@ final class CoreDurabilityValidateTests: XCTestCase {
     /// Two nodes above the configured bound, ONE of which the dispatch
     /// actually reaches. The old line counted both and named neither
     /// distinctly, so "2 nodes at or above maxRank 8" read as two nodes the
-    /// tick skips when only one of them is skipped (audit A, finding 10).
+    /// tick skips when only one of them is skipped.
     func testValidateSeparatesRanksTheDispatchReachesFromRanksItDoesNot() throws {
         let e = try bareEngine(side: 8, maxRank: 8)     // 64 nodes, bound 8
         let n = e.nodeCount

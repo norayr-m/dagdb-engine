@@ -1,6 +1,5 @@
 /// KERNEL / XCONV SEALED verb family — per-path kernel storage and the
-/// sealed cross-convolution residual (spec line 6, second half). Gate
-/// contract: docs/contracts/KERNELS_GATES_FROZEN.md, gates K3 and K4.
+/// sealed cross-convolution residual.
 ///
 /// `KERNEL LOAD` follows VIEW LOAD's guardPath-first, validate-before-mint
 /// pattern (DagDBCommandHandler+TwinView.swift): `guardPath` rejects
@@ -13,16 +12,15 @@
 /// carries the pair's OWN computed sha256 (not the caller's optional `SHA`
 /// argument) — that is the by-reference pin later restore/replay verifies
 /// against; τA/τB/σ_source/declaredWarmup are the caller's DECLARED values
-/// (K4: never read from the kernels file). Because the pair is already in
+/// (never read from the kernels file). Because the pair is already in
 /// hand, the custom `kernelLoader` closure passed to `twin.apply` just
 /// returns it directly rather than re-reading the file.
 ///
-/// `XCONV SEALED` is the court's frozen residual (K1/K2's formula,
+/// `XCONV SEALED` is the court's fixed residual (the formula in
 /// `SealedCrossConvolution.residual`) reached over the socket — it is NOT
 /// the standing `XCONV CHECK` patrol check (DagDBCommandHandler+TwinBudget.
-/// swift), which stays unchanged and is not the contract's finding (K5:
-/// the two are printed side by side by the library's own test, not by this
-/// handler). INFO/LIST are pure reads; CLOSE logs `.close` first, like
+/// swift), which stays unchanged (the two are printed side by side by the
+/// library's own test, not by this handler). INFO/LIST are pure reads; CLOSE logs `.close` first, like
 /// every other twin CLOSE verb.
 import Foundation
 import DagDB
@@ -33,14 +31,26 @@ extension DagDBCommandHandler {
 
         case .kernelLoad(let path, let shaArg, let tauA, let tauB, let sigmaSource, let declaredWarmup):
             if let err = guardPath(path) { return err }
+            // The count cap, then the load's peak by the file's size (3.5-5.1 x the file).
+            if let e = alloc1bTwinCap("KERNEL LOAD", prefix: "k") { return e }
+            // Admitted on the opened file's st_size (see ALARM LOAD's note).
+            // The one JSON pair (see ALARM LOAD's note); a flat 1.1*(4.2*file + 64 KiB) was broken by 2.32x.
+            let admitKernel: (Int) -> String? = { [unowned self] fb in
+                self.admit("KERNEL LOAD", bytes: Self.newBytes(Self.alloc1bMargin * AdmissionCharge.jsonRead(fileBytes: fb)),
+                           what: "the file's read, 1.1*2.52 B per byte for \(fb) B")
+            }
+            let parseKernel: (Data) -> String? = { [unowned self] d in self.jsonParseAdmission("KERNEL LOAD", d) }
             let loaded: (pair: KernelPair, sha256: String)
             do {
                 loaded = try KernelPair.load(path: path, expectedSHA256: shaArg, tauA: tauA, tauB: tauB,
-                                              sigmaSource: sigmaSource, declaredWarmup: declaredWarmup)
+                                              sigmaSource: sigmaSource, declaredWarmup: declaredWarmup,
+                                              admit: admitKernel, admitParse: parseKernel)
+            } catch DaemonFile.Refusal.admission(let line) {
+                return line
             } catch {
                 return kernelLoadErrorLine(error)
             }
-            // F5 · alpha's throwing door, BEFORE the id is minted and the op
+            // The throwing door, BEFORE the id is minted and the op
             // reaches the WAL: a resolved warmup that leaves no comparison
             // window must not install a kernel the daemon then reports on.
             let resolved: (value: Int, derived: Bool)?
@@ -69,16 +79,16 @@ extension DagDBCommandHandler {
 
         case .xconvSealed(let id, let n, let warmupOverride):
             guard n >= 2 else { return "ERROR out_of_range: n must be >= 2" }
-            guard let set = twin.kernels.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.kernels.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             let pair = set.pair
-            // D3 · `2 * n * 8` traps on overflow before this guard can fire.
+            // `2 * n * 8` traps on overflow before this guard can fire.
             guard let inputBytes = checkedProduct(2, n, 8).flatMap({ checkedSum(8, $0) }) else {
                 return overflowRefusal("XCONV SEALED input", "n=\(n)")
             }
             guard inputBytes <= shmCapacityBytes else {
                 return "ERROR out_of_range: XCONV SEALED input \(inputBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
             }
-            // F5 · the same door on the override path: a warmup at or above
+            // The same door on the override path: a warmup at or above
             // `window_samples` was silently clamped downstream.
             let resolvedOpt: (value: Int, derived: Bool)?
             do {
@@ -95,6 +105,8 @@ extension DagDBCommandHandler {
             guard let bOffset = checkedProduct(n, 8).flatMap({ checkedSum(8, $0) }) else {
                 return overflowRefusal("XCONV SEALED input", "n=\(n)")
             }
+            // 2n f64 (a, then b), after every check above; the count overflow-reporting.
+            if let r = shm1FrameRefusal(.xconvSealed, 2, times: n) { return r }
             guard let a = readDoubles(count: n, at: 8),
                   let b = readDoubles(count: n, at: bOffset) else {
                 return "ERROR out_of_range: XCONV SEALED input \(inputBytes) bytes exceeds shm capacity \(shmCapacityBytes)"
@@ -107,11 +119,11 @@ extension DagDBCommandHandler {
             )
 
         case .kernelInfo(let id):
-            guard let set = twin.kernels.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.kernels.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             let pair = set.pair
             let resolved: (value: Int, derived: Bool)?
             do {
-                resolved = try pair.checkedWarmup(override: nil)   // F5
+                resolved = try pair.checkedWarmup(override: nil)
             } catch {
                 return kernelWarmupRefusal("KERNEL INFO", error)
             }
@@ -122,7 +134,7 @@ extension DagDBCommandHandler {
             let sigmaStr = pair.meta.sigmaSource.map { "\($0)" } ?? "none"
             return twinResponse(
                 "KERNEL INFO", sessionId: sessionId,
-                "id=\(id) path=\(set.ref.path) sha256=\(set.ref.sha256) taps=\(pair.taps) " +
+                "id=\(id) path=\(Reply.quoted(set.ref.path)) sha256=\(set.ref.sha256) taps=\(pair.taps) " +
                 "fs=\(formatKernelFS(pair.meta.fs)) window=\(pair.meta.window) " +
                 "ears=\(pair.meta.earA)/\(pair.meta.earB) tau_a=\(tauAStr) tau_b=\(tauBStr) sigma=\(sigmaStr) " +
                 "warmup=\(warmupStr) derived=\(derivedStr)"
@@ -133,7 +145,7 @@ extension DagDBCommandHandler {
             return twinResponse("KERNEL LIST", sessionId: sessionId, "count=\(ids.count)\(idsSuffixKernel(ids))")
 
         case .kernelClose(let id):
-            guard twin.kernels.get(id) != nil else { return "ERROR not_found: \(id)" }
+            guard twin.kernels.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return kernelStateErrorLine(error) }
@@ -153,9 +165,15 @@ extension DagDBCommandHandler {
     /// rate is a whole number of Hz (3000) — printed without a trailing
     /// ".0" when it round-trips through Int exactly, else with full Double
     /// precision (never silently truncated).
+    ///
+    /// fs comes from the kernels file KERNEL LOAD
+    /// names (KernelPair refuses only a non-finite one), and `Int(v)` trapped
+    /// on a whole number outside Int (fs 1e300 killed the KERNEL LOAD and
+    /// KERNEL INFO replies). The conversion is exact or not taken: such an fs
+    /// prints as the Double it is, like every fs that is not a whole number.
     private func formatKernelFS(_ v: Double) -> String {
-        guard v.isFinite, v == v.rounded() else { return "\(v)" }
-        return "\(Int(v))"
+        guard v.isFinite, v == v.rounded(), let i = Int(exactly: v) else { return "\(v)" }
+        return "\(i)"
     }
 
     // MARK: - Error formatting
@@ -169,19 +187,19 @@ extension DagDBCommandHandler {
         if let e = error as? KernelPair.KernelError {
             switch e {
             case .fileNotFound(let p):
-                return "ERROR io: file not found: \(p)"
+                return "ERROR io: file not found: \(Reply.quoted(p))"
             case .shaMismatch(let expected, let actual):
-                return "ERROR io: sha256 mismatch: expected \(expected) actual \(actual)"
+                return "ERROR io: sha256 mismatch: expected \(Reply.quoted(expected)) actual \(actual)"
             case .badLayout(let reason):
                 return "ERROR io: bad layout: \(reason)"
             case .badKernel(let reason):
                 return "ERROR io: bad kernel: \(reason)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
-    /// F5 · `KernelPair.checkedWarmup`'s refusal on the wire. It is a
+    /// `KernelPair.checkedWarmup`'s refusal on the wire. It is a
     /// validating front door catching what used to be a silent clamp, so it
     /// carries `bad_value` like every other such door. Reachable today only
     /// from `XCONV SEALED`'s override: `KernelPair.load` runs the same check
@@ -191,24 +209,24 @@ extension DagDBCommandHandler {
         if let e = error as? KernelPair.KernelError, case .badLayout(let why) = e {
             return "ERROR bad_value: \(verb) refused: \(why)"
         }
-        return "ERROR bad_value: \(verb) refused: \(error)"
+        return "ERROR bad_value: \(verb) refused: \(Reply.errorWords(error))"
     }
 
     /// `TwinState.TwinError` renders via its own `description`; kept as a
     /// file-local twin (see DagDBCommandHandler+TwinAlarm.swift's
-    /// `twinStateErrorLine`) since `private` helpers in a sibling extension
+    /// `twinStateErrorLine`) since `private` helpers in another extension
     /// file aren't visible here.
     private func kernelStateErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
-            case .notFound(let s): return "ERROR not_found: \(s)"
-            case .badId(let s): return "ERROR bad_value: \(s)"
+            case .notFound(let s): return "ERROR not_found: \(Reply.quoted(s))"
+            case .badId(let s): return "ERROR bad_value: \(Reply.quoted(s))"
             case .badValue(let s): return "ERROR bad_value: \(s)"
             case .schema(let s): return "ERROR schema: \(s)"
             case .io(let s): return "ERROR io: \(s)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
     private func idsSuffixKernel(_ ids: [String]) -> String {

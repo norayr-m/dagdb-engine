@@ -1,14 +1,13 @@
-/// ALARM verb family — real implementation (interface phase, 2026-09).
+/// ALARM verb family.
 ///
-/// `ALARM LOAD` follows the plan's guardPath-first, validate-before-mint
+/// `ALARM LOAD` follows the guardPath-first, validate-before-mint
 /// pattern: `guardPath` rejects traversal/outside-dataRoot paths before any
 /// file I/O; the fixture is then loaded ONCE (any `AlarmFixture.FixtureError`
-/// — file missing, SHA mismatch, malformed entry — becomes `ERROR io:`,
-/// per contract amendment 1 §15: a present-but-wrong-hash file is never
-/// silently accepted). The `TwinOp.alarmLoad` logged to the WAL and applied
+/// — file missing, SHA mismatch, malformed entry — becomes `ERROR io:`:
+/// a present-but-wrong-hash file is never silently accepted). The `TwinOp.alarmLoad` logged to the WAL and applied
 /// to `twin` always carries the fixture's OWN computed sha256 (not the
 /// caller's optional `SHA` argument) — that is the by-reference pin later
-/// restore/replay verifies against (interface-phase convention 15). Because the fixture is
+/// restore/replay verifies against. Because the fixture is
 /// already in hand, the custom `alarmLoader` closure passed to `twin.apply`
 /// just returns it directly rather than re-reading the file.
 ///
@@ -24,11 +23,30 @@ extension DagDBCommandHandler {
 
         case .alarmLoad(let path, let sha256Arg):
             if let err = guardPath(path) { return err }
+            // The count cap, then the load's peak by the file's size, before it is read
+            // (re-measured: 5.1-11.7 x the file; a refused parse peaks the same).
+            if let e = alloc1bTwinCap("ALARM LOAD", prefix: "a") { return e }
+            // Admitted on the OPENED file's st_size, before a byte is read (an lstat size would charge
+            // a link in the root its own few bytes while its 100 MiB target was read).
+            // The one JSON pair, 1.1*2.52 B per byte before the read, then 1.1*(98.4 B per token +
+            // 2.52 B per byte) on the bytes read before the parse (a flat 1.1*(8.6*file + 300 KB) was broken 1.25x by keys).
+            let admitAlarm: (Int) -> String? = { [unowned self] fb in
+                self.admit("ALARM LOAD", bytes: Self.newBytes(Self.alloc1bMargin * AdmissionCharge.jsonRead(fileBytes: fb)),
+                           what: "the file's read, 1.1*2.52 B per byte for \(fb) B")
+            }
+            let parseAlarm: (Data) -> String? = { [unowned self] d in self.jsonParseAdmission("ALARM LOAD", d) }
             let fixture: AlarmFixture
             do {
-                fixture = try AlarmFixture.load(path: path, expectedSHA256: sha256Arg)
+                fixture = try AlarmFixture.load(path: path, expectedSHA256: sha256Arg, admit: admitAlarm, admitParse: parseAlarm)
+            } catch DaemonFile.Refusal.admission(let line) {
+                return line
             } catch {
                 return alarmLoadErrorLine(error)
+            }
+            // A record key is a client-given label the alarm set stores; over the cap, refused by name.
+            if let long = fixture.records.first(where: { $0.key.utf8.count > TwinState.nameCap }) {
+                return nameCapRefusal("ALARM LOAD", long.key, what: "record key \(Reply.quoted(String(long.key.prefix(32))))... (record \(long.index))")
+                    ?? "ERROR bad_value: ALARM LOAD: a record key is over the name cap; nothing written"
             }
             let id = twin.nextId(prefix: "a")
             let op = TwinOp.alarmLoad(id: id, path: path, sha256: fixture.sha256)
@@ -53,10 +71,10 @@ extension DagDBCommandHandler {
             )
 
         case .alarmInfo(let id):
-            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             return twinResponse(
                 "ALARM INFO", sessionId: sessionId,
-                "id=\(id) path=\(set.ref.path) records=\(set.fixture.records.count) sha256=\(set.ref.sha256)"
+                "id=\(id) path=\(Reply.quoted(set.ref.path)) records=\(set.fixture.records.count) sha256=\(set.ref.sha256)"
             )
 
         case .alarmList:
@@ -64,14 +82,16 @@ extension DagDBCommandHandler {
             return twinResponse("ALARM LIST", sessionId: sessionId, "count=\(ids.count)\(idsSuffixAlarm(ids))")
 
         case .alarmClose(let id):
-            guard twin.alarms.get(id) != nil else { return "ERROR not_found: \(id)" }
+            guard twin.alarms.get(id) != nil else { return "ERROR not_found: \(Reply.quoted(id))" }
+            // The dependency check before the WAL.
+            if let e = twin.closeRefusal(id) { return twinStateErrorLine(e) }
             let op = TwinOp.close(id: id)
             if let err = appendTwinWAL(op) { return err }
             do { try twin.apply(op) } catch { return twinStateErrorLine(error) }
             return twinResponse("ALARM CLOSE", sessionId: sessionId, "id=\(id)")
 
         case .alarmFrame(let id, let idx):
-            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             let records = set.fixture.records
             guard idx >= 1 && idx <= records.count else {
                 return "ERROR out_of_range: idx \(idx) not in [1, \(records.count)]"
@@ -87,7 +107,7 @@ extension DagDBCommandHandler {
             )
 
         case .alarmCourt(let id, let budget):
-            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             guard budget.isFinite else { return "ERROR bad_value: budget must be finite" }
             let arms = AllocatorCourt.run(records: set.fixture.records, budget: budget)
             guard let result = arms[.allocator] else { return "ERROR io: allocator arm missing" }
@@ -99,7 +119,7 @@ extension DagDBCommandHandler {
             )
 
         case .alarmSuccessor(let id, let budget, let epsM, let epsS, let epsN):
-            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             guard budget.isFinite else { return "ERROR bad_value: budget must be finite" }
             let model: CorruptionModel
             do {
@@ -107,7 +127,7 @@ extension DagDBCommandHandler {
             } catch {
                 return corruptionErrorLine(error)
             }
-            // F3 (beta 51) · the counts table is validated at the door, so a
+            // The counts table is validated at the door, so a
             // fixture short of a declared `classSpecs` label is refused by
             // name instead of having the absent class folded into zero.
             do {
@@ -116,9 +136,9 @@ extension DagDBCommandHandler {
                 if case .missingClassCount(let label) = e {
                     return "ERROR out_of_range: missing class count \(label)"
                 }
-                return "ERROR out_of_range: \(e)"
+                return Reply.errorLine("out_of_range", e)
             } catch {
-                return "ERROR out_of_range: \(error)"
+                return Reply.errorLine("out_of_range", error)
             }
             let totals = SuccessorCourt.frameTotals(counts: set.fixture.classCounts, model: model, budget: budget)
             return twinResponse(
@@ -129,7 +149,7 @@ extension DagDBCommandHandler {
             )
 
         case .alarmCorrupt(let id, let idx, let epsM, let epsS, let epsN):
-            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(id)" }
+            guard let set = twin.alarms.get(id) else { return "ERROR not_found: \(Reply.quoted(id))" }
             let records = set.fixture.records
             guard idx >= 1 && idx <= records.count else {
                 return "ERROR out_of_range: idx \(idx) not in [1, \(records.count)]"
@@ -142,15 +162,15 @@ extension DagDBCommandHandler {
             }
             let record = records[idx - 1]
             let outcomes = model.enumerateOutcomes(for: record.culprit)
-            // D2 · the outcome count comes from the loaded fixture, not from
+            // The outcome count comes from the loaded fixture, not from
             // `nodeCount`, so `8 + n*40` must be compared to capacity BEFORE
-            // a byte is written (audit B finding 10).
+            // a byte is written.
             let (refusal, truncated) = writeCorruptionOutcomes(outcomes)
             if let refusal { return refusal }
             let weightSum = outcomes.reduce(0.0) { $0 + $1.weight }
-            // D7 · the row holds 5 claim slots; `nClaims` carries the true
-            // count, so truncation is detectable — but the reply never said
-            // the row was lossy (finding 11). The row keeps its width (the
+            // The row holds 5 claim slots; `nClaims` carries the true
+            // count, so truncation is detectable — but the reply used to say nothing
+            // about the row being lossy. The row keeps its width (the
             // sealed model's widest outcome is exactly 5 claims: 4 phantom
             // pockets plus the branch claim); the REPLY gained the flag.
             return twinResponse(
@@ -206,23 +226,22 @@ extension DagDBCommandHandler {
 
     /// `AlarmFixture.FixtureError` (file missing, sha mismatch, malformed
     /// entry, unknown class) always maps to `ERROR io:` — every alarm-load
-    /// failure is an I/O-layer finding, never silently accepted (contract
-    /// amendment 1 §15). The sha-mismatch line always contains the literal
-    /// phrase "sha256 mismatch".
+    /// failure is an I/O-layer finding, never silently accepted. The
+    /// sha-mismatch line always contains the literal phrase "sha256 mismatch".
     private func alarmLoadErrorLine(_ error: Error) -> String {
         if let e = error as? AlarmFixture.FixtureError {
             switch e {
             case .fileNotFound(let p):
-                return "ERROR io: file not found: \(p)"
+                return "ERROR io: file not found: \(Reply.quoted(p))"
             case .shaMismatch(let expected, let actual):
-                return "ERROR io: sha256 mismatch: expected \(expected) actual \(actual)"
+                return "ERROR io: sha256 mismatch: expected \(Reply.quoted(expected)) actual \(actual)"
             case .badEntry(let key, let reason):
-                return "ERROR io: bad entry '\(key)': \(reason)"
+                return "ERROR io: bad entry \(Reply.quoted(key)): \(reason)"
             case .unknownClass(let key, let value):
-                return "ERROR io: unknown class '\(value)' at '\(key)'"
+                return "ERROR io: unknown class \(Reply.quoted(value)) at \(Reply.quoted(key))"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
     private func corruptionErrorLine(_ error: Error) -> String {
@@ -232,21 +251,21 @@ extension DagDBCommandHandler {
                 return "ERROR bad_value: \(name)=\(v) must be finite and in [0, 1]"
             }
         }
-        return "ERROR bad_value: \(error)"
+        return Reply.errorLine("bad_value", error)
     }
 
     /// `TwinState.TwinError` renders via its own `description`; kept as a
     /// file-local twin (see DagDBCommandHandler+TwinStreams.swift's
-    /// `twinErrorLine`) since `private` helpers in a sibling extension file
+    /// `twinErrorLine`) since `private` helpers in another extension file
     /// aren't visible here. `ALARM CLOSE` on an alarm set a live hook
-    /// depends on throws `.badValue("hook <h> depends on <id>")` (gate H5) —
+    /// depends on throws `.badValue("hook <h> depends on <id>")` —
     /// mapped to `ERROR forbidden:`, not `bad_value`, per the hook grammar's
     /// refusal line.
     private func twinStateErrorLine(_ error: Error) -> String {
         if let e = error as? TwinState.TwinError {
             switch e {
-            case .notFound(let s): return "ERROR not_found: \(s)"
-            case .badId(let s): return "ERROR bad_value: \(s)"
+            case .notFound(let s): return "ERROR not_found: \(Reply.quoted(s))"
+            case .badId(let s): return "ERROR bad_value: \(Reply.quoted(s))"
             case .badValue(let s):
                 if s.contains("depends on") { return "ERROR forbidden: \(s)" }
                 return "ERROR bad_value: \(s)"
@@ -254,7 +273,7 @@ extension DagDBCommandHandler {
             case .io(let s): return "ERROR io: \(s)"
             }
         }
-        return "ERROR io: \(error)"
+        return Reply.errorLine("io", error)
     }
 
     private func idsSuffixAlarm(_ ids: [String]) -> String {

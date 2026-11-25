@@ -1,10 +1,42 @@
 -- DagDB Views — Make graph data visible in DBeaver/pgAdmin
 -- Run this after CREATE EXTENSION pg_dagdb;
--- Daemon must be running: .build/debug/dagdb-daemon --grid 256
+-- Daemon must be running: .build/debug/dagdb-daemon --grid 256 --shm-file <path>
+-- (--shm-file is required; set DAGDB_SHM_FILE=<path> in the Postgres environment to the same file)
+
+-- dagdb_exec's columns: node_id and rank are
+-- bigint (u64 on the wire), truth is the byte, mode is byte 18 of the row
+-- (kind in bits 0-1: 0 BINARY, 1 TTABLE, 2 TTHRESH; bit 2 NOSKIP), trit is the
+-- byte read as -1/0/+1.
+
+-- Upgrading a database that ran main's setup_views.sql. CREATE OR REPLACE cannot widen a view's columns
+-- (dagdb_nodes: node_id integer → bigint, rank smallint → bigint) or change a
+-- function's RETURNS TABLE (dagdb_run, dagdb_rank, dagdb_traverse), so those
+-- are dropped first when they exist, with their old signatures, and so is a
+-- one-argument dagdb_glyph(smallint). Everything below is then created again,
+-- dagdb_map included; anything else the CASCADE takes is the operator's.
+-- Run this after the extension's own SQL (CREATE EXTENSION pg_dagdb, or its
+-- generated script), which drops main's dagdb_exec and the views reading it.
+DROP VIEW IF EXISTS dagdb_nodes CASCADE;
+DROP FUNCTION IF EXISTS dagdb_run(integer);
+DROP FUNCTION IF EXISTS dagdb_rank(integer);
+DROP FUNCTION IF EXISTS dagdb_traverse(integer, integer);
+DROP FUNCTION IF EXISTS dagdb_glyph(smallint);
+
+-- A node's truth as a glyph: a ternary node renders its trit as
+-- − ○ +; a binary node renders its byte as before (● for 1, ○ otherwise).
+CREATE OR REPLACE FUNCTION dagdb_glyph(truth smallint, mode smallint)
+RETURNS text AS $$
+    SELECT CASE
+        WHEN mode IS NOT NULL AND (mode & 3) <> 0 THEN
+            CASE truth WHEN 0 THEN '−' WHEN 1 THEN '+' ELSE '○' END
+        WHEN truth = 1 THEN '●'
+        ELSE '○'
+    END;
+$$ LANGUAGE sql IMMUTABLE;
 
 -- View: all nodes with their properties
 CREATE OR REPLACE VIEW dagdb_nodes AS
-SELECT node_id, rank, truth, node_type
+SELECT node_id, rank, truth, node_type, mode, trit, dagdb_glyph(truth, mode) AS glyph
 FROM dagdb_exec('NODES AT RANK 0')
 WHERE node_id IS NOT NULL;
 
@@ -22,19 +54,19 @@ WHERE message IS NOT NULL;
 
 -- Convenience function: tick and return results
 CREATE OR REPLACE FUNCTION dagdb_run(n integer DEFAULT 1)
-RETURNS TABLE(node_id integer, rank smallint, truth smallint, node_type smallint, message text) AS $$
+RETURNS TABLE(node_id bigint, rank bigint, truth smallint, node_type smallint, mode smallint, trit smallint, message text) AS $$
     SELECT * FROM dagdb_exec('TICK ' || n);
 $$ LANGUAGE sql;
 
 -- Convenience function: get nodes at specific rank
 CREATE OR REPLACE FUNCTION dagdb_rank(r integer)
-RETURNS TABLE(node_id integer, rank smallint, truth smallint, node_type smallint, message text) AS $$
+RETURNS TABLE(node_id bigint, rank bigint, truth smallint, node_type smallint, mode smallint, trit smallint, message text) AS $$
     SELECT * FROM dagdb_exec('NODES AT RANK ' || r);
 $$ LANGUAGE sql;
 
 -- Convenience function: traverse from a node
 CREATE OR REPLACE FUNCTION dagdb_traverse(from_node integer, depth integer DEFAULT 2)
-RETURNS TABLE(node_id integer, rank smallint, truth smallint, node_type smallint, message text) AS $$
+RETURNS TABLE(node_id bigint, rank bigint, truth smallint, node_type smallint, mode smallint, trit smallint, message text) AS $$
     SELECT * FROM dagdb_exec('TRAVERSE FROM ' || from_node || ' DEPTH ' || depth);
 $$ LANGUAGE sql;
 
@@ -48,17 +80,17 @@ DECLARE
     grid_v text; decision_v text;
 BEGIN
     sensors := ARRAY[]::text[];
-    FOR r IN SELECT node_id, truth FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 100 AND 117 ORDER BY node_id LOOP
-        sensors := array_append(sensors, CASE WHEN r.truth = 1 THEN '●' ELSE '○' END);
+    FOR r IN SELECT node_id, truth, mode FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 100 AND 117 ORDER BY node_id LOOP
+        sensors := array_append(sensors, dagdb_glyph(r.truth, r.mode));
     END LOOP;
     WHILE array_length(sensors, 1) IS NULL OR array_length(sensors, 1) < 18 LOOP
         sensors := array_append(sensors, '·');
     END LOOP;
-    SELECT CASE WHEN truth=1 THEN '●' ELSE '○' END INTO zone_n FROM dagdb_exec('TRAVERSE FROM 118 DEPTH 1') WHERE node_id=118 LIMIT 1;
-    SELECT CASE WHEN truth=1 THEN '●' ELSE '○' END INTO zone_s FROM dagdb_exec('TRAVERSE FROM 119 DEPTH 1') WHERE node_id=119 LIMIT 1;
-    SELECT CASE WHEN truth=1 THEN '●' ELSE '○' END INTO zone_e FROM dagdb_exec('TRAVERSE FROM 120 DEPTH 1') WHERE node_id=120 LIMIT 1;
-    SELECT CASE WHEN truth=1 THEN '●' ELSE '○' END INTO grid_v FROM dagdb_exec('TRAVERSE FROM 121 DEPTH 1') WHERE node_id=121 LIMIT 1;
-    SELECT CASE WHEN truth=1 THEN '●' ELSE '○' END INTO decision_v FROM dagdb_exec('TRAVERSE FROM 122 DEPTH 1') WHERE node_id=122 LIMIT 1;
+    SELECT dagdb_glyph(truth, mode) INTO zone_n FROM dagdb_exec('TRAVERSE FROM 118 DEPTH 1') WHERE node_id=118 LIMIT 1;
+    SELECT dagdb_glyph(truth, mode) INTO zone_s FROM dagdb_exec('TRAVERSE FROM 119 DEPTH 1') WHERE node_id=119 LIMIT 1;
+    SELECT dagdb_glyph(truth, mode) INTO zone_e FROM dagdb_exec('TRAVERSE FROM 120 DEPTH 1') WHERE node_id=120 LIMIT 1;
+    SELECT dagdb_glyph(truth, mode) INTO grid_v FROM dagdb_exec('TRAVERSE FROM 121 DEPTH 1') WHERE node_id=121 LIMIT 1;
+    SELECT dagdb_glyph(truth, mode) INTO decision_v FROM dagdb_exec('TRAVERSE FROM 122 DEPTH 1') WHERE node_id=122 LIMIT 1;
     zone_n := COALESCE(zone_n, '·'); zone_s := COALESCE(zone_s, '·');
     zone_e := COALESCE(zone_e, '·'); grid_v := COALESCE(grid_v, '·');
     decision_v := COALESCE(decision_v, '·');
@@ -80,6 +112,7 @@ BEGIN
     graph := '  ║          SENSORS  SENSORS  SENSORS              ║'; RETURN NEXT;
     graph := '  ║                                                  ║'; RETURN NEXT;
     graph := '  ║  ● = TRUE (healthy)   ○ = FALSE (fault)         ║'; RETURN NEXT;
+    graph := '  ║  ternary: − = -1   ○ = 0   + = +1               ║'; RETURN NEXT;
     graph := '  ╚══════════════════════════════════════════════════╝'; RETURN NEXT;
     RETURN;
 END;
@@ -110,27 +143,27 @@ UNION ALL SELECT 3, '  ═══════════════       ═�
 UNION ALL
 SELECT 4,
   '  ┌───┐                 ┌───┐                  ┌───┐  ┌───┐  ┌───┐        ' ||
-  (SELECT string_agg(CASE WHEN truth=1 THEN '●' ELSE '○' END, ' ' ORDER BY node_id)
+  (SELECT string_agg(dagdb_glyph(truth, mode), ' ' ORDER BY node_id)
    FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 100 AND 105)
 UNION ALL
 SELECT 5,
   '  │' ||
-  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 122 DEPTH 1') WHERE node_id=122 LIMIT 1), ' · ') ||
+  COALESCE((SELECT ' ' || dagdb_glyph(truth, mode) || ' ' FROM dagdb_exec('TRAVERSE FROM 122 DEPTH 1') WHERE node_id=122 LIMIT 1), ' · ') ||
   '│ ────────────── │' ||
-  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 121 DEPTH 1') WHERE node_id=121 LIMIT 1), ' · ') ||
+  COALESCE((SELECT ' ' || dagdb_glyph(truth, mode) || ' ' FROM dagdb_exec('TRAVERSE FROM 121 DEPTH 1') WHERE node_id=121 LIMIT 1), ' · ') ||
   '│ ─────────┬──── │' ||
-  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 118 DEPTH 1') WHERE node_id=118 LIMIT 1), ' · ') ||
+  COALESCE((SELECT ' ' || dagdb_glyph(truth, mode) || ' ' FROM dagdb_exec('TRAVERSE FROM 118 DEPTH 1') WHERE node_id=118 LIMIT 1), ' · ') ||
   '│  │' ||
-  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 119 DEPTH 1') WHERE node_id=119 LIMIT 1), ' · ') ||
+  COALESCE((SELECT ' ' || dagdb_glyph(truth, mode) || ' ' FROM dagdb_exec('TRAVERSE FROM 119 DEPTH 1') WHERE node_id=119 LIMIT 1), ' · ') ||
   '│  │' ||
-  COALESCE((SELECT CASE WHEN truth=1 THEN ' ● ' ELSE ' ○ ' END FROM dagdb_exec('TRAVERSE FROM 120 DEPTH 1') WHERE node_id=120 LIMIT 1), ' · ') ||
+  COALESCE((SELECT ' ' || dagdb_glyph(truth, mode) || ' ' FROM dagdb_exec('TRAVERSE FROM 120 DEPTH 1') WHERE node_id=120 LIMIT 1), ' · ') ||
   '│ ──── ' ||
-  (SELECT string_agg(CASE WHEN truth=1 THEN '●' ELSE '○' END, ' ' ORDER BY node_id)
+  (SELECT string_agg(dagdb_glyph(truth, mode), ' ' ORDER BY node_id)
    FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 106 AND 111)
 UNION ALL
 SELECT 6,
   '  │122│                 │121│                  │AND│  │MAJ│  │OR │        ' ||
-  (SELECT string_agg(CASE WHEN truth=1 THEN '●' ELSE '○' END, ' ' ORDER BY node_id)
+  (SELECT string_agg(dagdb_glyph(truth, mode), ' ' ORDER BY node_id)
    FROM dagdb_exec('NODES AT RANK 3') WHERE node_id BETWEEN 112 AND 117)
 UNION ALL SELECT 7, '  │ID │                 │AND│                  │118│  │119│  │120│'
 UNION ALL SELECT 8, '  └───┘                 └───┘                  └─┬─┘  └─┬─┘  └─┬─┘'
@@ -142,6 +175,7 @@ UNION ALL SELECT 13,'                                        100-105 ──→ 1
 UNION ALL SELECT 14,'                                        106-111 ──→ 119'
 UNION ALL SELECT 15, ''
 UNION ALL SELECT 16, '  ● = TRUE    ○ = FALSE    ID = identity    AND = all    MAJ = majority(4+)    OR = any'
+UNION ALL SELECT 17, '  ternary nodes: − = -1    ○ = 0    + = +1'
 ) sub ORDER BY ord;
 
 -- Hex DAG as a 6-column table — rows=ranks, columns=nodes, pipes=edges
@@ -152,7 +186,8 @@ DECLARE
     current_nodes int[];
     next_nodes int[];
     nid int;
-    tv int;
+    tv smallint;
+    tm smallint;
     rank_level int;
     vals text[];
     r RECORD;
@@ -165,11 +200,11 @@ BEGIN
         FOR i IN 1..COALESCE(array_length(current_nodes, 1), 0) LOOP
             IF i > 6 THEN EXIT; END IF;
             nid := current_nodes[i];
-            SELECT t.truth INTO tv
+            tv := NULL; tm := NULL;
+            SELECT t.truth, t.mode INTO tv, tm
             FROM dagdb_exec('TRAVERSE FROM ' || nid || ' DEPTH 1') t
             WHERE t.node_id = nid LIMIT 1;
-            tv := COALESCE(tv, -1);
-            vals[i] := CASE WHEN tv=1 THEN '● ' WHEN tv=0 THEN '○ ' ELSE '· ' END || nid::text;
+            vals[i] := CASE WHEN tv IS NULL THEN '·' ELSE dagdb_glyph(tv, tm) END || ' ' || nid::text;
             FOR r IN SELECT t.node_id AS rid FROM dagdb_exec('TRAVERSE FROM ' || nid || ' DEPTH 2') t
                      WHERE t.node_id != nid LIMIT 6 LOOP
                 IF NOT (r.rid = ANY(next_nodes)) THEN

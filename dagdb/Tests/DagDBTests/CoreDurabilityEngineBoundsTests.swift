@@ -1,8 +1,7 @@
 import XCTest
 @testable import DagDB
 
-/// C4 · public engine APIs do not read or write past their buffers —
-/// `docs/contracts/CORE_DURABILITY_GATES_FROZEN.md`. One out-of-range call
+/// Public engine APIs do not read or write past their buffers. One out-of-range call
 /// per site, plus the rank kernel against a hand-corrupted neighbour index.
 final class CoreDurabilityEngineBoundsTests: XCTestCase {
 

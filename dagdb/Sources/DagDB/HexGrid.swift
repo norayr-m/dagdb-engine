@@ -44,7 +44,7 @@ public struct HexGrid {
     /// Molloy & Salavatipour (2005): distance-2 chromatic number of hex lattice = 7.
     public static let colorCount = 7
 
-    // MARK: - C5 · what this layout can encode, and the refusal outside it
+    // MARK: - What this layout can encode, and the refusal outside it
 
     public enum GridError: Error, CustomStringConvertible {
         case axesOutOfRange(String)
@@ -111,7 +111,7 @@ public struct HexGrid {
         try HexGrid(width: width, height: height)
     }
 
-    /// Refusing constructor (C5 / F1). Axes outside the 16-bit Morton
+    /// Refusing constructor. Axes outside the 16-bit Morton
     /// encoding, a node count above `Int32.max`, and an overflowing product
     /// are refused by name as `GridError.axesOutOfRange`, never trapped.
     public init(width: Int, height: Int) throws {
@@ -230,8 +230,8 @@ public struct HexGrid {
 
     // ── Serialization: save/load grid to skip 30s rebuild ──────
 
-    /// "DAGG" — the grid file's magic. Before C5 the file had none at all,
-    /// so any bytes at all were read as a grid (audit A, finding 23).
+    /// "DAGG" — the grid file's magic. Older builds wrote the file with none
+    /// at all, so any bytes at all were read as a grid.
     public static let fileMagic: [UInt8] = [0x44, 0x41, 0x47, 0x47]
     /// Grid file version. 1 = the section layout below, with a header.
     public static let fileVersion: UInt32 = 1
@@ -275,11 +275,11 @@ public struct HexGrid {
     /// Load grid from a binary file, refusing by name anything it cannot
     /// read whole.
     ///
-    /// C5 · every section is checked against `n`, and every index a section
+    /// Every section is checked against `n`, and every index a section
     /// carries is checked against `nodeCount` — a colour-group entry flows
     /// straight into `rebuildCompaction`'s `rankPtr[Int(node)]` and into the
     /// GPU, and `mortonToNode` / `mortonRank` are read by every Morton-space
-    /// translation. Before C5 only the neighbour section's length was
+    /// translation. In older builds only the neighbour section's length was
     /// checked and a short file produced a grid whose arrays were shorter
     /// than the node count it advertised.
     public static func load(from path: String) throws -> HexGrid {

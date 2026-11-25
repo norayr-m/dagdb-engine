@@ -13,7 +13,7 @@
 /// and `-1`.
 ///
 /// Lives in the library (not a test target) because two test targets —
-/// the engine gates and the daemon-wire gates — must install the same
+/// the engine tests and the daemon-wire tests — must install the same
 /// object. It follows the existing fixture idiom (`TiledFixture`,
 /// `CortexFixture`, `AlarmFixture`). It computes nothing: the expected
 /// fixed point is re-derived in each test from these tables, never by
@@ -103,10 +103,10 @@ public enum RankBoundFixture {
     }
 
     public enum FixtureError: Error, Equatable, CustomStringConvertible {
-        /// Finding 73: the size check was a `precondition` in library (not
+        /// The size check was a `precondition` in library (not
         /// test-target) code — a process abort on a caller's mistake.
         case sizeMismatch(expected: Int, actual: Int)
-        /// Finding 72: this object is documented as a purely combinational
+        /// This object is documented as a purely combinational
         /// DAG; installing it over an engine that still holds registers
         /// would silently keep them.
         case engineHasBackEdges(Int)
@@ -124,7 +124,7 @@ public enum RankBoundFixture {
     /// Write the tables into a live engine's buffers and mark the rank
     /// topology dirty. The engine's grid must be `side × side` and its
     /// back-edge registry must be empty — both refused by name rather
-    /// than trapped or silently inherited (findings 72, 73).
+    /// than trapped or silently inherited.
     @discardableResult
     public static func install(into engine: DagDBEngine) throws -> Tables {
         let t = tables()
@@ -142,7 +142,7 @@ public enum RankBoundFixture {
         let highPtr = engine.lut6HighBuf.contents().bindMemory(to: UInt32.self, capacity: n)
         let truthPtr = engine.truthStateBuf.contents().bindMemory(to: UInt8.self, capacity: n)
 
-        // Finding 72: the object is purely combinational, so the buffers
+        // The object is purely combinational, so the buffers
         // that would otherwise carry a reused engine's registers, node
         // types and analogue state are written too, not left behind.
         let typePtr = engine.nodeTypeBuf.contents().bindMemory(to: UInt8.self, capacity: n)

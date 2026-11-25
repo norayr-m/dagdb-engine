@@ -3,10 +3,10 @@ import XCTest
 @testable import DagDBDaemonKit
 
 /// Shared handler construction for daemon-kit test files that need a real
-/// DagDBCommandHandler without a socket or mmap'd shm (interface phase, 2026-09). Mirrors
+/// DagDBCommandHandler without a socket or mmap'd shm. Mirrors
 /// DagDBCommandHandlerTests.makeHandler exactly — same engine setup, same
 /// shm sizing — so tests across files see identical fixtures. Introduced so
-/// the twin verb test files (T8.1–T8.5) don't each reimplement this.
+/// the twin verb test files don't each reimplement this.
 final class HandlerFixture {
     let handler: DagDBCommandHandler
     let shm: UnsafeMutableRawPointer
@@ -72,4 +72,47 @@ final class HandlerFixture {
     deinit {
         shm.deallocate()
     }
+}
+
+/// The 14 input verbs' codes, in the protocol's order. A frame for verb v carries word1 = 0x314D4800 | v. The codes
+/// are the protocol's, written here and not read from DaemonKit.
+enum SHM1Verb: UInt32, CaseIterable {
+    case setRanksBulk = 1
+    case setLutsBulk = 2
+    case setNeighborsBulk = 3
+    case setModesBulk = 4
+    case setTTableIdsBulk = 5
+    case setThreshBulk = 6
+    case ttableBulk = 7
+    case connectBackBulk = 8
+    case setTruthBulk = 9
+    case xconvCheck = 10
+    case xconvSealed = 11
+    case budgetOpen = 12
+    case bankGenerate = 13
+    case bankFit = 14
+
+    /// The verb as its refusals name it.
+    var name: String {
+        ["SET_RANKS_BULK", "SET_LUTS_BULK", "SET_NEIGHBORS_BULK", "SET_MODES_BULK", "SET_TTABLE_IDS_BULK",
+         "SET_THRESH_BULK", "TTABLE_BULK", "CONNECT_BACK_BULK", "SET_TRUTH_BULK", "XCONV CHECK", "XCONV SEALED",
+         "BUDGET OPEN", "BANK GENERATE", "BANK FIT"][Int(rawValue) - 1]
+    }
+
+    /// The verb of that name (a helper that takes the verb's name as it sends it).
+    static func named(_ name: String) -> SHM1Verb {
+        guard let v = allCases.first(where: { $0.name == name }) else { preconditionFailure("SHM1: \(name) is not an input verb") }
+        return v
+    }
+}
+
+/// Word1 of a frame for `verb`, the literal
+/// 0x314D4800 | v (the bytes 0x48 'H', 0x4D 'M', 0x31 '1' above the code).
+func shm1Word1(_ verb: SHM1Verb) -> UInt32 { 0x314D_4800 | verb.rawValue }
+
+/// An input frame's header for `verb`, `[u32 count][u32
+/// 0x314D4800 | v]` at bytes 0..7 of `base`; the payload goes at offset 8.
+func shm1Header(_ base: UnsafeMutableRawPointer, count: Int, verb: SHM1Verb) {
+    base.storeBytes(of: UInt32(count), toByteOffset: 0, as: UInt32.self)
+    base.storeBytes(of: shm1Word1(verb), toByteOffset: 4, as: UInt32.self)
 }

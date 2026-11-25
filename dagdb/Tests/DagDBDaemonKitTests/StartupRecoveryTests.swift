@@ -80,7 +80,7 @@ final class StartupRecoveryTests: XCTestCase {
         return r
     }
 
-    // MARK: - the gate: restart after SAVE, no LOAD
+    // MARK: - Restart after SAVE, no LOAD
 
     func testRestartAfterSaveRestoresGraphAndTwinWithoutLoad() throws {
         let live = try liveFixture()
@@ -133,7 +133,7 @@ final class StartupRecoveryTests: XCTestCase {
         // TICK is not a WAL record: the tick counter and any truth the
         // kernel recomputed on those ticks (node 5 was injected as 1 and
         // then ticked back to 0 by its LUT) are not recoverable from the log
-        // alone. That is exactly why the snapshot load exists; the gate test
+        // alone. That is exactly why the snapshot load exists; the test
         // above shows snapshot + tail reproducing both. Everything the log
         // does carry comes back exactly.
         XCTAssertEqual(got[0], "OK GET node=5 truth=1", "the injected value, un-ticked")

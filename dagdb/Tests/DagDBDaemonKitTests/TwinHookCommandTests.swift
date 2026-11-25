@@ -2,10 +2,10 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// Gate H5 (docs/contracts/HOOK_GATES_FROZEN.md) — daemon-level tests for
+/// Daemon-level tests for
 /// the real HOOK verb family (DagDBCommandHandler+TwinHook.swift):
-/// OPEN/STEP/STATE/LEDGER/INFO/LIST/CLOSE, the CLOCK-binding refusal (H4),
-/// the ALARM/BUDGET-close dependency refusal (H3), WAL replay, and
+/// OPEN/STEP/STATE/LEDGER/INFO/LIST/CLOSE, the CLOCK-binding refusal,
+/// the ALARM/BUDGET-close dependency refusal, WAL replay, and
 /// SAVE/LOAD. Synthetic-fixture tests exercise every verb without the
 /// sealed file (mirrors TwinAlarmCommandTests.swift's fixture verbatim: 5
 /// records, so a hook's default delta 3 gives frames = 5 + 3 = 8); the
@@ -283,7 +283,7 @@ final class TwinHookCommandTests: XCTestCase {
         XCTAssertEqual(f.handler.handle("HOOK LIST"), "OK HOOK LIST count=0")
     }
 
-    // MARK: - CLOCK binding (H4)
+    // MARK: - CLOCK binding
 
     func testHookBoundToClockRefusesStepAndMatchesUnboundOnAdvance() throws {
         let f = try HandlerFixture(side: 64, dataRoot: tmpDir)
@@ -321,7 +321,7 @@ final class TwinHookCommandTests: XCTestCase {
         XCTAssertEqual(f.handler.handle("HOOK LIST"), "OK HOOK LIST count=0")
     }
 
-    // MARK: - ALARM/BUDGET CLOSE dependency refusal (H3)
+    // MARK: - ALARM/BUDGET CLOSE dependency refusal
 
     func testAlarmCloseWithLiveHookRefusesForbidden() throws {
         let f = try HandlerFixture(side: 64, dataRoot: tmpDir)
@@ -468,9 +468,9 @@ final class TwinHookCommandTests: XCTestCase {
         XCTAssertTrue(stepReply.contains("served=50 misses=100 cost=94400.0"), stepReply)
     }
 
-    // MARK: - D3 · wire arithmetic cannot trap
+    // MARK: - Wire arithmetic cannot trap
 
-    /// Audit finding 23 — `HOOK LEDGER`'s `end = from + count` is an
+    /// `HOOK LEDGER`'s `end = from + count` is an
     /// unchecked `Int` addition on two wire values; `Int.max` plus anything
     /// TRAPS before the range guard behind it can fire.
     func testHookLedgerRangeOverflowIsRefusedNotTrapped() throws {

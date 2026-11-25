@@ -1,5 +1,5 @@
 """
-Loom → DagDB backfill (T5).
+Loom → DagDB backfill.
 
 Reads every event from a Loom-formatted JSONL event log, runs the adapter over it, produces:
   - loom_backfill.json  — full graph: nodes + edges + sidecars

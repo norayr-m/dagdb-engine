@@ -1,7 +1,7 @@
 import Foundation
 
-/// Loader for the sealed W2 alarm-stream fixture (`w2_records.json`) —
-/// twin spec line 4. The fixture is by-reference: 29 MB, out of repo,
+/// Loader for the sealed alarm-stream fixture (`w2_records.json`).
+/// The fixture is by-reference: 29 MB, out of repo,
 /// read only from `DAGDB_W2_FIXTURE` and SHA-pinned. Numerics only, no
 /// judgement — classification and ordering, nothing else.
 ///
@@ -78,17 +78,16 @@ public struct AlarmFixture {
 
     /// Reason prefix carried by `badEntry` when two entries reconstruct to
     /// the same (class block, suffix) position — the courts' frame key
-    /// would otherwise depend on dictionary iteration order (findings 24,
-    /// 49). Kept as a `badEntry` reason rather than a new enum case so the
+    /// would otherwise depend on dictionary iteration order. Kept as a `badEntry` reason rather than a new enum case so the
     /// daemon's existing exhaustive `FixtureError` switch is untouched.
     public static let duplicatePositionReason = "duplicate reconstructed position"
 
     /// Reason prefix carried by `badEntry` when a key's `class` field
-    /// disagrees with its own `<block>_<n>` prefix (finding 25).
+    /// disagrees with its own `<block>_<n>` prefix.
     public static let classPrefixMismatchReason = "class disagrees with key prefix"
 
     /// Emitted once per process when a caller opts out of the SHA pin
-    /// (finding 23). Package-internal so tests can observe the opt-out.
+    /// Package-internal so tests can observe the opt-out.
     static var unpinnedWarningEmitted = false
 
     private static let blockRank: [String: Int] = ["quiet": 0, "liar": 1, "deep": 2, "drift": 3]
@@ -96,25 +95,31 @@ public struct AlarmFixture {
     /// Load and classify the fixture at `path`. SHA-256 is always
     /// computed and returned; `expectedSHA256` DEFAULTS to `sealedSHA256`
     /// and must match or the load throws. Passing nil is an explicit
-    /// opt-out that prints `WARN unpinned fixture` once (finding 23).
+    /// opt-out that prints `WARN unpinned fixture` once.
     /// Waveform arrays (`a`,`b`,`c`, 2048
     /// floats each in the sealed file) are decoded only when
     /// `includeWaveforms` is true — otherwise they are read by
     /// `JSONSerialization` like everything else but never converted, so
     /// the 29 MB file loads in a fraction of a second either way.
+    /// Read once through `DaemonFile` — without blocking, a regular file inside the root,
+    /// admitted on its true size (`admit`, the opened file's st_size: never a link's own length), unchanged
+    /// while read. ENOENT is `fileNotFound`; any other refusal is thrown as the `DaemonFile.Refusal`.
     public static func load(path: String, expectedSHA256: String? = sealedSHA256,
-                            includeWaveforms: Bool = false) throws -> AlarmFixture {
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw FixtureError.fileNotFound(path)
-        }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+                            includeWaveforms: Bool = false,
+                            admit: ((Int) -> String?)? = nil,
+                            admitParse: ((Data) -> String?)? = nil) throws -> AlarmFixture {
+        let data: Data
+        do { data = try DaemonFile.read(path, admit: admit) }
+        catch DaemonFile.Refusal.missing { throw FixtureError.fileNotFound(path) }
+        // The parse is admitted on the bytes read (their , : [ { count), before JSONSerialization.
+        if let a = admitParse, let line = a(data) { throw DaemonFile.Refusal.admission(line) }
         let actualSHA = DagDBSnapshot.sha256Hex(data)
         if let expected = expectedSHA256 {
             if expected != actualSHA {
                 throw FixtureError.shaMismatch(expected: expected, actual: actualSHA)
             }
         } else if !unpinnedWarningEmitted {
-            // Finding 23: the pin now DEFAULTS to `sealedSHA256`; passing
+            // The pin DEFAULTS to `sealedSHA256`; passing
             // nil is an explicit opt-out, said out loud once.
             unpinnedWarningEmitted = true
             FileHandle.standardError.write(Data("WARN unpinned fixture\n".utf8))
@@ -135,7 +140,10 @@ public struct AlarmFixture {
         var control: ControlEntry?
         var positioned: [Positioned] = []
 
-        for (key, rawValue) in top {
+        // The keys in sorted order, so the first refused entry is the same on every daemon (otherwise the
+        // bridged dictionary's order, seeded per process, would pick which bad entry is named).
+        for key in top.keys.sorted() {
+            let rawValue = top[key]!
             guard let entry = rawValue as? [String: Any] else {
                 throw FixtureError.badEntry(key: key, reason: "entry is not an object")
             }
@@ -147,7 +155,7 @@ public struct AlarmFixture {
                 throw FixtureError.badEntry(key: key, reason: "key is not '<block>_<n>'")
             }
 
-            // Finding 25: the class field must agree with the key's own
+            // The class field must agree with the key's own
             // block prefix — `quiet_1` carrying class `liar` is refused,
             // not silently re-sorted into the liar block. Checked AFTER
             // the class name itself is recognised, so an unknown class is
@@ -157,7 +165,7 @@ public struct AlarmFixture {
                 guard prefix == rawClass else {
                     throw FixtureError.badEntry(
                         key: key,
-                        reason: "\(Self.classPrefixMismatchReason): declared '\(rawClass)', prefix '\(prefix)'")
+                        reason: "\(Self.classPrefixMismatchReason): declared \(Reply.quoted(rawClass)), prefix \(Reply.quoted(prefix))")
                 }
             }
 
@@ -177,7 +185,7 @@ public struct AlarmFixture {
             }
         }
 
-        // Findings 24 / 49: two entries at the same reconstructed position
+        // Two entries at the same reconstructed position
         // make `index` — the courts' frame key — depend on dictionary
         // iteration order, and a duplicate index traps the court's
         // `byIndex` build. Refuse the collision by name at the door.

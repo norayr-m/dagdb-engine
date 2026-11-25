@@ -2,13 +2,12 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// Grammar + dispatch tests for the twin-spec DSL (interface phase, 2026-09). These tests
+/// Grammar + dispatch tests for the twin-spec DSL. These tests
 /// exercise: parsing every verb to its expected TwinCommand case, arity
 /// rejection, the isReadOnly matrix, and the READER-session forbidden path.
-/// STREAM/HEADER/RECORD went real in T8.2 (their dispatch behavior is
-/// covered in TwinStreamCommandTests.swift instead); the stub-dispatch
-/// tests here now target only the families still stubbed
-/// (RINGS/CLOCK/GEAR — T8.3, XCONV/BUDGET — T8.4, ALARM — T8.5).
+/// Each family's dispatch behavior is covered in its own command tests
+/// (TwinStreamCommandTests.swift and the others; see the note above
+/// `testStatusReplyCarriesTwinOpenSuffix`).
 ///
 /// DSLCommand itself isn't Equatable (Predicate carries a non-Equatable
 /// closure-free-but-untested field, and several non-twin cases were never
@@ -192,7 +191,7 @@ final class DSLParserTwinTests: XCTestCase {
         assertUnknown("XCONV CHECK 69 72 6")
     }
 
-    // MARK: - XCONV SEALED (gate K3, docs/contracts/KERNELS_GATES_FROZEN.md)
+    // MARK: - XCONV SEALED
 
     func testXConvSealedWithoutWarmupParses() {
         assertParsesTwin("XCONV SEALED k00000001 2048", .xconvSealed(id: "k00000001", n: 2048, warmup: nil))
@@ -434,7 +433,7 @@ final class DSLParserTwinTests: XCTestCase {
         assertUnknown("VIEW BOGUS v00000001")
     }
 
-    // MARK: - KERNEL (gates K3/K4, docs/contracts/KERNELS_GATES_FROZEN.md)
+    // MARK: - KERNEL
 
     func testKernelLoadPathOnlyParses() {
         assertParsesTwin(
@@ -506,7 +505,7 @@ final class DSLParserTwinTests: XCTestCase {
         assertUnknown("KERNEL BOGUS k00000001")
     }
 
-    // MARK: - FOLD (gate F4)
+    // MARK: - FOLD
 
     func testFoldRunParsesWithoutF3OrCheck() {
         assertParsesTwin(
@@ -596,7 +595,7 @@ final class DSLParserTwinTests: XCTestCase {
         assertUnknown("FOLD FROB")
     }
 
-    // MARK: - HOOK (gate H5, docs/contracts/HOOK_GATES_FROZEN.md)
+    // MARK: - HOOK
 
     func testHookOpenSealedLayoutMinimalParses() {
         assertParsesTwin(
@@ -735,9 +734,9 @@ final class DSLParserTwinTests: XCTestCase {
             .viewList,
             .kernelInfo(id: "k00000001"),
             .kernelList,
-            // FOLD (gate F4): pure computation over CURRENT lanes, nothing
-            // persisted. RUN moved to the mutating list at gate D5 (audit B
-            // finding 18): it assigns the daemon-global last-fold result
+            // FOLD: pure computation over CURRENT lanes, nothing
+            // persisted. RUN moved to the mutating list:
+            // it assigns the daemon-global last-fold result
             // these four read.
             .foldKept,
             .foldSource(which: 1),
@@ -795,7 +794,7 @@ final class DSLParserTwinTests: XCTestCase {
     // Family dispatch coverage lives in the per-family command tests
     // (TwinStreamCommandTests, TwinClockCommandTests, TwinBudgetCommandTests,
     // TwinAlarmCommandTests). The stub-fallthrough assertions that lived here
-    // during the interface phase were retired when the last family went real.
+    // while the families were being built were retired when the last family went real.
 
     func testStatusReplyCarriesTwinOpenSuffix() throws {
         let f = try HandlerFixture(side: 4)

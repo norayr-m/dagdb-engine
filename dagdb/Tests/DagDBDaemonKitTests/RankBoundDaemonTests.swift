@@ -2,18 +2,19 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// RANK BOUND gates on the wire — docs/contracts/RANK_BOUND_GATES_FROZEN.md.
+/// The rank bound, on the wire.
 ///
-/// R2 · the operation says how much it did (`nodes_computed`, and
+/// The operation says how much it did (`nodes_computed`, and
 /// `ranks=`/`bound=` when the levels dispatched exceed the configured
-/// bound). R3 · the door (a rank at or above `nodeCount` is refused, a
-/// rank in `[maxRank, nodeCount)` is accepted and computed). R4 · STATUS
+/// bound). A rank at or above `nodeCount` is refused, a
+/// rank in `[maxRank, nodeCount)` is accepted and computed. STATUS
 /// carries `maxRank=` `ranks=` `rank_max=` so a stale bound is catchable
 /// without ticking.
 ///
 /// These live here rather than in `Tests/DagDBTests/RankBoundTests.swift`
-/// because the contract names `HandlerFixture`, which belongs to this
-/// target. The engine-level R1 control is in that file.
+/// because they use `HandlerFixture`, which belongs to this
+/// target. The engine-level control (both tick modes against an expectation
+/// computed in the test) is in that file.
 final class RankBoundDaemonTests: XCTestCase {
 
     private var tmpDir: String!
@@ -29,7 +30,7 @@ final class RankBoundDaemonTests: XCTestCase {
     }
 
     /// Save the deep-rank object from a `maxRank` 32 engine, then restore it
-    /// into the fixture's `maxRank` 8 handler — the reviewer's restore path.
+    /// into the fixture's `maxRank` 8 handler.
     private func restoredFixture() throws -> (HandlerFixture, RankBoundFixture.Tables) {
         let side = RankBoundFixture.side
         let n = RankBoundFixture.nodeCount
@@ -55,23 +56,23 @@ final class RankBoundDaemonTests: XCTestCase {
         return (f, t)
     }
 
-    // MARK: - R2 · the reply says how much it did
+    // MARK: - The reply says how much it did
 
     func testR2_firstRankTickAfterRestoreAnnouncesTheStaleBound() throws {
         let (f, _) = try restoredFixture()
         let n = RankBoundFixture.nodeCount
 
         let reply = f.handler.handle("TICK 1")
-        XCTAssertTrue(reply.hasPrefix("OK TICK 1 elapsed="), reply)
-        XCTAssertTrue(reply.hasSuffix(" nodes_computed=\(n) ranks=22 bound=8"), reply)
+        XCTAssertTrue(reply.hasPrefix("OK TICK 1 total=") && reply.contains(" elapsed="), reply)
+        XCTAssertTrue(Reply.withoutVolatile(reply).hasSuffix(" nodes_computed=\(n) ranks=22 bound=8"), reply)
         XCTAssertTrue(reply.contains("nodes_computed=81"), reply)
 
         // The same news on the sync verb, in the vocabulary that is true
         // there: sync does not dispatch by rank, so it reports the graph's
         // highest rank against the bound rather than "levels dispatched".
         let syncReply = f.handler.handle("TICK_SYNC 1")
-        XCTAssertTrue(syncReply.hasPrefix("OK TICK_SYNC 1 elapsed="), syncReply)
-        XCTAssertTrue(syncReply.hasSuffix(" nodes_computed=\(n) rank_max=21 bound=8"), syncReply)
+        XCTAssertTrue(syncReply.hasPrefix("OK TICK_SYNC 1 total=") && syncReply.contains(" elapsed="), syncReply)
+        XCTAssertTrue(Reply.withoutVolatile(syncReply).hasSuffix(" nodes_computed=\(n) rank_max=21 bound=8"), syncReply)
         XCTAssertFalse(syncReply.contains("ranks="), syncReply)
     }
 
@@ -80,16 +81,16 @@ final class RankBoundDaemonTests: XCTestCase {
     func testR2_nodesComputedAlwaysRanksOnlyWhenOverTheBound() throws {
         let f = try HandlerFixture(side: 9)   // 81 nodes, all rank 0, maxRank 8
         let reply = f.handler.handle("TICK 1")
-        XCTAssertEqual(reply.hasSuffix(" nodes_computed=81"), true, reply)
+        XCTAssertEqual(Reply.withoutVolatile(reply).hasSuffix(" nodes_computed=81"), true, reply)
         XCTAssertFalse(reply.contains("ranks="), reply)
         XCTAssertFalse(reply.contains("bound="), reply)
 
         // `nodes_computed` counts the whole command, not one tick.
         let three = f.handler.handle("TICK 3")
-        XCTAssertTrue(three.hasSuffix(" nodes_computed=243"), three)
+        XCTAssertTrue(Reply.withoutVolatile(three).hasSuffix(" nodes_computed=243"), three)
     }
 
-    // MARK: - R4 · STATUS makes a stale bound catchable without ticking
+    // MARK: - STATUS makes a stale bound catchable without ticking
 
     func testR4_statusCarriesBoundLevelsAndHighestRank() throws {
         let (f, _) = try restoredFixture()
@@ -112,7 +113,7 @@ final class RankBoundDaemonTests: XCTestCase {
             "; rank dispatch covers 81 of 81 node(s) over 22 rank level(s)")
     }
 
-    // MARK: - R3 · the door
+    // MARK: - A rank at or above nodeCount is refused
 
     func testR3_setRankRefusesAtOrAboveNodeCountAndAcceptsBelowIt() throws {
         let f = try HandlerFixture(side: 9)   // 81 nodes, maxRank 8
@@ -129,7 +130,7 @@ final class RankBoundDaemonTests: XCTestCase {
         XCTAssertEqual(f.handler.handle("SET 3 RANK 20"), "OK SET node=3 rank=20")
         XCTAssertEqual(rank[3], 20)
         let tickReply = f.handler.handle("TICK 1")
-        XCTAssertTrue(tickReply.hasSuffix(" nodes_computed=81 ranks=21 bound=8"), tickReply)
+        XCTAssertTrue(Reply.withoutVolatile(tickReply).hasSuffix(" nodes_computed=81 ranks=21 bound=8"), tickReply)
         let truth = eng.readTruthStates()
         XCTAssertEqual(truth[3], 1, "a node at rank 20 under bound 8 was not computed")
 
@@ -162,6 +163,7 @@ final class RankBoundDaemonTests: XCTestCase {
         for i in 0..<n { src[i] = UInt64(i % 7) }
         src[7] = 81
         src[40] = 9_999
+        shm1Header(f.shm, count: n, verb: .setRanksBulk)
 
         XCTAssertEqual(f.handler.handle("SET_RANKS_BULK"),
                        "ERROR out_of_range: node 7 rank 81 not in 0..<81")
@@ -172,7 +174,7 @@ final class RankBoundDaemonTests: XCTestCase {
         // configured bound of 8.
         src[7] = 80
         src[40] = 9
-        // The disclosure suffix is appended at gate D6 (audit B finding 15):
+        // The disclosure suffix is appended:
         // per-insert rank monotonicity is skipped for speed and the reply
         // now says so, and says where to re-check.
         XCTAssertEqual(f.handler.handle("SET_RANKS_BULK"),

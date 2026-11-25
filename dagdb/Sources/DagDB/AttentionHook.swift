@@ -1,15 +1,15 @@
 import Foundation
 
-/// AttentionHook — twin spec line 6, `docs/contracts/HOOK_GATES_FROZEN.md`.
+/// AttentionHook.
 /// The sealed allocator court (`AllocatorCourt.run`) as a ticked engine
 /// process: instead of replaying frames 1...(200+delta) in one batch call,
 /// a hook advances one frame per `step()`, appending one ledger row each
 /// time. `step()` reproduces `AllocatorCourt.run`'s lagged-arm loop body
-/// FRAME BY FRAME for exactly the hook's one policy — quiet/warmup letters,
+/// FRAME BY FRAME for exactly the hook's one policy — quiet/warmup rules,
 /// counter order, everything — calling `AllocatorCourt.recordOutcome` /
 /// `.newArmBucket` / `.cheapestValue1Tier` / `.deepestAffordableTier`
 /// directly so the arithmetic can never drift from the sealed court's. No
-/// new number: H1 requires `hook.result == AllocatorCourt.run(...)[policy]`
+/// new number: `hook.result` must equal `AllocatorCourt.run(...)[policy]`
 /// bit for bit at every sealed grid point.
 public struct AttentionHook: Equatable {
     public enum Policy: String, Codable, CaseIterable, Equatable {
@@ -20,13 +20,24 @@ public struct AttentionHook: Equatable {
         case hit, miss, none
     }
 
+    /// The frame count `records + delta` does not fit Int.
+    public enum FrameCountError: Error, Equatable, CustomStringConvertible {
+        case overflow(records: Int, delta: Int)
+
+        public var description: String {
+            switch self {
+            case let .overflow(records, delta):
+                return "hook frames \(records) + delta \(delta) overflow Int"
+            }
+        }
+    }
+
     /// A hook's fixed identity: which alarm set, which budget layout
     /// (`layoutId == nil` means the sealed default, `SealedCourt.
     /// makeLayout()`), the per-frame budget B, the lag delta, the lagged
     /// policy this hook replays, and (optionally) the clock it is bound
-    /// to. The budget is constant per hook (ruling (d), HOOK_GATES_FROZEN
-    /// §"Rulings"): a different B is a different hook, never a mid-run
-    /// re-declaration.
+    /// to. The budget is constant per hook: a different B is a different
+    /// hook, never a mid-run re-declaration.
     public struct Params: Equatable, Codable {
         public let alarmId: String
         public let layoutId: String?
@@ -46,7 +57,7 @@ public struct AttentionHook: Equatable {
         }
     }
 
-    /// One ledger line — H2's per-frame row. `rawClass`/`ear`/`pocket` are
+    /// One ledger line — the per-frame row. `rawClass`/`ear`/`pocket` are
     /// nil on an unjudged (warm-up) frame, or if the source record could
     /// not be resolved by index (never happens on a contiguous fixture —
     /// defensive only, mirrors the court's own `byIndex` guard). `tierBought`
@@ -81,7 +92,7 @@ public struct AttentionHook: Equatable {
     private let byIndex: [Int: AlarmRecord]
     private let layout: BudgetLayout
 
-    /// Finding 49: a duplicate 1-based record index is refused by name
+    /// A duplicate 1-based record index is refused by name
     /// (`SealedCourt.CourtError.duplicateRecordIndex`) instead of trapping
     /// inside `Dictionary(uniqueKeysWithValues:)`. A fixture that came
     /// through `AlarmFixture.load` can never carry one.
@@ -89,9 +100,15 @@ public struct AttentionHook: Equatable {
         if let dup = AllocatorCourt.duplicateRecordIndex(in: records) {
             throw SealedCourt.CourtError.duplicateRecordIndex(dup)
         }
+        // `records.count + delta` traps for a delta
+        // near Int.max (a wire delta with the WAL off, or a snapshot's).
+        let (frames, overflow) = records.count.addingReportingOverflow(params.delta)
+        if overflow {
+            throw FrameCountError.overflow(records: records.count, delta: params.delta)
+        }
         self.params = params
         self.recordsCount = records.count
-        self.frames = records.count + params.delta
+        self.frames = frames
         self.byIndex = Dictionary(uniqueKeysWithValues: records.map { ($0.index, $0) })
         self.layout = layout
         self.result = AllocatorCourt.newArmBucket(delta: params.delta)

@@ -2,10 +2,9 @@ import XCTest
 import Foundation
 @testable import DagDB
 
-/// P4 spec 8 — waveform mouth: bridges the engine's WaveBank against the
-/// numpy reference fixture per docs/contracts/SPEC8_MOUTH_GATES_FROZEN.md
-/// (G1–G5), plus shape-guard and Codable coverage, plus the printed-only
-/// throughput measurement (G6).
+/// Waveform mouth: bridges the engine's WaveBank against the numpy
+/// reference fixture, plus shape-guard and Codable coverage, plus the
+/// printed-only throughput measurement.
 final class WaveBankTests: XCTestCase {
 
     // MARK: - Fixture loading
@@ -69,7 +68,7 @@ final class WaveBankTests: XCTestCase {
         XCTAssertEqual(bank.atoms.count, 4096 * 160)
     }
 
-    // MARK: - G1: Phi bridge
+    // MARK: - Phi bridge
 
     func testG1PhiBridge() throws {
         let fixture = try Self.loadFixture()
@@ -88,7 +87,7 @@ final class WaveBankTests: XCTestCase {
         }
     }
 
-    // MARK: - G2: W bridge
+    // MARK: - W bridge
 
     func testG2WBridge() throws {
         let fixture = try Self.loadFixture()
@@ -115,22 +114,22 @@ final class WaveBankTests: XCTestCase {
         XCTAssertLessThanOrEqual(frobDiff, 1e-5 * fixture.wFrobenius)
     }
 
-    // MARK: - G3: out-of-bank noise law
+    // MARK: - Out-of-bank noise law
 
     func testG3NoiseLaw() throws {
         let fixture = try Self.loadFixture()
         let bank = try WaveBank(spec: .reference)
 
-        // The frozen contract's printed literal (0.9802920) is a hand
+        // The doc's printed literal (0.9802920) is a hand
         // rounding of √(1 − 160/4096); the textbook value is
         // 0.9802741963348827 (checked independently in Python: 0.980292^2 =
         // 0.96097..., not 0.9609375 = 1 − 160/4096). expectedNoiseResidual
         // keeps the exact textbook formula rather than the doc's literal;
-        // the gap (~1.8e-5) is far inside G3's own tolerances (0.035 / 0.008
-        // below), so it never affects G3 pass/fail — only this self-check's
+        // the gap (~1.8e-5) is far inside the noise-law test's own tolerances
+        // (0.035 / 0.008 below), so it never affects its pass/fail — only this self-check's
         // accuracy is loosened to admit the doc's own rounding.
         let expected = WaveBank.expectedNoiseResidual(T: bank.T, K: bank.K)
-        XCTAssertEqual(expected, 0.9802741963348827, accuracy: 1e-9)  // computed, amendment 1
+        XCTAssertEqual(expected, 0.9802741963348827, accuracy: 1e-9)  // computed
 
         let law = bank.noiseLaw(seeds: 20, stream: referenceStream())
         for r in law.residuals {
@@ -141,7 +140,7 @@ final class WaveBankTests: XCTestCase {
         print("noise law: expected=\(expected) engine mean=\(law.mean) min=\(law.min) max=\(law.max) numpy mean=\(fixture.noiseResidualMean)")
     }
 
-    // MARK: - G4: probe bridge
+    // MARK: - Probe bridge
 
     func testG4ProbeBridge() throws {
         let fixture = try Self.loadFixture()
@@ -164,7 +163,7 @@ final class WaveBankTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxCDiff, 1e-2 * maxRefC)
     }
 
-    // MARK: - G5: in-bank sanity
+    // MARK: - In-bank sanity
 
     func testG5InBank() throws {
         let bank = try WaveBank(spec: .reference)
@@ -239,7 +238,7 @@ final class WaveBankTests: XCTestCase {
         XCTAssertEqual(zeroFit?.residual, 0)
     }
 
-    // MARK: - G6: throughput (printed, not gated)
+    // MARK: - Throughput (printed, not checked)
 
     func testBenchPrintsThroughput() throws {
         let bank = try WaveBank(spec: .reference)
@@ -248,7 +247,7 @@ final class WaveBankTests: XCTestCase {
         print("bench: T=\(bank.T) K=\(bank.K) M=\(bench.columns) best_ms=\(bench.bestSeconds * 1000) samples_per_s=\(bench.samplesPerSecond) (numpy reference 2.23e9)")
     }
 
-    // MARK: - G8: declaration and the Nyquist line (AMENDMENT 2)
+    // MARK: - Declaration and the Nyquist line
 
     func testG8ControlBankRank146() throws {
         let bank = try WaveBank(spec: .reference)
@@ -293,14 +292,15 @@ final class WaveBankTests: XCTestCase {
         XCTAssertTrue(fit.residual.isFinite)
         print("repaired probe residual = \(fit.residual)")
 
-        // AMENDMENT 2 (f)'s literal 0.982321 is, like AMENDMENT 1's r0
+        // The specified literal 0.982321 is, like the specified r0
         // (0.9802920 vs the textbook 0.9802741963348827), a hand-rounding
         // by the author: sqrt(1 - 144/4096) = 0.982264602843857 exactly
         // (checked independently in Python), a ~5.6e-5 gap from the
         // doc's literal — same pattern, larger this time. The formula is
-        // the gate, not the literal (per AMENDMENT 1's own resolution);
-        // this line is printed, not gated (G8(f)), so the looser accuracy
-        // only admits the doc's own rounding — it never affects G8 pass/fail.
+        // the check, not the literal (as was resolved for r0);
+        // this line is printed, not checked, so the looser accuracy
+        // only admits the doc's own rounding — it never affects the declaration
+        // test's pass/fail.
         let expected = WaveBank.expectedNoiseResidual(T: 4096, K: 144)
         XCTAssertEqual(expected, 0.982321, accuracy: 1e-4)
         let law = bank.noiseLaw(seeds: 20, stream: referenceStream())

@@ -2,8 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// Daemon-level tests for the FOLD verb family (gate F4,
-/// docs/contracts/FOLD_API_GATES_FROZEN.md) —
+/// Daemon-level tests for the FOLD verb family —
 /// DagDBCommandHandler+TwinFold.swift. Every daemon-computed value is
 /// checked bit-for-bit against a directly-computed `LadderFold.run(...)`
 /// call over a freshly built control object (mirrors Tests/DagDBTests/
@@ -14,8 +13,8 @@ final class TwinFoldCommandTests: XCTestCase {
     // MARK: - Expected values (library call, side 12 control object)
 
     /// 49x49 Float32 operator, 49 kept nodes: side 12, f1=f2=78 (node
-    /// 6*12+6), schedule maxRank=6 keepRank=3 — exactly the control fixture
-    /// F1/F4 use.
+    /// 6*12+6), schedule maxRank=6 keepRank=3 — exactly the FOLD control
+    /// fixture.
     private func expectedControlResult(checkpoints: [Int] = []) throws -> LadderFold.Result {
         let grid = try HexGrid(width: 12, height: 12)
         let state = DagDBState(width: 12, height: 12)
@@ -39,7 +38,7 @@ final class TwinFoldCommandTests: XCTestCase {
         // daemon-kit tests that build graphs up from nothing) — restore the
         // engine's real hex-grid adjacency (what any freshly booted daemon
         // actually has, straight from DagDBEngine.init's `grid.neighbors`)
-        // before seeding the control ranks/leak/weights, since G1's `build`
+        // before seeding the control ranks/leak/weights, since `build`
         // reads the existing neighbor lane rather than writing one.
         let nb = f.handler.engine.neighborsBuf.contents()
             .bindMemory(to: Int32.self, capacity: f.grid.neighbors.count)
@@ -264,10 +263,10 @@ final class TwinFoldCommandTests: XCTestCase {
         return String(openReply[ridRange.upperBound..<spaceRange.lowerBound])
     }
 
-    /// D5/D9 · this check could not fail. It asserted only that the
+    /// This check could not fail. It asserted only that the
     /// reader's OWN replies began `OK` — never that the primary's
-    /// `lastFold` survived. `FOLD RUN` assigns daemon-global `lastFold`
-    /// (audit B finding 18), which `FOLD KEPT/SOURCE/TIER/INFO` read, so a
+    /// `lastFold` survived. `FOLD RUN` assigns daemon-global `lastFold`,
+    /// which `FOLD KEPT/SOURCE/TIER/INFO` read, so a
     /// reader session — or a browser through the web bridge — overwrote
     /// what the primary saw. `FOLD RUN` is now forbidden to readers; the
     /// four look-only FOLD verbs stay allowed.

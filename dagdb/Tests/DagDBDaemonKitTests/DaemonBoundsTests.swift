@@ -2,9 +2,7 @@ import XCTest
 @testable import DagDB
 @testable import DagDBDaemonKit
 
-/// DAEMON BOUNDS — gates D1, D2, D3, D6, D7, D8 of
-/// `docs/contracts/DAEMON_BOUNDS_GATES_FROZEN.md`, driven from audit B
-/// (`docs/contracts/AUDIT_B_daemon.md`, findings 2-17 and 20-23).
+/// Daemon bounds, driven from an internal audit of the daemon.
 ///
 /// Every test here drives an EDGE the shipped daemon used to cross
 /// silently — a negative id, an id equal to the extent, `Int.max`, a
@@ -15,8 +13,8 @@ import XCTest
 /// down, so a green `STATUS` is the evidence the guard fired instead of
 /// the pointer.
 ///
-/// Gate D4 (socket framing) lives in `SocketFramingTests.swift`. Gate D5
-/// (the reader allowlist) lives with the fixtures it needs: the FOLD half
+/// The socket-framing checks live in `SocketFramingTests.swift`. The reader
+/// allowlist checks live with the fixtures they need: the FOLD half
 /// in `TwinFoldCommandTests`, the TILED half in `TiledCommandTests`, and
 /// the web bridge's half in `web/test_bridge_allowlist.py`.
 final class DaemonBoundsTests: XCTestCase {
@@ -42,9 +40,9 @@ final class DaemonBoundsTests: XCTestCase {
         assertAlive(f, file, line)
     }
 
-    // MARK: - D1 · every wire integer bounded on BOTH sides
+    // MARK: - Every wire integer bounded on BOTH sides
 
-    /// Audit finding 2 — `TRAVERSE FROM -1` reached `ranks[node]`, a
+    /// `TRAVERSE FROM -1` reached `ranks[node]`, a
     /// bounds-checked Swift array subscript: a TRAP, not a refusal.
     func testTraverseFromNegativeIsRefusedByName() throws {
         let f = try HandlerFixture(side: 4)
@@ -57,7 +55,7 @@ final class DaemonBoundsTests: XCTestCase {
         assertRefused(f, "TRAVERSE FROM \(Int.max) DEPTH 1", contains: "node", "0..<16")
     }
 
-    /// Audit finding 6 — depth drove the frontier loop with no bound of its
+    /// Depth drove the frontier loop with no bound of its
     /// own. No path in a DAG on N nodes is longer than N-1 hops.
     func testTraverseDepthIsBoundedBothSides() throws {
         let f = try HandlerFixture(side: 4)
@@ -66,7 +64,7 @@ final class DaemonBoundsTests: XCTestCase {
         assertRefused(f, "TRAVERSE FROM 0 DEPTH \(Int.max)", contains: "depth", "0..<16")
     }
 
-    /// Audit findings 3 and 4 — the five `SET` verbs, `CLEAR … EDGES` and
+    /// The five `SET` verbs, `CLEAR … EDGES` and
     /// `GET … TRUTH` reached raw `UnsafeMutablePointer` subscripts with no
     /// `>= 0` check and (with `DAGDB_WAL` unset, the default) no `UInt32`
     /// cast in front: a SILENT out-of-bounds write BEFORE the Metal buffer.
@@ -106,7 +104,7 @@ final class DaemonBoundsTests: XCTestCase {
         }
     }
 
-    /// Audit finding 5 — `TICK -1` built `0..<(-1)`, a Swift range
+    /// `TICK -1` built `0..<(-1)`, a Swift range
     /// precondition failure (a TRAP), and a large count ran an unbounded
     /// GPU loop on the single-threaded accept loop.
     func testTickAndTickSyncCountsAreBoundedBothSides() throws {
@@ -120,7 +118,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertEqual(f.handler.tickCount, 0, "no refused tick may have advanced the clock")
     }
 
-    /// Audit finding 5, second half — `tickCount` is `UInt32`; a tick that
+    /// `tickCount` is `UInt32`; a tick that
     /// would carry it past `UInt32.max` traps on the `+= 1`. It stays
     /// `UInt32` (the snapshot header and the WAL checkpoint epoch are
     /// written from it), so the overflow must be refused BY NAME instead.
@@ -144,7 +142,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertEqual(f.handler.tickCount, UInt32.max)
     }
 
-    /// Audit finding 22 — `CLOCK ADVANCE <id> <n>` drove an n-tick loop
+    /// `CLOCK ADVANCE <id> <n>` drove an n-tick loop
     /// inside `TwinState.apply` with no top-end bound, unlike `TILED TICK`.
     func testClockAdvanceCountIsCapped() throws {
         let f = try HandlerFixture(side: 4)
@@ -155,7 +153,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("CLOCK ADVANCE c00000001 2").hasPrefix("OK CLOCK ADVANCE"))
     }
 
-    /// Audit finding 21 — `BANK NOISE <id> <seed> <n>` spun
+    /// `BANK NOISE <id> <seed> <n>` spun
     /// `for _ in 0..<seed { _ = stream.next64() }` with `seed` guarded only
     /// `>= 0`, so a ten-billion seed wedged the accept loop.
     func testBankNoiseSeedIsCapped() throws {
@@ -166,7 +164,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertTrue(f.handler.handle("BANK NOISE w00000001 3 1").hasPrefix("OK BANK NOISE"))
     }
 
-    /// The reader twin of finding 2 (`DagDBCommandHandler.swift:954`) —
+    /// The reader twin of the `TRAVERSE FROM -1` trap (`DagDBCommandHandler.swift:954`) —
     /// the snapshot engine's `ranks[node]` traps just as readily.
     func testReaderSessionNodeIdsAreBoundedBothSides() throws {
         let f = try HandlerFixture(side: 4)
@@ -190,24 +188,24 @@ final class DaemonBoundsTests: XCTestCase {
         }
     }
 
-    // MARK: - D2 · every shared-memory WRITE checks capacity
+    // MARK: - Every shared-memory WRITE checks capacity
 
     /// The `[u32 count][u32 rowSize]` header every shm writer lays down.
     private func shmHeaderCount(_ f: HandlerFixture) -> UInt32 {
         f.shm.bindMemory(to: UInt32.self, capacity: 2)[0]
     }
 
-    /// F7 · stamp a sentinel over the shm row-count header so the next
+    /// Stamp a sentinel over the shm row-count header so the next
     /// writer's check is independent of every writer before it.
     private func poisonShmHeader(_ f: HandlerFixture, _ value: UInt32) {
         f.shm.bindMemory(to: UInt32.self, capacity: 2)[0] = value
     }
 
-    /// Audit finding 7 — `writeU64Vector` / `writeFloatVector` /
+    /// `writeU64Vector` / `writeFloatVector` /
     /// `writeDoubleVector` never compared the vector to `shmCapacityBytes`,
-    /// while their sibling readers always did. A 64-byte mapping holds
+    /// while their matching readers always did. A 64-byte mapping holds
     /// `(64 - 8) / 8 = 7` u64s; twelve of them ran 40 bytes past the end.
-    /// Post-merge follow-up F7: the four checks used to share one shm header
+    /// The four checks used to share one shm header
     /// and read it as `0` after each writer, so removing ONE writer's guard
     /// failed all four and none of the last three could attribute a failure
     /// to its own writer. The header is poisoned with a sentinel before each
@@ -235,7 +233,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertEqual(shmHeaderCount(f), sentinel, "writeResults wrote past a 64-byte mapping")
     }
 
-    /// Audit finding 20 — `STREAM NEXT`'s and `RECORD SLICE`'s bound was a
+    /// `STREAM NEXT`'s and `RECORD SLICE`'s bound was a
     /// hardcoded `nodeCount * 3`, a restatement of the DEFAULT mapping's
     /// size. A `shmBytes:`-built handler shrinks the buffer and the bound
     /// stayed wide. The refusal must name the capacity, not the restatement.
@@ -256,7 +254,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertTrue(sliceReply.contains("64"), sliceReply)
     }
 
-    /// Audit finding 8 — a record minted under a roomy daemon and restored
+    /// A record minted under a roomy daemon and restored
     /// into a smaller one carries a payload this daemon's `nodeCount` never
     /// bounded. Two handlers, one shared `TwinState`, is exactly that shape.
     func testRecordReplayBoundsTheRestoredSliceAgainstCapacity() throws {
@@ -272,7 +270,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertEqual(shmHeaderCount(small), 0)
     }
 
-    /// Audit finding 6 — `TRAVERSE` appended one row per node PER DEPTH
+    /// `TRAVERSE` appended one row per node PER DEPTH
     /// LEVEL with no global visited set, so the row count was Σ|frontier_d|
     /// and the mapping holds exactly `nodeCount` rows. The row count must be
     /// comparable to `(shmCapacityBytes - 8) / resultRowSize`, computed here
@@ -300,9 +298,9 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertLessThanOrEqual(rows, f.handler.nodeCount)
     }
 
-    // MARK: - D3 · wire arithmetic cannot trap
+    // MARK: - Wire arithmetic cannot trap
 
-    /// Audit finding 23 — `nPockets * nTiers * 8` and
+    /// `nPockets * nTiers * 8` and
     /// `(nA + nB + kA + kB) * 4` are computed from unbounded signed `Int`s
     /// straight off the wire, and Swift TRAPS on `Int` overflow, so the
     /// capacity guard behind them never got to fire.
@@ -326,9 +324,9 @@ final class DaemonBoundsTests: XCTestCase {
         }
     }
 
-    // MARK: - D6 · the bulk installers refuse what they cannot validate
+    // MARK: - The bulk installers refuse what they cannot validate
 
-    /// Audit finding 12 — `SET_NEIGHBORS_BULK` read `nodeCount * 6 * 4`
+    /// `SET_NEIGHBORS_BULK` read `nodeCount * 6 * 4`
     /// bytes at offset 8 without ever consulting the mapping's real size.
     func testSetNeighborsBulkRefusesWhenTheVectorDoesNotFit() throws {
         let f = try HandlerFixture(side: 4, shmBytes: 64)   // needs 8 + 16*6*4 = 392
@@ -338,7 +336,7 @@ final class DaemonBoundsTests: XCTestCase {
         assertAlive(f)
     }
 
-    /// Audit finding 13 — no element was range-checked at all, so any
+    /// No element was range-checked at all, so any
     /// `Int32` outside `[-1, nodeCount)` landed in `neighborsBuf` and was
     /// indexed by the Metal kernel. `SET_RANKS_BULK` already checked the
     /// whole vector before writing one word; this must too.
@@ -349,6 +347,7 @@ final class DaemonBoundsTests: XCTestCase {
         for i in 0..<count { src[i] = -1 }
         src[13] = Int32(f.handler.nodeCount + 1)        // node 2, dir 1
         src[40] = -2                                     // node 6, dir 4
+        shm1Header(f.shm, count: f.handler.nodeCount, verb: .setNeighborsBulk)   // nodes, not the 6N slots of `count`
 
         let reply = f.handler.handle("SET_NEIGHBORS_BULK")
         XCTAssertTrue(reply.hasPrefix("ERROR out_of_range:"), reply)
@@ -365,21 +364,22 @@ final class DaemonBoundsTests: XCTestCase {
         assertAlive(f)
     }
 
-    /// Audit finding 15 — the reply never said the rank-monotonicity
+    /// The reply never said the rank-monotonicity
     /// invariant was skipped, so a caller could not know to re-check.
     func testBulkInstallersDiscloseTheInvariantTheySkipped() throws {
         let f = try HandlerFixture(side: 4)
         let ranks = f.shm.advanced(by: 8).bindMemory(to: UInt64.self, capacity: f.handler.nodeCount)
         for i in 0..<f.handler.nodeCount { ranks[i] = 0 }
+        shm1Header(f.shm, count: f.handler.nodeCount, verb: .setRanksBulk)
         let reply = f.handler.handle("SET_RANKS_BULK")
         XCTAssertTrue(reply.hasPrefix("OK SET_RANKS_BULK nodes=16"), reply)
         XCTAssertTrue(reply.contains("validation=skipped"), reply)
         XCTAssertTrue(reply.contains("VALIDATE"), reply)
     }
 
-    // MARK: - D7 · replies say what they omitted
+    // MARK: - Replies say what they omitted
 
-    /// Audit finding 16 — `EVAL` ticks the whole graph but reports only
+    /// `EVAL` ticks the whole graph but reports only
     /// rank-0 roots, and printed neither the scope nor the rank-bound
     /// suffix `TICK` prints through `rankWorkSuffix`.
     func testEvalDisclosesRootsScopeAndTheRankBound() throws {
@@ -396,7 +396,7 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertTrue(reply.contains("bound=4"), reply)
     }
 
-    /// Audit finding 17 — `NODES` silently drops every rank-0, truth-0 node
+    /// `NODES` silently drops every rank-0, truth-0 node
     /// when no rank filter is given, and printed only `rows=`.
     func testNodesDisclosesWhatItsDefaultFilterDropped() throws {
         let f = try HandlerFixture(side: 4)              // 16 nodes, all rank 0 truth 0
@@ -405,14 +405,14 @@ final class DaemonBoundsTests: XCTestCase {
         XCTAssertEqual(reply, "OK NODES rows=1 omitted=15", reply)
     }
 
-    // MARK: - D8 · unbounded work refuses
+    // MARK: - Unbounded work refuses
 
-    /// Audit finding 26 — `SIMILAR_DECISIONS` runs one backward BFS per
+    /// `SIMILAR_DECISIONS` runs one backward BFS per
     /// candidate over all `nodeCount` candidates, with no work bound
     /// independent of `k`, on the single-threaded accept loop — and it sits
     /// on the web bridge's read-only allowlist.
     func testSimilarDecisionsRefusesAboveItsStatedCandidateCap() throws {
-        // The cap is written out as a literal on purpose (the D9 lesson):
+        // The cap is written out as a literal on purpose (the lesson of three earlier checks that could not fail):
         // an expectation derived from the handler's own constant compares
         // the bound to itself and can never detect drift.
         let f = try HandlerFixture(side: 72)   // 5184 nodes > the 4096 cap
@@ -423,9 +423,9 @@ final class DaemonBoundsTests: XCTestCase {
         assertAlive(f)
     }
 
-    // MARK: - D9 · a TRAVERSE test exists
+    // MARK: - A TRAVERSE test exists
 
-    /// There was no `TRAVERSE` test at all before this gate — the verb that
+    /// There was no `TRAVERSE` test at all before this one — the verb that
     /// trapped on a negative seed and overran the mapping on a deep walk was
     /// covered by nothing. This is the round-trip half; the bounds half is
     /// above.

@@ -28,6 +28,14 @@ Sources/DagDBDaemon/*.bak
 # ~/dag_databases (private, never tracked, never shipped).
 !sample_db/demo_graph.dagdb
 
+# The old-file fixture of the ternary persistence tests:
+# main's recorded .dags v1–v7, WAL v2 and diff-2 chain, each pinned in
+# hashes.json. This directory only.
+!Tests/Fixtures/ternary_r4_old_files/*.dags
+!Tests/Fixtures/ternary_r4_old_files/*.wal
+!Tests/Fixtures/ternary_r4_old_files/chain/*.dags
+!Tests/Fixtures/ternary_r4_old_files/chain/*.diff
+
 # Convention: any path inside these dirs is user-local, never committed.
 .dagdb-local/
 data/

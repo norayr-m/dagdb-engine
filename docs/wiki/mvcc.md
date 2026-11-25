@@ -174,7 +174,7 @@ timestamp prefix changes every second.
 `OPEN_READER` allocates one full snapshot:
 
 ```
-rank:      nodeCount * 8 B    (u64 since T1b 2026-04-21)
+rank:      nodeCount * 8 B    (u64 since 2026-04-21)
 truth:     nodeCount * 1 B
 nodeType:  nodeCount * 1 B
 lut6Low:   nodeCount * 4 B

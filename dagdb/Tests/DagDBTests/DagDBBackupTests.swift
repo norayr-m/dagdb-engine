@@ -3,8 +3,8 @@ import XCTest
 
 final class DagDBBackupTests: XCTestCase {
 
-    /// Per-test unique temp dir (Fable review T4 — fixed /tmp names race
-    /// when several checkouts run swift test concurrently in one shared dir).
+    /// Per-test unique temp dir (fixed /tmp names race when several
+    /// checkouts run swift test concurrently in one shared dir).
     private var tmpDir: String!
 
     override func setUpWithError() throws {
@@ -233,7 +233,7 @@ final class DagDBBackupTests: XCTestCase {
         XCTAssertTrue(buffersEqual(eng1, eng2))
     }
 
-    // MARK: - B1 · rank width fingerprint (BACKUP_RANK_WIDTH_GATES_FROZEN)
+    // MARK: - Rank width fingerprint
 
     /// A restore must reproduce the ranks it was asked to keep, node for node,
     /// across the WHOLE buffer — not just the nodes whose ranks happen to sit
@@ -294,7 +294,7 @@ final class DagDBBackupTests: XCTestCase {
         XCTAssertEqual(nbAt,    Data(bytes: eng.neighborsBuf.contents(),  count: n * 6 * 4), "neighbors")
     }
 
-    // MARK: - B5 · coverage equals the snapshot's (AMENDMENT 1)
+    // MARK: - Coverage equals the snapshot's
 
     /// Everything the engine holds per node, as bytes, for comparison.
     private struct EngineImage: Equatable {
@@ -338,7 +338,7 @@ final class DagDBBackupTests: XCTestCase {
         XCTAssertEqual(a.backEdgeDsts, b.backEdgeDsts, "\(what): back-edge dsts", file: file, line: line)
     }
 
-    /// The state B5 puts on a seeded engine. Applied to two engines that never
+    /// The state the coverage test puts on a seeded engine. Applied to two engines that never
     /// touch each other, so the "un-restored" side of the tick comparison is
     /// built from the same VALUES, not copied from the buffers under test.
     ///
@@ -364,7 +364,7 @@ final class DagDBBackupTests: XCTestCase {
         // Two nodes with non-zero activation and node value, one of each half.
         act[3] = 7;   val[3] = 1.5
         act[40] = -3; val[40] = -2.25
-        // …and the six, so this gate does not depend on B1's.
+        // …and the six, so this test does not depend on the rank-width test's.
         rank[63] = 5
         truth[2] ^= 1
     }
@@ -397,7 +397,7 @@ final class DagDBBackupTests: XCTestCase {
         let atAppend = EngineImage(eng)
 
         // The un-restored engine: built independently from the same values,
-        // never a copy of the buffers this gate is testing, and it never
+        // never a copy of the buffers this test is checking, and it never
         // touches disk.
         let (reference, _, _) = try makeEngine(side: 8)
         seed(reference)
@@ -436,7 +436,7 @@ final class DagDBBackupTests: XCTestCase {
         assertImagesEqual(EngineImage(eng), EngineImage(reference), "after one rank-mode tick")
     }
 
-    // MARK: - B2 · format version (BACKUP_RANK_WIDTH_GATES_FROZEN)
+    // MARK: - Format version
 
     /// Write a chain in the retired format-1 layout by hand: the old header
     /// (version 1) and a rank segment of `4·N` bytes. Nothing in the library
@@ -560,9 +560,9 @@ final class DagDBBackupTests: XCTestCase {
         )
     }
 
-    // MARK: - B6–B9 · order, identity, integrity (AMENDMENT 2)
+    // MARK: - Order, identity, integrity
 
-    /// Compare an error's own sentence, so these gates compile against any
+    /// Compare an error's own sentence, so these tests compile against any
     /// build — the one that refuses and the one that does not.
     private func assertRefuses(
         _ what: String, _ expected: String,
@@ -592,7 +592,7 @@ final class DagDBBackupTests: XCTestCase {
     }
 
     /// A no-op diff written by hand at the build's own format version, with the
-    /// rank segment's raw size under the caller's control so a gate can shorten
+    /// rank segment's raw size under the caller's control so a test can shorten
     /// it on purpose. Every segment is zeros, so a full-width one changes
     /// nothing when applied.
     private func writeHandMadeDiff(
@@ -647,7 +647,7 @@ final class DagDBBackupTests: XCTestCase {
         return engine
     }
 
-    // B6 — a length disagreement is refused, never clamped to the shorter side.
+    // A length disagreement is refused, never clamped to the shorter side.
     func testShortSegmentIsRefusedNotClamped() throws {
         let dir = tmpDir! + "dagdb_backup_shortseg"
         wipeDir(dir)
@@ -671,7 +671,7 @@ final class DagDBBackupTests: XCTestCase {
         }
     }
 
-    // B7 — diffs apply in sequence-number order, not filename order.
+    // Diffs apply in sequence-number order, not filename order.
     func testDiffsApplyInSequenceOrderNotFilenameOrder() throws {
         let dir = tmpDir! + "dagdb_backup_order"
         wipeDir(dir)
@@ -709,7 +709,7 @@ final class DagDBBackupTests: XCTestCase {
         XCTAssertFalse(fresh.isRegister(node: 20))
     }
 
-    // B7 — a gap in the sequence is refused by name.
+    // A gap in the sequence is refused by name.
     func testSequenceGapIsRefused() throws {
         let dir = tmpDir! + "dagdb_backup_gap"
         wipeDir(dir)
@@ -732,7 +732,7 @@ final class DagDBBackupTests: XCTestCase {
         }
     }
 
-    // B7 — a duplicated sequence number is refused by name.
+    // A duplicated sequence number is refused by name.
     func testDuplicateSequenceIsRefused() throws {
         let dir = tmpDir! + "dagdb_backup_dup"
         wipeDir(dir)
@@ -762,7 +762,7 @@ final class DagDBBackupTests: XCTestCase {
         }
     }
 
-    // B7 — APPEND never writes over a file that is already there.
+    // APPEND never writes over a file that is already there.
     func testAppendRefusesToOverwriteExistingDiff() throws {
         let dir = tmpDir! + "dagdb_backup_overwrite"
         wipeDir(dir)
@@ -779,7 +779,7 @@ final class DagDBBackupTests: XCTestCase {
 
         assertRefuses(
             "occupied append slot",
-            "io: backup diff 00003.diff already exists; refusing to overwrite"
+            "io: backup diff \"00003.diff\" already exists; refusing to overwrite"
         ) {
             _ = try DagDBBackup.appendDiff(
                 engine: eng, nodeCount: eng.nodeCount,
@@ -787,7 +787,7 @@ final class DagDBBackupTests: XCTestCase {
         }
     }
 
-    // B8 — the sidecar is checked before anything is decoded.
+    // The sidecar is checked before anything is decoded.
     func testCorruptDiffRefusedAtItsSidecar() throws {
         let dir = tmpDir! + "dagdb_backup_sha"
         wipeDir(dir)
@@ -804,7 +804,7 @@ final class DagDBBackupTests: XCTestCase {
 
         assertRefuses(
             "corrupt diff",
-            "io: backup diff 00001.diff does not match its sha256 sidecar; the file is corrupt or truncated"
+            "io: backup diff \"00001.diff\" does not match its sha256 sidecar; the file is corrupt or truncated"
         ) {
             _ = try DagDBBackup.restore(
                 engine: eng, nodeCount: eng.nodeCount,
@@ -823,7 +823,7 @@ final class DagDBBackupTests: XCTestCase {
 
         assertRefuses(
             "sidecar-less diff",
-            "io: backup diff 00001.diff has no sha256 sidecar; re-create the backup"
+            "io: backup diff \"00001.diff\" has no sha256 sidecar; re-create the backup"
         ) {
             _ = try DagDBBackup.restore(
                 engine: eng, nodeCount: eng.nodeCount,
@@ -831,12 +831,12 @@ final class DagDBBackupTests: XCTestCase {
         }
     }
 
-    // B11 — the back-edge section's length must equal what its own pair count
+    // The back-edge section's length must equal what its own pair count
     // claims. The eleventh segment was the only one whose length was checked
     // against the file's own prefix instead of against a size derived from the
-    // object, and the guard was `>=`: the blind verifier padded a blob from 12
-    // bytes to 20 with the pair count left at 1, rewrote the sidecar, and the
-    // restore took it without a word.
+    // object, and the guard was `>=`: a blob padded from 12 bytes to 20 with
+    // the pair count left at 1, its sidecar rewritten, was restored without a
+    // word.
     func testPaddedBackEdgeSectionIsRefused() throws {
         let dir = tmpDir! + "dagdb_backup_bepad"
         wipeDir(dir)
@@ -899,7 +899,7 @@ final class DagDBBackupTests: XCTestCase {
         XCTAssertTrue(eng.isRegister(node: 50))
     }
 
-    // B9 — COMPACT writes its base from the chain, not from a live engine.
+    // COMPACT writes its base from the chain, not from a live engine.
     func testCompactWritesTheChainsTipNotTheEnginesState() throws {
         let dir = tmpDir! + "dagdb_backup_compact_source"
         wipeDir(dir)

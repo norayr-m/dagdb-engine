@@ -1,10 +1,10 @@
 import XCTest
 @testable import DagDB
 
-/// the interface phase — TwinRegistry (typed-id registries, reader-session pattern) and
+/// TwinRegistry (typed-id registries, reader-session pattern) and
 /// TwinState (the seven daemon-global registries, TwinOp apply, Codable
-/// snapshot). Fixtures are reused verbatim from the earlier
-/// test classes and from `SealedCourt`.
+/// snapshot). Fixtures are reused verbatim from `TwinCodableStreamTests`,
+/// `TwinCodableClockRingsTests`, the alarm tests and `SealedCourt`.
 final class TwinRegistryTests: XCTestCase {
     // MARK: - Fixtures (verbatim from TwinCodableStreamTests / TwinCodableClockRingsTests)
 
@@ -180,7 +180,7 @@ final class TwinRegistryTests: XCTestCase {
         XCTAssertEqual(twin.streams.get(id)?.draws, 0)
 
         // Advance 6 draws directly against the registry (this is what the
-        // daemon's STREAM NEXT verb does in T8, before logging the
+        // daemon's STREAM NEXT verb does, before logging the
         // resulting post-state as `.streamState` — O(1) replay).
         try twin.streams.update(id) { s in
             for _ in 0..<6 { _ = s.next64() }
@@ -382,7 +382,7 @@ final class TwinRegistryTests: XCTestCase {
         XCTAssertNil(twin.alarms.get(id))
     }
 
-    // MARK: - TwinState: bank (spec 8 mouth)
+    // MARK: - TwinState: bank (the waveform bank)
 
     func testBankOpenMintsWIdAndRebuildsK160() throws {
         let twin = TwinState()
@@ -449,9 +449,9 @@ final class TwinRegistryTests: XCTestCase {
         XCTAssertEqual(residualOld, residualNew)
     }
 
-    // MARK: - TwinState: view (derived-view sets, spec line 4)
+    // MARK: - TwinState: view (derived-view sets)
 
-    /// The loader asserts M == 129*54 (contract ruling (c)) — a real npz
+    /// The loader asserts M == 129*54 — a real npz
     /// fixture is too heavy for a registry-mechanics test, so this injects
     /// a stub loader via `TwinState.apply`'s `viewLoader:` parameter (same
     /// injection point `AlarmFixture`-backed tests would use), never
@@ -525,7 +525,7 @@ final class TwinRegistryTests: XCTestCase {
         XCTAssertEqual(fresh.views.get(id)?.ref, TwinState.ViewRef(path: "synthetic.npz", sha256: "cafef00d"))
     }
 
-    // MARK: - TwinState: kernel (per-path kernel pairs, gates K3/K4)
+    // MARK: - TwinState: kernel (per-path kernel pairs)
 
     /// A minimal `KernelPair` for kernel-registry mechanics tests — the
     /// real `KernelPair.load` (file + sha check) is exercised for real in
@@ -727,7 +727,7 @@ final class TwinRegistryTests: XCTestCase {
     }
 }
 
-// MARK: - Hook (docs/contracts/HOOK_GATES_FROZEN.md, twin spec line 6)
+// MARK: - Hook
 extension TwinRegistryTests {
     private func loadHookSealedOrSkip() throws -> AlarmFixture {
         guard let path = AlarmFixture.envPath else {
@@ -814,7 +814,7 @@ extension TwinRegistryTests {
         XCTAssertEqual(fresh.export(), snap)
     }
 
-    /// H4: "H1 is asserted both ways at one grid point" — bound (via
+    /// The ledger check, asserted both ways at one grid point — bound (via
     /// CLOCK ADVANCE) and unbound (via HOOK STEP) hooks over the sealed
     /// fixture at the richest point must reach identical results and
     /// ledgers.
@@ -856,7 +856,7 @@ extension TwinRegistryTests {
     }
 }
 
-// MARK: - Gear close prunes its clock (the interface phase finding)
+// MARK: - Gear close prunes its clock
 extension TwinRegistryTests {
     func testDirectGearCloseIsPrunedFromClockThenAdvanceStillWorks() throws {
         let t = TwinState()
