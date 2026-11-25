@@ -79,7 +79,7 @@ to ~4 KB; keep commands under that.
 ## 3. The complete DSL surface
 
 Authoritative grammar lives in
-`dagdb/Sources/DagDBDaemon/DSLParser.swift`. Verbs grouped by
+`dagdb/Sources/DagDBDaemonKit/DSLParser.swift`. Verbs grouped by
 function:
 
 **Lifecycle / inspection**

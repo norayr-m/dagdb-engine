@@ -440,7 +440,7 @@ the top of `CHANGES.md` gives the reply rules.
 
 ## DSL reference
 
-Full grammar in `dagdb/Sources/DagDBDaemon/DSLParser.swift`.
+Full grammar in `dagdb/Sources/DagDBDaemonKit/DSLParser.swift`.
 
 ```
 # Lifecycle

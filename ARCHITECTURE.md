@@ -410,7 +410,7 @@ open — snapshot-on-read was the smallest viable step.
 ## 7. Daemon DSL and error taxonomy
 
 Commands are newline-delimited text. Full grammar:
-`dagdb/Sources/DagDBDaemon/DSLParser.swift`. See `README.md` for the
+`dagdb/Sources/DagDBDaemonKit/DSLParser.swift`. See `README.md` for the
 complete list.
 
 Every response begins with `OK …` on success or
