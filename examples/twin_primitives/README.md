@@ -680,9 +680,9 @@ io: ...` and the refusal is recorded in the next `TILED STATUS`'s
 
 ## Verification
 
-On 2026-11-19, `swift test` from `dagdb/`, run once per test class, reports **1,519 tests, 49
+On 2026-11-24, one full `swift test` run from `dagdb/` reports **1,540 tests, 49
 skipped (48 fixture-gated, 1 opt-in), 0 failures** (DagDBTests 722 +
-DagDBDaemonKitTests 797; how it
+DagDBDaemonKitTests 818; how it
 was run is in `CURRENT_STATE.md`, Test suite). The record of the
 suite's growth before that: on 2026-09-09 (main) it reported **446
 tests, 9 skipped (fixture-gated), 0 failures** — up from the 249/0-skip baseline at the 2026-09-05
